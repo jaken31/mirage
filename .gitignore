@@ -1,0 +1,28 @@
+# Generated data. A single 300k-frame shard set is ~3.7 GB - never commit it.
+data/
+*.pixels
+*.meta
+
+# Model artifacts and caches. Content-addressed names mean these are always
+# reproducible from a config hash; see docs/world_model_architecture.md.
+*.pt
+tokens_*.bin
+
+# NOT ignored: runs.jsonl. It is the E-5 append-only lab notebook, hand-authored,
+# and belongs in version control. Do not add a *.jsonl rule here.
+
+# C++ / CMake
+build/
+*.o
+*.so
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Tooling
+wandb/
+.vscode/
