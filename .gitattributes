@@ -1,0 +1,17 @@
+# Force LF everywhere. This is not style - it is correctness.
+#
+# docs/world_model_architecture.md defines
+#   data_hash = sha256(canon(sim) + canon(data) + arm_blocks.xml)
+# so the scene XML's raw bytes enter the provenance hash. Work happens on Windows
+# and builds in WSL2, so a CRLF/LF split would make one scene produce two
+# different data_hash values and silently fork E-4's provenance chain.
+* text=auto eol=lf
+
+# Byte-exact inputs to hashes and comparisons.
+*.xml  text eol=lf
+*.json text eol=lf
+*.sh   text eol=lf
+
+# Generated blobs. Gitignored, but declare intent in case one is ever forced in.
+*.pixels binary
+*.meta   binary
