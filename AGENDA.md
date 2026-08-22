@@ -20,12 +20,16 @@ performance profile, close the ~50 desktop GPU consumers, then confirm:
 nvidia-smi --query-gpu=pstate,clocks.current.sm,clocks.current.memory,power.draw,temperature.gpu --format=csv
 ```
 
-**2. WSL2 toolchain.** Ubuntu-24.04 is already running, but MuJoCo 3.x, `libEGL`,
-and g++ 13+ are unverified. Phase 0 cannot start without all three.
-
-**3. EGL vendor string.** `eglQueryString(EGL_VENDOR)` must report the NVIDIA
-hardware vendor. A software fallback is ~50x slower and fails P-6 silently - no
+**2. Windows render backend.** Rendering moved off WSL2 - its GPU graphics path is
+broken on this machine and no env override reaches hardware (evidence in `CLAUDE.md`,
+produced by `bench/egl_probe.py`). Install `mujoco` on Windows, create a context,
+assert `GL_RENDERER` names the RTX 5060. `GDI Generic` and `Microsoft Basic Render
+Driver` are the software fallbacks - ~50x slower, and they fail P-6 silently: no
 error, just a number that never reaches 500 fps.
+
+**3. C++ toolchain on Windows.** MSVC or MinGW, unverified. Phase 0's `sim/` files
+cannot start without it. Python covers the day-1 measurements, so this does not
+block today.
 
 ---
 
@@ -34,7 +38,7 @@ error, just a number that never reaches 500 fps.
 | Measure | Decides |
 |---|---|
 | Bandwidth + fp16 matmul, at P0 | whether the fork table's compute floors are real. They all derive from an assumed 448 GB/s, currently unverified |
-| **Per-call `mjr_readPixels` latency, in isolation** | **one-pass vs two-pass render.** Above ~0.5 ms/call, two passes cannot meet P-6 |
+| **Per-call `mjr_readPixels` latency, in isolation** | **one-pass vs two-pass render**, and now also **GLFW vs hand-rolled WGL**. Above ~0.5 ms/call two passes cannot meet P-6; near ~30 ms/call GLFW itself is the problem |
 | `mj_step` time alone | remaining P-6 headroom |
 | Frames/sec end to end | whether parallel generation is needed at all |
 
@@ -48,7 +52,8 @@ the known failure mode here is fixed per-call cost rather than bandwidth.
 1. `scene/arm_blocks.xml` - flat-render config, **two arm links in different
    colours**, palette under 24 unique RGB, decorations off in `mjvOption`
 2. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
-3. `sim/egl_context.*` - context plus vendor assert. Riskiest file; do it early
+3. `sim/gl_context.*` - WGL context plus `GL_RENDERER` assert. Riskiest file; do it
+   early. Hand-rolled WGL pbuffer only if the day-1 readback says GLFW is too slow
 4. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
 5. `sim/truth.*` - segmentation pixel counts, contact mask, poses
 6. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
