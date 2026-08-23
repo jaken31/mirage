@@ -31,14 +31,14 @@ The demo also reads correctly to the audience you care about: a learned manipula
 
 | Item | Spec | Note |
 |---|---|---|
-| GPU | RTX 5060, 8GB, sm_120 | |
-| OS | Linux or WSL2 | not native Windows |
-| CUDA | 12.8+ | required for Blackwell |
-| PyTorch | nightly cu128+ | stable wheels shipped sm_90 max as of early 2026 |
+| GPU | RTX 5060 **Laptop**, 8GB, sm_120 | idles at P4; record the pstate next to every timing |
+| OS | Windows 11 | WSL2 cannot render on this machine - no `/dev/dri`, settled |
+| CUDA | 13.0 | the version the installed torch wheel carries |
+| PyTorch | 2.9.1+cu130, stable | `torch.cuda.is_available()` true on sm_120, verified |
 | Triton | verify ptxas accepts sm_120 | **week 1 blocker** |
-| MuJoCo | 3.x, C API | link against libmujoco |
-| GL backend | **EGL** | hardware headless. Do not use OSMesa, it is software and slow |
-| Host compiler | g++ 13+ / C++20 | |
+| MuJoCo | 3.x, C API | link against `mujoco.lib` |
+| GL backend | **GLFW** | Windows MuJoCo has no EGL. Never OSMesa, it is software and slow |
+| Host compiler | MSVC 14.50, VS 18 2026 / C++20 | `/W4 /WX`; ASan yes, UBSan unavailable |
 
 ## The flat-render config (critical)
 

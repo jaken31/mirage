@@ -37,9 +37,9 @@ expensive to retrofit are in place from the first commit.
   and every artifact stores the git SHA that produced it.** The hash gives
   staleness-by-construction; the SHA gives provenance when config alone cannot
   explain a result.
-- **Sanitizers available from the first C++ file** (`-Wall -Wextra
-  -fsanitize=address,undefined`), as a separate build type rather than the default
-  - the production run needs `-O2` to hit P-6.
+- **Sanitizers available from the first C++ file** (`/W4 /WX /fsanitize=address`),
+  as a separate build type rather than the default - the production run needs `/O2`
+  to hit P-6. MSVC has no UBSan; see the sanitizer-cost section.
 
 ## Scope
 
@@ -233,7 +233,7 @@ of the frame budget - so the trigger is now `mj_step` time and end-to-end fps.
 
 No `--replay` mode: F-4 is tested by generating twice with the same seed and
 `cmp`-ing the pixel blobs. README states the caveat - bit-exactness holds for a
-fixed driver and build, and `-ffast-math` stays off.
+fixed driver and build, and `/fp:fast` stays off.
 
 ## Validator: emit measurements, not verdicts
 
@@ -428,30 +428,43 @@ lever is the FSQ levels table. Worth knowing before spending a week on it.
 
 ## Sanitizer cost, and keeping E-3 cheap
 
-E-3 requires ASan and UBSan clean on the **full** data-generation run. Published
-overheads:
+E-3 requires ASan and UBSan clean on the **full** data-generation run. **MSVC
+provides ASan only.** Microsoft lists `/fsanitize=undefined` and `/fsanitize=leak`
+among sanitizers it may ship *later*, so on this toolchain E-3's UBSan half has no
+implementation and there is no leak detection either. Two ways out, undecided:
+add a clang-cl configuration carrying UBSan, or restate E-3 as ASan-clean plus the
+UBSan-class defects `/W4 /WX` already rejects at compile time.
+
+Published overheads, for the ASan half that does exist:
 
 | Sanitizer | Measured |
 |---|---|
 | ASan | **73% average** on SPEC CPU2006 (original paper), worst case 2.6x; 103% average in a later study |
-| UBSan, full set | **up to 228%** on SPEC2006 across all 19 sub-sanitizers; 59% average elsewhere |
+| UBSan, full set | **up to 228%** on SPEC2006 across all 19 sub-sanitizers; 59% average elsewhere - relevant only if the clang-cl build happens |
 
 Both are pure-CPU benchmarks, and this loop is dominated by GPU render and pixel
 readback which ASan does not instrument, so end-to-end slowdown should land well
 below them. Measure; do not extrapolate from SPEC.
 
-- **Keep `-fsanitize=undefined`, a curated subset.** Adding `-fsanitize=integer` and
-  similar is the path to the 228% figure.
-- **Collect every finding in one pass** for the gate run: `ASAN_OPTIONS=halt_on_error=0`
-  and `-fsanitize-recover=undefined`. Invert both during development so you stop at
-  the fault.
-- **`-fno-omit-frame-pointer -g`**, or the stacks are useless and you pay the run twice.
-- **MuJoCo stays uninstrumented** (prebuilt `libmujoco`) - not your code, and the
+- **`/Zi` plus linker `/DEBUG` are not optional.** MSVC emits `C5072` without debug
+  info and `/WX` makes it fatal; the LLVM symbolizer also needs the PDB, or the
+  stacks are useless and you pay the run twice.
+- **`/fsanitize=address` is incompatible with `/RTC`, incremental linking,
+  edit-and-continue, and PGO.** The middle two are Debug defaults, and CMake sets
+  `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` to EditAndContinue on new projects - leaving
+  it there is a silent failure.
+- **The ASan runtime DLL has to be findable.** MSVC links it dynamically regardless
+  of `/MD` or `/MT`, and it sits next to `cl.exe`, on `PATH` only inside a Developer
+  prompt. `sim/CMakeLists.txt` copies it beside the binary.
+- **Collect every finding in one pass** for the gate run rather than stopping at the
+  first. MSVC honours a subset of `ASAN_OPTIONS` and documents `ASAN_SAVE_DUMPS`;
+  confirm the continue-on-error spelling against the MSVC docs before relying on it.
+- **MuJoCo stays uninstrumented** (prebuilt `mujoco.lib`) - not your code, and the
   case that matters is still caught, because ASan intercepts `malloc` globally so
   MuJoCo writing past the end of *your* buffer trips a redzone.
-- **A small LSan suppression file for the NVIDIA/WGL driver is expected.** The
-  standalone binary avoids the CPython suppression problem, not suppressions
-  entirely.
+- **No leak checking here**, so the LSan suppression file a Linux run would need
+  against the NVIDIA driver does not apply. A process that exits after one shard is
+  also where leaks matter least.
 - **Phase 0 is the only phase where this is clean: no CUDA in it.** ASan and CUDA
   coexist poorly - another reason to confine all C++ to Phase 0.
 
@@ -578,7 +591,7 @@ mirage/
   sim/                       # C++20, CMake, sanitizer build type
     CMakeLists.txt
     main.cpp                 # arg parse, seed, episode loop
-    egl_context.{h,cpp}      # E-2/F-3 risk area; prints vendor string at startup
+    gl_context.{h,cpp}       # GLFW hidden window; asserts GL_RENDERER names the GPU
     policy.{h,cpp}           # per-episode 50/50 random vs scripted reach
     truth.{h,cpp}            # reads mjData: contact mask, segmentation px counts, poses
     shard_writer.{h,cpp}     # pixels + meta blobs, sidecar JSON written last

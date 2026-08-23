@@ -62,7 +62,7 @@ Three sections only:
 - **Programming / Rendering** — `mjr_render`, offscreen buffers, and the EGL context. This is where your C++ harness lives.
 - **`record.cc` sample** — ships with MuJoCo, does exactly what your harness does: steps physics, renders offscreen, dumps pixels. Read it before writing yours.
 
-**Supplement with:** compile with `-Wall -Wextra -fsanitize=address,undefined` from the very first file. Sanitizers are the difference between C++ being tolerable and C++ being a nightmare when your instincts are not yet C++ instincts.
+**Supplement with:** build with `/W4 /WX /fsanitize=address` from the very first file (MSVC has no UBSan). Sanitizers are the difference between C++ being tolerable and C++ being a nightmare when your instincts are not yet C++ instincts.
 
 **Note:** you are not writing a physics engine. You are writing a data pipeline against a C API. That is more useful, and more like real infrastructure work, than hand-rolling collision detection.
 
