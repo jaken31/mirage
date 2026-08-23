@@ -14,57 +14,69 @@ replay, hardware render confirmed by the renderer name.
 
 ---
 
-## Blockers - nothing measured downstream is trustworthy until these pass
+## Blocker - nothing measured downstream is trustworthy until this passes
 
-**1. Get the GPU to P0.** Currently sitting at P4, 6.16 W, SM clock 1102 of
-3090 MHz. Every timing taken in this state is meaningless, and E-4 ("rerun matches
-within 5%") is unachievable while the clock drifts. Mains power, NVIDIA/Windows
-performance profile, close the ~50 desktop GPU consumers, then confirm:
+**Confirm the GPU reaches P0 under sustained load.** Not at idle - idle P4 is
+correct behaviour for a laptop GPU and is not the failure. The readback probe
+already sampled P2 while rendering, so the card does clock up; what is unverified
+is whether a sustained compute load pins it at P0 and holds there. Until that is
+shown, the bandwidth and fp16 matmul floors are unusable, because both are
+clock-linear, and E-4 ("rerun matches within 5%") cannot be claimed while the
+clock is free to drift mid-run.
+
+The check: run a fp16 matmul in a loop long enough to heat the card - 30 s or
+more - and sample in a second shell *while it runs*:
 
 ```bash
-nvidia-smi --query-gpu=pstate,clocks.current.sm,clocks.current.memory,power.draw,temperature.gpu --format=csv
+nvidia-smi --query-gpu=pstate,clocks.current.sm,clocks.current.memory,power.draw,temperature.gpu --format=csv -l 1
 ```
 
-**2. Windows render backend.** Rendering moved off WSL2 - its GPU graphics path is
-broken on this machine and no env override reaches hardware (evidence in `CLAUDE.md`,
-produced by `bench/egl_probe.py`). Install `mujoco` on Windows, create a context,
-assert `GL_RENDERER` names the RTX 5060. `GDI Generic` and `Microsoft Basic Render
-Driver` are the software fallbacks - ~50x slower, and they fail P-6 silently: no
-error, just a number that never reaches 500 fps.
-
-**3. C++ toolchain on Windows.** MSVC or MinGW, unverified. Phase 0's `sim/` files
-cannot start without it. Python covers the day-1 measurements, so this does not
-block today.
+Pass means pstate reads P0 for the whole window and the SM clock stays flat. A
+clock that starts high and decays is thermal or power throttling, not a pstate
+problem, and needs mains power plus the Windows/NVIDIA performance profile before
+retrying. Record the pstate next to every number this project ever reports.
 
 ---
 
 ## Day 1 measurements - four numbers, each gating a decision
 
-| Measure | Decides |
-|---|---|
-| Bandwidth + fp16 matmul, at P0 | whether the fork table's compute floors are real. They all derive from an assumed 448 GB/s, currently unverified |
-| **Per-call `mjr_readPixels` latency, in isolation** | **one-pass vs two-pass render**, and now also **GLFW vs hand-rolled WGL**. Above ~0.5 ms/call two passes cannot meet P-6; near ~30 ms/call GLFW itself is the problem |
-| `mj_step` time alone | remaining P-6 headroom |
-| Frames/sec end to end | whether parallel generation is needed at all |
+| Measure | Decides | State |
+|---|---|---|
+| Bandwidth + fp16 matmul, at P0 | whether the fork table's compute floors are real. They all derive from an assumed 448 GB/s, currently unverified | blocked on P0 |
+| Per-call `mjr_readPixels` latency, in isolation | one-pass vs two-pass render, and GLFW vs hand-rolled WGL | **done** - 25.4 us RGB, 49.6 us RGB+depth, 75.8 us with render, at P2. **Two-pass render confirmed, 13x margin.** Neither the single-pass collapse nor the WGL pbuffer is needed |
+| `mj_step` time alone | remaining P-6 headroom | **next.** Render+readback leaves ~1850 of the 2000 us frame, so this is the only day-1 number that can still break P-6 |
+| Frames/sec end to end | whether parallel generation is needed at all | after `mj_step` |
 
-Measure per-call, not end-to-end fps. End-to-end hides which term dominates, and
-the known failure mode here is fixed per-call cost rather than bandwidth.
+Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
+
+The readback result carried two side effects, both recorded in the architecture doc:
+the ~30 ms figure from MuJoCo discussion #2222 does not reproduce here, and the fixed
+cost that did exist was MuJoCo's own `shadowsize=4096` / `offsamples=4` defaults - so
+`<quality offsamples="0" shadowsize="0"/>` and `castshadow="false"` are now hard
+requirements on file 1 below, not cosmetic.
 
 ---
 
 ## Phase 0 build order
 
 1. `scene/arm_blocks.xml` - flat-render config, **two arm links in different
-   colours**, palette under 24 unique RGB, decorations off in `mjvOption`
+   colours**, palette under 24 unique RGB, decorations off in `mjvOption`.
+   `<quality offsamples="0" shadowsize="0"/>` and `castshadow="false"` are required
+   here - measured, they are worth 12x on `mjr_render`. `offsamples="0"` alone does
+   not give the <=24-colour palette: a smooth-shaded lit geom still spans many RGB
+   values, so the materials have to be flat/emissive too
 2. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
-3. `sim/gl_context.*` - WGL context plus `GL_RENDERER` assert. Riskiest file; do it
-   early. Hand-rolled WGL pbuffer only if the day-1 readback says GLFW is too slow
+3. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert. **De-risked** - the
+   day-1 readback cleared GLFW, so this is a plain port of what
+   `bench/readback_probe.py` already does. No pbuffer
 4. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
 5. `sim/truth.*` - segmentation pixel counts, contact mask, poses
 6. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
 7. `mirage/data.py` - memmap reader, episode-aware sampler
 8. `mirage/validator.py` - measurement vector, both modes, threshold sweep
 
+Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++17 confirmed
+by `sim/main.cpp`, and both `sim/build/` and `sim/build-asan/` configure and link.
 Sanitizer build type exists from file 1, as a build type and not the default.
 `-ffast-math` never.
 

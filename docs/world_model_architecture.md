@@ -111,31 +111,43 @@ the counts, discard the mask. Full occlusion is `visible_px == 0` - exactly what
 F-7 and Q-6 need, with no baseline-area render. Storing masks would double dataset
 size for nothing.
 
-**Two passes now; measure day 1; collapse to one if P-6 fails. Switch trigger: per-call
-`mjr_readPixels` latency above ~0.5 ms.** P-6's 500 fps allows 2 ms per frame total,
-and two readbacks pay the fixed cost twice.
+**Two passes. Measured 2026-08-23, and the switch trigger did not fire.** P-6's
+500 fps allows 2 ms per frame total; two passes cost 7.6% of it.
 
-That trigger exists because research changed the risk model. A MuJoCo discussion
-reports `mjr_readPixels` at ~55 ms at 1920x1080 and **~30 ms at 64x64** -
-resolution-*independent*, i.e. a fixed per-call cost - with `mjr_render` at ~12 ms
-offscreen versus <1 ms windowed. Root cause was **GLFW**.
+| Arm, 64x64, median of 5 x 1000 calls | us | spread |
+|---|---|---|
+| `mjr_readPixels`, RGB only | 25.4 | 22% |
+| `mjr_readPixels`, RGB + depth | 49.6 | 10% |
+| `mjr_render` + `mjr_readPixels`, RGB + depth | 75.8 | 65% |
 
-**Updated 2026-08-21: that number now applies directly.** EGL was the escape hatch
-and EGL is gone - WSL2 cannot render here, and Windows MuJoCo ships GLFW and OSMesa
-only. The project is on the exact backend the discussion measured. Three consequences:
+Two passes per frame = 151.6 us of the 2000 us budget, **13x margin**. Dropping
+depth would save 2.4% - take it only if `sim/truth.*` turns out not to need depth,
+do not contort anything for it. Conditions: RTX 5060 Laptop, GLFW offscreen FBO,
+Windows, **P2 / ~2500 MHz** (not P0 - readback is driver-bound, so the P0 rerun is
+expected to move this little). Probe: `bench/readback_probe.py`.
 
-- **The failure mode is fixed per-call cost, not bandwidth.** Reasoning from the
-  12 KB transfer size is the wrong axis. At 50-100 us/call there is ~6x margin on
-  P-6; at 1 ms/call two passes consume the entire budget and P-6 fails.
-- **The day-1 readback measurement now has three outcomes, not two.** Under
-  ~0.5 ms/call, keep two passes. Between that and ~30 ms, collapse to the single-pass
-  palette render below. At ~30 ms, GLFW itself is the bottleneck and neither render
-  path saves P-6.
-- **The fix for that third case is a hand-rolled WGL pbuffer context** via `ctypes`
-  on `opengl32.dll` - `wglCreateContext`, `wglMakeCurrent`, `WGL_ARB_pbuffer` -
-  bypassing GLFW's window machinery. Do not build it speculatively; it is triggered
-  by the measurement, like every other reserved option in this doc. OSMesa remains
-  an explicit anti-choice regardless: it is a CPU rasterizer.
+**The ~30 ms figure from MuJoCo discussion #2222 does not reproduce here.** The real
+fixed cost was MuJoCo's own visual defaults, `shadowsize=4096` and `offsamples=4`.
+Setting both to 0 cut `mjr_render` from 316 to 26 us (12x) and readback from 71 to
+25 us (2.8x). The readback half of that was an **MSAA resolve** - with `offsamples=4`,
+`mjr_readPixels` must collapse a 4x multisampled buffer before it can transfer
+anything. So `<quality offsamples="0" shadowsize="0"/>` plus `castshadow="false"`
+are **required** in `scene/arm_blocks.xml`, not cosmetic: they are what buys the P-6
+margin, and `offsamples="0"` is independently required for F-2's <=24-colour palette.
+
+Two limits on reusing these numbers. Readback cost is per-pixel and per-call, so
+25/50 us holds for any 64x64 scene - but the 26 us render is **one sphere and is a
+floor**; two arm links plus blocks will cost more, so re-run the render arm once
+`arm_blocks.xml` exists. And the 65% spread on the render arm is shrinking signal,
+not growing jitter (absolute jitter stayed ~40 us throughout); at 13x margin, record
+the spread next to the median and move on.
+
+**Retired triggers, kept for the record.** Readback above ~0.5 ms/call would have
+forced the single-pass palette render below; near ~30 ms would have forced a
+hand-rolled WGL pbuffer context (`wglCreateContext`, `wglMakeCurrent`,
+`WGL_ARB_pbuffer` via `ctypes` on `opengl32.dll`), the 3-to-5-day detour in
+`timeline.md`. Neither fired, so neither gets built. OSMesa remains an explicit
+anti-choice regardless: it is a CPU rasterizer.
 
 **Single-pass alternative, held in reserve: render segmentation only and synthesize
 RGB from a palette lookup.** Under F-2's config - ambient-only light, no shadows,
@@ -216,7 +228,8 @@ Single process to start. If P-6's 500 fps is missed, the fallback is N processes
 with shard *i* seeded `base + i` - GL contexts are per-thread so processes are the
 right unit regardless, and the shard being simultaneously the unit of determinism
 and the unit of parallelism keeps this a config change. Whether it is needed
-depends on the day-1 `mjr_readPixels` measurement, not on transfer size.
+depends on the day-1 numbers. Readback is no longer a candidate cause - it is 7.6%
+of the frame budget - so the trigger is now `mj_step` time and end-to-end fps.
 
 No `--replay` mode: F-4 is tested by generating twice with the same seed and
 `cmp`-ing the pixel blobs. README states the caveat - bit-exactness holds for a
@@ -592,9 +605,9 @@ Each **M** requirement gets one runnable check. Phase 0's gate is these passing.
 | Check | Method | Requirement |
 |---|---|---|
 | Clean build from scratch | `cmake -B build && cmake --build build`, documented in README | E-2 |
-| GL context is hardware, not software | binary prints `glGetString(GL_RENDERER)` after context creation; assert it names the RTX 5060, and reject `GDI Generic` / `Microsoft Basic Render Driver`. **Day 1** - a software fallback is ~50x slower and silently kills P-6. Deny by renderer name, not by vendor: vendor strings do not identify hardware | F-3 |
-| **Per-call `mjr_readPixels` latency, in isolation** | time N readbacks in a tight loop, report us/call. **Day 1, highest-risk number in the plan.** Not end-to-end fps, which hides which term dominates. Above ~0.5 ms/call, two-pass cannot meet P-6 and the single-pass path becomes mandatory | P-6 |
-| MuJoCo step time for this scene | time `mj_step` alone, report us/step | P-6 |
+| GL context is hardware, not software | binary prints `glGetString(GL_RENDERER)` after context creation; assert it names the RTX 5060, and reject `GDI Generic` / `Microsoft Basic Render Driver`. A software fallback is ~50x slower and silently kills P-6. Deny by renderer name, not by vendor: vendor strings do not identify hardware. **PASSED 2026-08-23** in `bench/readback_probe.py`; the C++ port keeps the same assert | F-3 |
+| **Per-call `mjr_readPixels` latency, in isolation** | time N readbacks in a tight loop, report us/call. Not end-to-end fps, which hides which term dominates. **PASSED 2026-08-23**: 25.4 us RGB / 49.6 us RGB+depth / 75.8 us with render, at P2. Two-pass render confirmed, 13x margin on P-6. `bench/readback_probe.py`. Re-run the render arm against the real scene | P-6 |
+| MuJoCo step time for this scene | time `mj_step` alone, report us/step. **Day 1, and now the only day-1 number that can still threaten P-6** - render+readback leaves ~1850 us of the 2000 us frame | P-6 |
 | **GPU at P0, and bandwidth re-measured there** | plugged in, performance profile, clocks locked, desktop GPU consumers closed; then re-run the copy and matmul benchmarks. **Day 1** - the fork table's compute floors all derive from the 448 GB/s assumption, currently unverified | E-4, P-4, and every P-row |
 | Determinism | generate twice, same seed, `cmp` the pixel blobs | F-4, E-1 |
 | Sanitizers clean | full generation run under ASan+UBSan, zero reports | E-3 |
@@ -624,10 +637,12 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | numpy structured field view / torch behaviour | **run empirically** (numpy + torch 2.9.1) | non-contiguous as expected, but `from_numpy` succeeds. **Corrected an overstated claim** - SoA is a simplicity argument, not a speed one |
 | W&B offline mode, background metrics process, `x_disable_stats` | W&B source and docs | confirmed |
 | ASan / UBSan overhead | published benchmarks | ASan 73% avg, UBSan full set up to 228%. **Corrected a too-optimistic guess** |
-| `mjr_readPixels` fixed per-call cost | MuJoCo discussion #2222 | ~30 ms at 64x64 under **GLFW**, resolution-independent. **Changed the P-6 risk model from bandwidth to fixed cost.** EGL was the fix; EGL is no longer available, so the project sits on the measured-slow backend and this is now the highest-risk number in the plan |
+| `mjr_readPixels` at ~30 ms per call under GLFW | MuJoCo discussion #2222, then **measured and refuted** | **Does not reproduce.** 25.4 us RGB / 49.6 us RGB+depth at 64x64, GLFW offscreen on Windows - three orders of magnitude below the reported figure. **This was the highest-risk number in the plan; it is now the safest.** No pbuffer, no single-pass collapse |
+| What the fixed per-call cost actually was | measured by toggling MuJoCo's visual defaults | `shadowsize=4096` and `offsamples=4`. Zeroing both cut `mjr_render` 316 -> 26 us and readback 71 -> 25 us; the readback share was an MSAA resolve. **Promotes `<quality offsamples="0" shadowsize="0"/>` + `castshadow="false"` from cosmetic to a hard `arm_blocks.xml` requirement with a measured justification** |
+| Hardware GL context on Windows (F-3) | `bench/readback_probe.py` asserts `GL_RENDERER` contains "RTX 5060" | confirmed - assert passes, offscreen framebuffer selected and non-empty. Not `GDI Generic`, not `Microsoft Basic Render Driver` |
 | Target machine: sm_120, CUDA version, WSL2 availability | queried | **partly refuted** - capability (12,0) and CUDA 13.0 > required 12.8 both confirmed, and it is a 5060 **Laptop** GPU, which the docs do not distinguish. But WSL2 running is not the same as WSL2 rendering: its GL path is broken here, so the project moved to Windows |
 | **448 GB/s memory bandwidth** | attempted, **measurement invalid** | got 66-77 GB/s, but at 6.16 W / P4 / 36% SM clock - the GPU never left a low-power state. Neither confirms nor refutes 448. **Re-measure at P0.** Surfaced the E-4 / P-4 power-state requirement above |
-| MuJoCo step time, and `mjr_readPixels` latency under GLFW on Windows | **not verified** | day-1 measurements, in the verification table above |
+| MuJoCo step time for this scene | **not verified** | the remaining day-1 measurement, and the only one that can still threaten P-6. ~1850 us of the 2000 us frame is left for it |
 | Offscreen GL on WSL2 | attempted, **refuted** | `bench/egl_probe.py` reaches a context but `GL_RENDERER` is `llvmpipe` (CPU) under every platform and driver override. Root cause is below Mesa: `dxgkio_query_adapter_info: Ioctl failed: -22`, no `/dev/dri` node. CUDA is unaffected - different ioctl path. **Moved all rendering to Windows** |
 | ASan-under-CPython specifics | **not verified in detail** | claim softened; the boundary decision does not depend on the magnitude |
 
