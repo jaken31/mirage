@@ -13,6 +13,7 @@ tokens_*.bin
 
 # C++ / CMake
 build/
+build-*/
 *.o
 *.so
 *.a
