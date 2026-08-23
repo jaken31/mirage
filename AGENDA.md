@@ -4,8 +4,13 @@ Design lives in `world_model_architecture.md`; requirements in
 `world_model_requirements.md`. This file is only the ordered list of what to do
 next. Keep it short - delete items as they land, do not accumulate history.
 
+Plain-English versions for non-engineering readers: `timeline.md` (schedule,
+gates, risks, with the study plan woven in) and `decision_notes.md` (every
+decision with its trigger and fallbacks). Both are derived from the two docs
+above - when a decision changes, change it there first.
+
 Phase 0 is budgeted at 5 days. Its gate: 300k frames on disk, deterministic
-replay, EGL verified.
+replay, hardware render confirmed by the renderer name.
 
 ---
 
@@ -62,6 +67,17 @@ the known failure mode here is fixed per-call cost rather than bandwidth.
 
 Sanitizer build type exists from file 1, as a build type and not the default.
 `-ffast-math` never.
+
+**Structural plan for these eight: `phase0_structural_plan.md`.** What each file
+owns, the calls it needs and the doc page for them, what "working" looks like,
+and the gotchas.
+
+**Standing practice: draft the structural plan for a phase when you reach it, not
+before.** One file per phase, same shape as the Phase 0 one - ownership table,
+build order with named APIs, done-when per file, gotchas. Phase 1's is the next
+one to write, and it can be drafted now because only the shard format gates it.
+Phases 2 and 4 cannot: Phase 2's numbers wait on the tokenizer PSNR, and Phase 4's
+whole plan derives from the Phase 3 profile. Drafting those early is guessing.
 
 ---
 

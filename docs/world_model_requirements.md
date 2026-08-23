@@ -12,7 +12,7 @@ Tiers: **M** = must (v1 does not ship without it), **S** = should, **C** = could
 |---|---|---|---|
 | F-1 | M | MuJoCo scene: 2-link planar arm, 3 pushable blocks, fixed camera | Scene loads, arm reaches all blocks |
 | F-2 | M | Flat-render config enforced: ambient-only light, no shadows, box geoms, no textures, offsamples=0 | Rendered frame has <= 24 unique RGB values |
-| F-3 | M | C++ harness renders offscreen via **EGL**, not OSMesa | `eglQueryString` reports a hardware vendor |
+| F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer | `glGetString(GL_RENDERER)` names the RTX 5060. Reject `GDI Generic` and `Microsoft Basic Render Driver`. Asserted at context creation |
 | F-4 | M | Deterministic given a seed | Same seed and action sequence give bit-identical frames |
 | F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Action histogram roughly uniform over 9 actions |
 | F-6 | M | Arm-block contact events exceed 5% of frames | Contact counter over a full run |
@@ -91,7 +91,7 @@ Q-5 replaces velocity-preservation. A model that hallucinates arm geometry is th
 | ID | Tier | Requirement | Acceptance test |
 |---|---|---|---|
 | E-1 | M | Deterministic sim given a seed | Same as F-4 |
-| E-2 | M | Clean build from scratch, MuJoCo and EGL linked | Documented in README, verified once |
+| E-2 | M | Clean build from scratch, MuJoCo and the offscreen GL context linked | Documented in README, verified once |
 | E-3 | M | ASan and UBSan clean on the full data-generation run | Zero reports |
 | E-4 | M | Every bench number reproducible from a config hash | Rerun matches within 5% |
 | E-5 | M | Append-only run log: config hash, change, number, conclusion | One entry per run |
@@ -104,7 +104,7 @@ Every **M** row passes and the ladder table is populated end to end.
 
 ## 4. Explicit non-requirements
 
-Photorealism. Sim-to-real transfer. Policy learning or planning on top of the model. Generalization to unseen scenes. Multi-arm. Dexterous or grasping manipulation. Stability past 500 rollout steps. Windows-native support.
+Photorealism. Sim-to-real transfer. Policy learning or planning on top of the model. Generalization to unseen scenes. Multi-arm. Dexterous or grasping manipulation. Stability past 500 rollout steps. **Linux support** - the project runs on Windows and nothing needs to be portable off it.
 
 ## 5. Requirements at risk
 
@@ -114,4 +114,4 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | P-1 | 30 fps is tight on the 144-token path | DiagD becomes required. If still short, report the curve and accept 20 fps rather than cutting a ladder rung |
 | Q-6 | Object permanence may simply not emerge at 15M params | Stays S. Report the measurement either way, including a negative result |
 | R-3 | 20M may be too small for Q-4 | Raise to 25M only if profiling shows headroom. Never above 40M |
-| P-6 | EGL misconfigured falls back to software rendering, 50x slower | Verify vendor string in Phase 0, day 1 |
+| P-6 | Two risks now. A software rasterizer instead of the GPU, ~50x slower; and `mjr_readPixels` fixed per-call cost under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms collapse to the single-pass render, near ~30 ms hand-roll a WGL pbuffer context |

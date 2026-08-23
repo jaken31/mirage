@@ -9,6 +9,13 @@ flat render + EGL, FSQ tokenizer at 512 codes / stride 8, a 384d x 8L decoder-on
 dynamics transformer, the 5-rung inference ladder, a 12-week phase order, and the
 target hardware (RTX 5060, sm_120, WSL2).
 
+**Superseded 2026-08-21: EGL and WSL2 are out.** WSL2's GPU graphics path is broken
+on this machine - no `/dev/dri` node, Mesa falls back to a CPU rasterizer - so the
+project runs natively on Windows, where MuJoCo's only viable backend is GLFW.
+Measured, not assumed; evidence in `CLAUDE.md` and `bench/egl_probe.py`. Read every
+"EGL" below as "the offscreen GL context"; the render-path section records what this
+changed.
+
 They say nothing about **how the pieces meet**. Every remaining architectural
 question is an interface question. This doc records those decisions so Phase 0 can
 start without re-deriving them, and so the few cross-cutting constraints that are
@@ -111,15 +118,24 @@ and two readbacks pay the fixed cost twice.
 That trigger exists because research changed the risk model. A MuJoCo discussion
 reports `mjr_readPixels` at ~55 ms at 1920x1080 and **~30 ms at 64x64** -
 resolution-*independent*, i.e. a fixed per-call cost - with `mjr_render` at ~12 ms
-offscreen versus <1 ms windowed. Root cause was **GLFW**; the fix was EGL, already
-this project's choice, so the number does not apply. Two things do:
+offscreen versus <1 ms windowed. Root cause was **GLFW**.
+
+**Updated 2026-08-21: that number now applies directly.** EGL was the escape hatch
+and EGL is gone - WSL2 cannot render here, and Windows MuJoCo ships GLFW and OSMesa
+only. The project is on the exact backend the discussion measured. Three consequences:
 
 - **The failure mode is fixed per-call cost, not bandwidth.** Reasoning from the
   12 KB transfer size is the wrong axis. At 50-100 us/call there is ~6x margin on
   P-6; at 1 ms/call two passes consume the entire budget and P-6 fails.
-- **GLFW is an explicit anti-choice for the offscreen path, alongside OSMesa.** The
-  roadmap warns only about OSMesa; this case shows GLFW offscreen is ~30x worse
-  than EGL at our resolution.
+- **The day-1 readback measurement now has three outcomes, not two.** Under
+  ~0.5 ms/call, keep two passes. Between that and ~30 ms, collapse to the single-pass
+  palette render below. At ~30 ms, GLFW itself is the bottleneck and neither render
+  path saves P-6.
+- **The fix for that third case is a hand-rolled WGL pbuffer context** via `ctypes`
+  on `opengl32.dll` - `wglCreateContext`, `wglMakeCurrent`, `WGL_ARB_pbuffer` -
+  bypassing GLFW's window machinery. Do not build it speculatively; it is triggered
+  by the measurement, like every other reserved option in this doc. OSMesa remains
+  an explicit anti-choice regardless: it is a CPU rasterizer.
 
 **Single-pass alternative, held in reserve: render segmentation only and synthesize
 RGB from a palette lookup.** Under F-2's config - ambient-only light, no shadows,
@@ -420,7 +436,7 @@ below them. Measure; do not extrapolate from SPEC.
 - **MuJoCo stays uninstrumented** (prebuilt `libmujoco`) - not your code, and the
   case that matters is still caught, because ASan intercepts `malloc` globally so
   MuJoCo writing past the end of *your* buffer trips a redzone.
-- **A small LSan suppression file for the NVIDIA/EGL driver is expected.** The
+- **A small LSan suppression file for the NVIDIA/WGL driver is expected.** The
   standalone binary avoids the CPython suppression problem, not suppressions
   entirely.
 - **Phase 0 is the only phase where this is clean: no CUDA in it.** ASan and CUDA
@@ -470,9 +486,16 @@ The finding that matters is not the bandwidth number:
    run, that is a project-level constraint worth knowing in week 1 rather than
    week 10 - it would compress every margin in the fork table simultaneously.
 
-Environment otherwise checks out: WSL2 Ubuntu-24.04 is already running, so Phase
-0's EGL path has a home; sm_120 is confirmed at capability (12, 0); CUDA 13.0
-clears the docs' 12.8 requirement for Blackwell.
+Environment otherwise checks out: sm_120 is confirmed at capability (12, 0), and
+CUDA 13.0 clears the docs' 12.8 requirement for Blackwell.
+
+**Corrected 2026-08-21:** the earlier claim that "WSL2 Ubuntu-24.04 is running, so
+Phase 0's EGL path has a home" was wrong. WSL2 has a home for CUDA, not for
+rendering: `dxgkrnl` fails adapter enumeration (`Ioctl failed: -22`), no `/dev/dri`
+node appears, and Mesa reports `Falling back to surfaceless swrast without DRM`.
+Two restarts, `wsl --update --pre-release`, and every platform and driver override
+were tried. Everything now runs natively on Windows. The C++ toolchain there - MSVC
+or MinGW - is unverified and is the remaining Phase 0 prerequisite.
 
 ## Feasibility cross-check, and what the project argues
 
@@ -569,7 +592,7 @@ Each **M** requirement gets one runnable check. Phase 0's gate is these passing.
 | Check | Method | Requirement |
 |---|---|---|
 | Clean build from scratch | `cmake -B build && cmake --build build`, documented in README | E-2 |
-| EGL is hardware, not software | binary prints `eglQueryString(EGL_VENDOR)`; assert not a software renderer. **Day 1** - a software fallback is ~50x slower and silently kills P-6 | F-3 |
+| GL context is hardware, not software | binary prints `glGetString(GL_RENDERER)` after context creation; assert it names the RTX 5060, and reject `GDI Generic` / `Microsoft Basic Render Driver`. **Day 1** - a software fallback is ~50x slower and silently kills P-6. Deny by renderer name, not by vendor: vendor strings do not identify hardware | F-3 |
 | **Per-call `mjr_readPixels` latency, in isolation** | time N readbacks in a tight loop, report us/call. **Day 1, highest-risk number in the plan.** Not end-to-end fps, which hides which term dominates. Above ~0.5 ms/call, two-pass cannot meet P-6 and the single-pass path becomes mandatory | P-6 |
 | MuJoCo step time for this scene | time `mj_step` alone, report us/step | P-6 |
 | **GPU at P0, and bandwidth re-measured there** | plugged in, performance profile, clocks locked, desktop GPU consumers closed; then re-run the copy and matmul benchmarks. **Day 1** - the fork table's compute floors all derive from the 448 GB/s assumption, currently unverified | E-4, P-4, and every P-row |
@@ -601,10 +624,11 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | numpy structured field view / torch behaviour | **run empirically** (numpy + torch 2.9.1) | non-contiguous as expected, but `from_numpy` succeeds. **Corrected an overstated claim** - SoA is a simplicity argument, not a speed one |
 | W&B offline mode, background metrics process, `x_disable_stats` | W&B source and docs | confirmed |
 | ASan / UBSan overhead | published benchmarks | ASan 73% avg, UBSan full set up to 228%. **Corrected a too-optimistic guess** |
-| `mjr_readPixels` fixed per-call cost | MuJoCo discussion #2222 | ~30 ms at 64x64 under **GLFW**, resolution-independent; EGL is the fix. **Changed the P-6 risk model from bandwidth to fixed cost** |
-| Target machine: sm_120, CUDA version, WSL2 availability | queried | **confirmed** - capability (12,0), CUDA 13.0 > required 12.8, WSL2 Ubuntu-24.04 running. Note it is a 5060 **Laptop** GPU, which the docs do not distinguish |
+| `mjr_readPixels` fixed per-call cost | MuJoCo discussion #2222 | ~30 ms at 64x64 under **GLFW**, resolution-independent. **Changed the P-6 risk model from bandwidth to fixed cost.** EGL was the fix; EGL is no longer available, so the project sits on the measured-slow backend and this is now the highest-risk number in the plan |
+| Target machine: sm_120, CUDA version, WSL2 availability | queried | **partly refuted** - capability (12,0) and CUDA 13.0 > required 12.8 both confirmed, and it is a 5060 **Laptop** GPU, which the docs do not distinguish. But WSL2 running is not the same as WSL2 rendering: its GL path is broken here, so the project moved to Windows |
 | **448 GB/s memory bandwidth** | attempted, **measurement invalid** | got 66-77 GB/s, but at 6.16 W / P4 / 36% SM clock - the GPU never left a low-power state. Neither confirms nor refutes 448. **Re-measure at P0.** Surfaced the E-4 / P-4 power-state requirement above |
-| MuJoCo step time, and `mjr_readPixels` latency under EGL | **not verified** | day-1 measurements, in the verification table above |
+| MuJoCo step time, and `mjr_readPixels` latency under GLFW on Windows | **not verified** | day-1 measurements, in the verification table above |
+| Offscreen GL on WSL2 | attempted, **refuted** | `bench/egl_probe.py` reaches a context but `GL_RENDERER` is `llvmpipe` (CPU) under every platform and driver override. Root cause is below Mesa: `dxgkio_query_adapter_info: Ioctl failed: -22`, no `/dev/dri` node. CUDA is unaffected - different ioctl path. **Moved all rendering to Windows** |
 | ASan-under-CPython specifics | **not verified in detail** | claim softened; the boundary decision does not depend on the magnitude |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
