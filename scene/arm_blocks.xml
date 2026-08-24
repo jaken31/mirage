@@ -1,0 +1,70 @@
+<mujoco model="arm_blocks">
+	<compiler angle="radian"/>
+
+	<!-- Euler is the cheapest integrator; mj_step time is a P-6 constraint. -->
+	<option timestep="0.002" integrator="Euler" gravity="0 0 -9.81"/>
+
+	<visual>
+		<!-- Offscreen buffer matches the capture size exactly. -->
+		<global offwidth="64" offheight="64"/>
+		<!-- offsamples=0: no MSAA. Buys 12x on mjr_render, keeps the palette
+		     under 24, and stops segmentation ids being blended. shadowsize=0
+		     disables shadow mapping entirely. -->
+		<quality offsamples="0" shadowsize="0"/>
+		<!-- Ambient-only light: every face of a box gets the identical colour,
+		     so a geom renders as exactly one RGB value. This is what makes the
+		     palette countable. Any diffuse or specular term reintroduces
+		     shading ramps and the colour count explodes. -->
+		<headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
+	</visual>
+
+	<default>
+		<geom type="box" friction="1 0.005 0.0001"/>
+		<joint armature="0.01" damping="0.5"/>
+		<motor ctrllimited="true" ctrlrange="-1 1" gear="2"/>
+	</default>
+
+	<worldbody>
+		<!-- Look direction is -z of the camera frame; xyaxes gives x then y.
+		     Low elevation (~24 deg) so the arm can pass in front of blocks and
+		     blocks can hide each other - both needed for F-7 occlusion. -->
+		<camera name="main" pos="0 -0.5 0.22" xyaxes="1 0 0 0 0.22 0.5"/>
+
+		<!-- Table top sits at z=0. Sized to fill the frame so the background
+		     never appears, which keeps one more colour out of the palette. -->
+		<geom name="table" pos="0 0 -0.02" size="1.2 1.2 0.02" rgba="0.30 0.32 0.38 1"/>
+
+		<!-- Arm: two hinges about z, so the action space is 3^2 = 9.
+		     Links are 0.06 tall against 0.05 blocks, so a link crossing in
+		     front of a block can occlude it completely. -->
+		<body name="link0_body" pos="0 0 0.04">
+			<joint name="joint0" type="hinge" axis="0 0 1" limited="false"/>
+			<geom name="link0" pos="0.09 0 0" size="0.09 0.020 0.030" rgba="0.90 0.75 0.10 1"/>
+			<body name="link1_body" pos="0.18 0 0">
+				<joint name="joint1" type="hinge" axis="0 0 1" limited="true" range="-2.5 2.5"/>
+				<geom name="link1" pos="0.075 0 0" size="0.075 0.018 0.028" rgba="0.10 0.65 0.90 1"/>
+			</body>
+		</body>
+
+		<!-- Three blocks, each its own body with a free joint: nq = 2 + 3*7 = 23.
+		     Placed past link0's own length so joint1 has to participate to
+		     reach them, and inside the 0.33 total reach so contact is possible. -->
+		<body name="block0_body" pos="0.20 0.06 0.025">
+			<freejoint name="block0_free"/>
+			<geom name="block0" size="0.025 0.025 0.025" rgba="0.85 0.10 0.10 1"/>
+		</body>
+		<body name="block1_body" pos="0.12 -0.17 0.025">
+			<freejoint name="block1_free"/>
+			<geom name="block1" size="0.025 0.025 0.025" rgba="0.15 0.75 0.20 1"/>
+		</body>
+		<body name="block2_body" pos="-0.11 0.18 0.025">
+			<freejoint name="block2_free"/>
+			<geom name="block2" size="0.025 0.025 0.025" rgba="0.55 0.25 0.85 1"/>
+		</body>
+	</worldbody>
+
+	<actuator>
+		<motor name="motor0" joint="joint0"/>
+		<motor name="motor1" joint="joint1"/>
+	</actuator>
+</mujoco>

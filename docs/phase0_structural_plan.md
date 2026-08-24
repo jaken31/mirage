@@ -76,10 +76,12 @@ palette the validator parses, and one of the three inputs to `data_hash`.
 
 Four things it must carry, all measured rather than stylistic:
 
-1. `<quality offsamples="0" shadowsize="0"/>` and `castshadow="false"` on every
-   geom - together worth 12x on `mjr_render`.
-2. Flat or emissive materials. `offsamples="0"` alone does not give the
-   <=24-colour palette; a smooth-shaded lit geom still spans many RGB values.
+1. `<quality offsamples="0" shadowsize="0"/>` - together worth 12x on `mjr_render`.
+   Not `castshadow`: that is a `<light>` attribute and MuJoCo rejects it on a geom.
+2. An ambient-only headlight (`diffuse="0 0 0" specular="0 0 0"`). `offsamples="0"`
+   alone does not give the <=24-colour palette; a diffuse-lit box shades per face,
+   so one `rgba` becomes three entries. No materials required - plain `rgba` under
+   ambient-only light measured 6 colours on the first working scene.
 3. `offwidth`/`offheight` in `<visual><global>`, or the offscreen buffer stays at
    its 640x480 default.
 4. Two arm links in different colours, three blocks in three more. Current count
@@ -129,8 +131,9 @@ Order of operations:
 4. `mjr_setBuffer` with `mjFB_OFFSCREEN`, so rendering targets the offscreen
    buffer and not the window.
 
-Doc page: **Programming → Rendering**. Read the `record.cc` sample that ships
-with MuJoCo before writing this - it does exactly this sequence.
+Doc page: **Programming → Rendering**. Read the `record.cc` sample before writing
+this - it does exactly this sequence. It lives in the MuJoCo GitHub repo under
+`sample/`, not in the pip wheel.
 
 **Working when:** the binary prints the renderer name at startup and it names
 your GPU.

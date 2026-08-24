@@ -39,6 +39,22 @@ Assume I am a complete beginner in this field. That means:
 - `docs/world_model_requirements.md` - the `P-` / `F-` / `E-` / `Q-` requirement
   IDs referenced everywhere else.
 
+## Every requirement claim carries its evidence
+
+A doc line naming a specific flag, attribute, or API as a **requirement** must carry
+a measurement or the command that verified it. With no evidence, write it as
+unverified rather than as a requirement. Record verifications in the verification log
+at the end of `docs/world_model_architecture.md` - that table is the mechanism, use
+it instead of inventing another.
+
+Why: every wrong claim found so far was one nobody had executed - `castshadow="false"`
+(not a geom attribute at all, MuJoCo rejects it), `egl_context` (never built),
+`-fsanitize=address,undefined` (MSVC has no UBSan), `g++ 13+` (wrong compiler
+entirely). Every claim with a number next to it held up. A platform change
+invalidates spellings and capabilities wholesale while leaving the reasoning intact,
+so after one, re-check the flags and expect the stale copies to outnumber the
+decision that caused them.
+
 ## Environment facts (verified 2026-08-21)
 
 **Everything runs on Windows.** Python 3.14.2, torch 2.9.1+cu130 with working
@@ -54,10 +70,10 @@ cleanly for this Python.
   WSL still works, because `libcuda` uses a different ioctl path - but there is
   no reason to use it now. Do not re-litigate this; the probe is the evidence.
 - **Windows MuJoCo has no EGL.** The backends are GLFW (default) and OSMesa
-  (software - never). A MuJoCo discussion reports `mjr_readPixels` at ~30 ms per
-  call under GLFW, independent of resolution. That makes the day-1 readback
-  measurement the highest-risk number in the plan. If it lands near 30 ms, the
-  fix is a hand-rolled WGL pbuffer context via `ctypes` on `opengl32.dll`.
+  (software - never). The ~30 ms `mjr_readPixels` figure from MuJoCo discussion
+  #2222 **does not reproduce**: measured 25.4 us RGB, 75.8 us with render, at 64x64
+  under GLFW offscreen. Two-pass render confirmed with a 13x margin, so no WGL
+  pbuffer and no single-pass collapse. Probe: `bench/readback_probe.py`.
 - Hardware check on Windows: `GL_RENDERER` must name the GPU. Reject
   `GDI Generic` and `Microsoft Basic Render Driver` - those are the software
   fallbacks. Read it once, right after MuJoCo creates its context.

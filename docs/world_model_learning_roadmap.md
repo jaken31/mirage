@@ -60,7 +60,7 @@ The standard free resource, actively maintained through C++23. Do not read all 2
 Three sections only:
 - **Overview and XML reference** — enough to write `arm_blocks.xml`. Focus on `<worldbody>`, joints, geoms, actuators, and the `<visual>` block that controls your flat render.
 - **Programming / Rendering** — `mjr_render`, offscreen buffers, and the EGL context. This is where your C++ harness lives.
-- **`record.cc` sample** — ships with MuJoCo, does exactly what your harness does: steps physics, renders offscreen, dumps pixels. Read it before writing yours.
+- **`record.cc` sample** — in the MuJoCo GitHub repo under `sample/`, **not** in the pip wheel (checked: `mujoco` 3.12.0 ships headers and two test XMLs only). Does exactly what your harness does: steps physics, renders offscreen, dumps pixels. Read it before writing yours.
 
 **Supplement with:** build with `/W4 /WX /fsanitize=address` from the very first file (MSVC has no UBSan). Sanitizers are the difference between C++ being tolerable and C++ being a nightmare when your instincts are not yet C++ instincts.
 

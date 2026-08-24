@@ -52,8 +52,10 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
 The readback result carried two side effects, both recorded in the architecture doc:
 the ~30 ms figure from MuJoCo discussion #2222 does not reproduce here, and the fixed
 cost that did exist was MuJoCo's own `shadowsize=4096` / `offsamples=4` defaults - so
-`<quality offsamples="0" shadowsize="0"/>` and `castshadow="false"` are now hard
-requirements on file 1 below, not cosmetic.
+`<quality offsamples="0" shadowsize="0"/>` is now a hard requirement on file 1
+below, not cosmetic. (`castshadow` is a `<light>` attribute, not a geom one - MuJoCo
+rejects it on a geom. With no `<light>` elements and an ambient-only headlight there
+is nothing to disable.)
 
 ---
 
@@ -61,10 +63,12 @@ requirements on file 1 below, not cosmetic.
 
 1. `scene/arm_blocks.xml` - flat-render config, **two arm links in different
    colours**, palette under 24 unique RGB, decorations off in `mjvOption`.
-   `<quality offsamples="0" shadowsize="0"/>` and `castshadow="false"` are required
-   here - measured, they are worth 12x on `mjr_render`. `offsamples="0"` alone does
-   not give the <=24-colour palette: a smooth-shaded lit geom still spans many RGB
-   values, so the materials have to be flat/emissive too
+   `<quality offsamples="0" shadowsize="0"/>` plus an ambient-only headlight
+   (`diffuse="0 0 0" specular="0 0 0"`) are required here - the quality settings are
+   measured at 12x on `mjr_render`, and the headlight is what collapses the palette.
+   `offsamples="0"` alone is not enough: a diffuse-lit box shades per face, so one
+   `rgba` becomes three palette entries. No materials needed - plain `rgba` under an
+   ambient-only headlight measured 6 colours
 2. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
 3. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert. **De-risked** - the
    day-1 readback cleared GLFW, so this is a plain port of what
@@ -75,10 +79,10 @@ requirements on file 1 below, not cosmetic.
 7. `mirage/data.py` - memmap reader, episode-aware sampler
 8. `mirage/validator.py` - measurement vector, both modes, threshold sweep
 
-Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++17 confirmed
-by `sim/main.cpp`, and both `sim/build/` and `sim/build-asan/` configure and link.
-Sanitizer build type exists from file 1, as a build type and not the default.
-`-ffast-math` never.
+Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed
+by `sim/main.cpp` printing `202002`, and both `sim/build/` and `sim/build-asan/`
+build and run. Sanitizer build type exists from file 1, as a build type and not the
+default. `/fp:fast` never.
 
 **Structural plan for these eight: `phase0_structural_plan.md`.** What each file
 owns, the calls it needs and the doc page for them, what "working" looks like,

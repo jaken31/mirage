@@ -131,9 +131,17 @@ fixed cost was MuJoCo's own visual defaults, `shadowsize=4096` and `offsamples=4
 Setting both to 0 cut `mjr_render` from 316 to 26 us (12x) and readback from 71 to
 25 us (2.8x). The readback half of that was an **MSAA resolve** - with `offsamples=4`,
 `mjr_readPixels` must collapse a 4x multisampled buffer before it can transfer
-anything. So `<quality offsamples="0" shadowsize="0"/>` plus `castshadow="false"`
-are **required** in `scene/arm_blocks.xml`, not cosmetic: they are what buys the P-6
-margin, and `offsamples="0"` is independently required for F-2's <=24-colour palette.
+anything. So `<quality offsamples="0" shadowsize="0"/>` is **required** in
+`scene/arm_blocks.xml`, not cosmetic: it is what buys the P-6 margin, and
+`offsamples="0"` is independently required for F-2's <=24-colour palette.
+
+`castshadow="false"` was listed here too and is wrong: `castshadow` is an attribute
+of `<light>`, and MuJoCo's compiler rejects it on a geom. The scene declares no
+`<light>` elements, so shadow casting has no source to disable. The second real
+requirement is an **ambient-only headlight** (`diffuse="0 0 0" specular="0 0 0"`):
+diffuse shading varies per face, so one `rgba` becomes three palette entries per
+box. Measured 2026-08-23 on the first working scene - adding the `<visual>` block
+took the colour count from 28 to 6.
 
 Two limits on reusing these numbers. Readback cost is per-pixel and per-call, so
 25/50 us holds for any 64x64 scene - but the 26 us render is **one sphere and is a
@@ -646,18 +654,24 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | All dataset / meta / token-cache / KV / param / budget / diagonal arithmetic | computed | confirmed; values in the tables above |
 | Ingredients doc's budget table | recomputed from first principles | KV 28.1/59.7 us vs its "~28/~60"; weights 65.0 us vs "~67"; params 14.56M vs "15M"; DiagD 4.27x/6.26x vs "4.3x/6.3x". **The doc's arithmetic is sound.** |
 | Compression ratio identical across the fork | closed form + computed | exactly `1536/9` both, resolution-independent |
-| `mjRND_SEGMENT` / `mjRND_IDCOLOR` exist, set via `mjvScene.flags` | MuJoCo API docs | confirmed; IDCOLOR encodes segid+1 |
+| `mjRND_SEGMENT` / `mjRND_IDCOLOR` exist, set via `mjvScene.flags` | docs, then **run empirically** on `arm_blocks.xml` | confirmed. Decoding RGB as `r + 256g + 65536b - 1` gives per-geom pixel counts that track the arm's pose, so the F-7 measurement path works end to end |
 | numpy structured field view / torch behaviour | **run empirically** (numpy + torch 2.9.1) | non-contiguous as expected, but `from_numpy` succeeds. **Corrected an overstated claim** - SoA is a simplicity argument, not a speed one |
 | W&B offline mode, background metrics process, `x_disable_stats` | W&B source and docs | confirmed |
 | ASan / UBSan overhead | published benchmarks | ASan 73% avg, UBSan full set up to 228%. **Corrected a too-optimistic guess** |
 | `mjr_readPixels` at ~30 ms per call under GLFW | MuJoCo discussion #2222, then **measured and refuted** | **Does not reproduce.** 25.4 us RGB / 49.6 us RGB+depth at 64x64, GLFW offscreen on Windows - three orders of magnitude below the reported figure. **This was the highest-risk number in the plan; it is now the safest.** No pbuffer, no single-pass collapse |
-| What the fixed per-call cost actually was | measured by toggling MuJoCo's visual defaults | `shadowsize=4096` and `offsamples=4`. Zeroing both cut `mjr_render` 316 -> 26 us and readback 71 -> 25 us; the readback share was an MSAA resolve. **Promotes `<quality offsamples="0" shadowsize="0"/>` + `castshadow="false"` from cosmetic to a hard `arm_blocks.xml` requirement with a measured justification** |
+| What the fixed per-call cost actually was | measured by toggling MuJoCo's visual defaults | `shadowsize=4096` and `offsamples=4`. Zeroing both cut `mjr_render` 316 -> 26 us and readback 71 -> 25 us; the readback share was an MSAA resolve. **Promotes `<quality offsamples="0" shadowsize="0"/>` from cosmetic to a hard `arm_blocks.xml` requirement with a measured justification.** `castshadow="false"` was listed alongside it in error - it is a `<light>` attribute and the compiler rejects it on a geom |
 | Hardware GL context on Windows (F-3) | `bench/readback_probe.py` asserts `GL_RENDERER` contains "RTX 5060" | confirmed - assert passes, offscreen framebuffer selected and non-empty. Not `GDI Generic`, not `Microsoft Basic Render Driver` |
 | Target machine: sm_120, CUDA version, WSL2 availability | queried | **partly refuted** - capability (12,0) and CUDA 13.0 > required 12.8 both confirmed, and it is a 5060 **Laptop** GPU, which the docs do not distinguish. But WSL2 running is not the same as WSL2 rendering: its GL path is broken here, so the project moved to Windows |
 | **448 GB/s memory bandwidth** | attempted, **measurement invalid** | got 66-77 GB/s, but at 6.16 W / P4 / 36% SM clock - the GPU never left a low-power state. Neither confirms nor refutes 448. **Re-measure at P0.** Surfaced the E-4 / P-4 power-state requirement above |
 | MuJoCo step time for this scene | **not verified** | the remaining day-1 measurement, and the only one that can still threaten P-6. ~1850 us of the 2000 us frame is left for it |
 | Offscreen GL on WSL2 | attempted, **refuted** | `bench/egl_probe.py` reaches a context but `GL_RENDERER` is `llvmpipe` (CPU) under every platform and driver override. Root cause is below Mesa: `dxgkio_query_adapter_info: Ioctl failed: -22`, no `/dev/dri` node. CUDA is unaffected - different ioctl path. **Moved all rendering to Windows** |
 | ASan-under-CPython specifics | **not verified in detail** | claim softened; the boundary decision does not depend on the magnitude |
+| **Ambient-only headlight is what collapses the palette** | measured on the first working scene | Adding `<visual>` with `offsamples=0`, `shadowsize=0` and `headlight diffuse="0 0 0" specular="0 0 0"` took the colour count 28 -> 6. Plain `rgba` needs no materials: diffuse light shades per face, so one `rgba` becomes three entries. **Replaces the erroneous `castshadow` requirement** |
+| First working `arm_blocks.xml` meets F-2, F-6, F-7 | measured | `nq=23` (2 hinges + 3 free joints), 6 colours, arm-block contact in 95.8% of constant-drive steps against F-6's 5% floor, and block0 at **0 visible px** at rest rising to 68 px when the arm swings - F-7's full-occlusion mechanic demonstrated. The contact figure is a full-torque drive, not the 50/50 policy |
+| `<camera mode="targetbody">` without `target` | **run, silently wrong** | compiles clean, `cam_targetbodyid = -1`, camera aims nowhere. Renders empty ground with no error - the failure mode a dataset run would not survive. Give `target=` or set orientation with `xyaxes` |
+| "Decorations off in `mjvOption`" by zeroing the flag array | **run, refuted as written** | `mjv_defaultOption` already leaves every decoration off; zeroing all flags also clears `mjVIS_STATIC` and worldbody geoms stop drawing entirely. Do not zero the array |
+| MSVC sanitizer capability | Microsoft docs, then **built and run** | ASan only: `/fsanitize=undefined` and `/fsanitize=leak` are listed as possible future work, so **E-3's UBSan half has no implementation and there is no leak detection**. ASan also needs `/Zi` (`C5072` is fatal under `/WX`) and its runtime DLL copied beside the binary - `/MT` does not remove the dynamic import. C++20 builds clean |
+| `record.cc` "ships with MuJoCo" | **checked the installed wheel** | refuted for pip: `mujoco` 3.12.0 ships headers and two test XMLs, no samples and no model zoo. Read it in the GitHub repo instead |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
 [Debloating ASan (USENIX Sec '22)](https://www.usenix.org/system/files/sec22summer_zhang-yuchen.pdf),
