@@ -44,47 +44,30 @@ retrying. Record the pstate next to every number this project ever reports.
 |---|---|---|
 | Bandwidth + fp16 matmul, at P0 | whether the fork table's compute floors are real. They all derive from an assumed 448 GB/s, currently unverified | blocked on P0 |
 | Per-call `mjr_readPixels` latency, in isolation | one-pass vs two-pass render, and GLFW vs hand-rolled WGL | **done** - 25.4 us RGB, 49.6 us RGB+depth, 75.8 us with render, at P2. **Two-pass render confirmed, 13x margin.** Neither the single-pass collapse nor the WGL pbuffer is needed |
-| `mj_step` time alone | remaining P-6 headroom | **next.** Render+readback leaves ~1850 of the 2000 us frame, so this is the only day-1 number that can still break P-6 |
-| Frames/sec end to end | whether parallel generation is needed at all | after `mj_step` |
-
+| `mj_step` time alone | remaining P-6 headroom | **done** - 10.8 us median driven, 171x under the ~1850 us allowance. P-6 is not at risk from physics |
+| Frames/sec end to end | whether parallel generation is needed at all | **narrowed to one term** - `mjv_updateScene` is the only per-frame cost still unmeasured; `readback_probe.py:42` calls it outside its timing loop. Measure it per-call and sum, do not build a Python end-to-end loop |
 Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
-
-The readback result carried two side effects, both recorded in the architecture doc:
-the ~30 ms figure from MuJoCo discussion #2222 does not reproduce here, and the fixed
-cost that did exist was MuJoCo's own `shadowsize=4096` / `offsamples=4` defaults - so
-`<quality offsamples="0" shadowsize="0"/>` is now a hard requirement on file 1
-below, not cosmetic. (`castshadow` is a `<light>` attribute, not a geom one - MuJoCo
-rejects it on a geom. With no `<light>` elements and an ambient-only headlight there
-is nothing to disable.)
 
 ---
 
 ## Phase 0 build order
 
-1. `scene/arm_blocks.xml` - flat-render config, **two arm links in different
-   colours**, palette under 24 unique RGB, decorations off in `mjvOption`.
-   `<quality offsamples="0" shadowsize="0"/>` plus an ambient-only headlight
-   (`diffuse="0 0 0" specular="0 0 0"`) are required here - the quality settings are
-   measured at 12x on `mjr_render`, and the headlight is what collapses the palette.
-   `offsamples="0"` alone is not enough: a diffuse-lit box shades per face, so one
-   `rgba` becomes three palette entries. No materials needed - plain `rgba` under an
-   ambient-only headlight measured 6 colours
-2. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
-3. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert. **De-risked** - the
+1. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
+2. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert. **De-risked** - the
    day-1 readback cleared GLFW, so this is a plain port of what
    `bench/readback_probe.py` already does. No pbuffer
-4. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
-5. `sim/truth.*` - segmentation pixel counts, contact mask, poses
-6. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
-7. `mirage/data.py` - memmap reader, episode-aware sampler
-8. `mirage/validator.py` - measurement vector, both modes, threshold sweep
+3. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
+4. `sim/truth.*` - segmentation pixel counts, contact mask, poses
+5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
+6. `mirage/data.py` - memmap reader, episode-aware sampler
+7. `mirage/validator.py` - measurement vector, both modes, threshold sweep
 
 Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed
 by `sim/main.cpp` printing `202002`, and both `sim/build/` and `sim/build-asan/`
-build and run. Sanitizer build type exists from file 1, as a build type and not the
-default. `/fp:fast` never.
+build and run. The sanitizer build type already exists, as a build type and not
+the default. `/fp:fast` never.
 
-**Structural plan for these eight: `phase0_structural_plan.md`.** What each file
+**Structural plan for these seven: `phase0_structural_plan.md`.** What each file
 owns, the calls it needs and the doc page for them, what "working" looks like,
 and the gotchas.
 
