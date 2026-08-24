@@ -44,7 +44,7 @@ retrying. Record the pstate next to every number this project ever reports.
 |---|---|---|
 | Bandwidth + fp16 matmul, at P0 | whether the fork table's compute floors are real. They all derive from an assumed 448 GB/s, currently unverified | blocked on P0 |
 | Per-call `mjr_readPixels` latency, in isolation | one-pass vs two-pass render, and GLFW vs hand-rolled WGL | **done** - 25.4 us RGB, 49.6 us RGB+depth, 75.8 us with render, at P2. **Two-pass render confirmed, 13x margin.** Neither the single-pass collapse nor the WGL pbuffer is needed |
-| `mj_step` time alone | remaining P-6 headroom | **done** - 10.8 us median driven, 171x under the ~1850 us allowance. P-6 is not at risk from physics |
+| `mj_step` time alone | remaining P-6 headroom | **done** - 10.5-10.8 us median driven, 131-176x under the ~1850 us allowance. P-6 is not at risk from physics |
 | Frames/sec end to end | whether parallel generation is needed at all | **narrowed to one term** - `mjv_updateScene` is the only per-frame cost still unmeasured; `readback_probe.py:42` calls it outside its timing loop. Measure it per-call and sum, do not build a Python end-to-end loop |
 Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
 
