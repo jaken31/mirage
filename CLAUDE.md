@@ -77,6 +77,14 @@ cleanly for this Python.
 - Hardware check on Windows: `GL_RENDERER` must name the GPU. Reject
   `GDI Generic` and `Microsoft Basic Render Driver` - those are the software
   fallbacks. Read it once, right after MuJoCo creates its context.
-- The GPU is an RTX 5060 **Laptop** (8 GB). It idles in power state P4. A
-  benchmark number is only valid if `pstate` reads **P0 while the load is
-  running** - always record the power state next to the number.
+- The GPU is an RTX 5060 **Laptop** (8 GB), 384 GB/s peak, 308.3 GB/s measured
+  streaming read. **Do not gate benchmarks on `pstate == P0`** - that rule was
+  refuted 2026-08-23. The reported pstate follows the *memory* clock domain, so
+  a correct compute-bound run reads P4 while the SMs are at 86% of max drawing
+  99 W of a 100 W cap. No single load clocks both domains. Gate compute numbers
+  on **SM clock + power draw**, bandwidth numbers on **memory clock == max**, and
+  record those next to the number. `bench/gpu_probe.py` does both.
+- Thermal state dominates everything: a chassis cooling fix moved the enforced
+  power limit 55 -> 100 W and fp16 matmul 3.0 -> 27.6 TFLOP/s. The instantaneous
+  throttle flags read `Not Active` the whole time it was capped - the evidence was
+  in the `nvidia-smi -q -d PERFORMANCE` **counters**. Sample those, not the flags.

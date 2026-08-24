@@ -2,7 +2,7 @@
 
 **One line:** train an action-conditioned world model on a MuJoCo manipulation scene, delete the simulator, and control the learned model in real time at 30fps.
 
-**Hardware:** RTX 5060 8GB, sm_120, 448 GB/s peak.
+**Hardware:** RTX 5060 **Laptop** 8GB, sm_120, **384 GB/s peak** (12001 MHz x 2 x 128-bit), 308.3 GB/s measured streaming read. The 448 figure previously here is the *desktop* 5060 at 28 Gbps and was wrong for this machine - see the architecture doc's verification log.
 **Timeline:** 12 weeks with 2 weeks slack.
 **Scope principle:** ML ambition at the floor, systems ambition intact. The inference engine is the project.
 

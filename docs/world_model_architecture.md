@@ -395,14 +395,30 @@ Two consequences traced during review:
 Decided by Phase 1's PSNR. Recorded so the decision is mechanical when the number
 arrives.
 
+**Recalculated 2026-08-23 against measured bandwidth.** The floors are pure streaming
+reads - weights (14.56M params, bf16 = 29.12 MB) plus the KV cache, divided by read
+bandwidth. They were computed at an assumed 448 GB/s; the measured figure is **308.3 GB/s**
+(`bench/gpu_probe.py`), so every floor rose by 45%. Two consequences:
+
+- **CUDA graphs are now required on both paths, not just the 144 one.** The 64 path's naive
+  total was 95% of budget and is now 103% - it no longer fits without them.
+- **The 144 path has no margin left without DiagD**: 100% of its per-token-step budget after
+  graphs, against 77% before. DiagD was already marked required; it is now the only thing
+  between that path and the wall.
+
+With graphs *and* DiagD both paths are comfortable - 8% and 16% of the 33.3 ms frame - so
+the fork decision itself is unchanged. What changed is that both mitigations became
+mandatory rather than one being held in reserve.
+
 | | 64 tok/frame | 144 tok/frame |
 |---|---|---|
 | Per-token-step budget @ 30 fps | 520.8 us | 231.5 us |
-| Compute floor | 95 us | 127 us |
+| Compute floor | 135 us | 181 us |
 | Launch overhead (~80 kernels) | 400 us | 400 us |
-| **Naive total** | **~495 us (95% of budget)** | **~527 us (228% of budget)** |
-| After CUDA graphs (~50 us overhead) | ~145 us (28%) | ~177 us (77%) |
+| **Naive total** | **~535 us (103% of budget)** | **~581 us (251% of budget)** |
+| After CUDA graphs (~50 us overhead) | ~185 us (36%) | **~231 us (100%)** |
 | DiagD reduction | 15 diagonals vs 64 = 4.27x | 23 vs 144 = **6.26x** |
+| With graphs + DiagD, per frame | 2.78 ms (8% of 33.3 ms) | 5.32 ms (16%) |
 | DiagD status | reserve | **required** |
 | Context seq len | ~1024 | ~2176 |
 | KV cache (8L, 384d, bf16) | 12.58 MB | 26.74 MB |
@@ -494,9 +510,11 @@ hardware** - the diagnostic says why:
 6 W during an 8192-cube fp16 matmul is conclusive: the device never left a
 low-power state. Two-second sustained warmups did not ramp it, and ~50 desktop
 processes (browsers, Teams, Slack, Discord, NVIDIA and Overwolf overlays) hold GPU
-contexts under WDDM. **The ingredients doc's 448 GB/s is therefore neither
-confirmed nor refuted - it is unverified**, and every compute-floor term in the
-fork table derives from it.
+contexts under WDDM. **The ingredients doc's 448 GB/s was therefore neither confirmed
+nor refuted by this attempt.** It has since been **refuted** by a clocked-up rerun:
+the part peaks at 384 GB/s and delivers 308.3 GB/s streaming reads. See the
+verification log. Note the table above already recorded `clocks.max.memory` as
+12001 MHz - the refutation was sitting in the data nobody divided.
 
 The finding that matters is not the bandwidth number:
 
@@ -629,7 +647,7 @@ Each **M** requirement gets one runnable check. Phase 0's gate is these passing.
 | GL context is hardware, not software | binary prints `glGetString(GL_RENDERER)` after context creation; assert it names the RTX 5060, and reject `GDI Generic` / `Microsoft Basic Render Driver`. A software fallback is ~50x slower and silently kills P-6. Deny by renderer name, not by vendor: vendor strings do not identify hardware. **PASSED 2026-08-23** in `bench/readback_probe.py`; the C++ port keeps the same assert | F-3 |
 | **Per-call `mjr_readPixels` latency, in isolation** | time N readbacks in a tight loop, report us/call. Not end-to-end fps, which hides which term dominates. **PASSED 2026-08-23**: 25.4 us RGB / 49.6 us RGB+depth / 75.8 us with render, at P2. Two-pass render confirmed, 13x margin on P-6. `bench/readback_probe.py`. Re-run the render arm against the real scene | P-6 |
 | **MuJoCo step time for this scene** | time `mj_step` alone, report us/step, with a guard that the measured steps actually contain arm-block contact. **PASSED 2026-08-23**: 10.5-10.8 us median driven, 131-176x under the ~1850 us the frame leaves after render+readback. `bench/step_probe.py`. CPU-only, so the P0 blocker does not apply | P-6 |
-| **GPU at P0, and bandwidth re-measured there** | plugged in, performance profile, clocks locked, desktop GPU consumers closed; then re-run the copy and matmul benchmarks. **Day 1** - the fork table's compute floors all derive from the 448 GB/s assumption, currently unverified | E-4, P-4, and every P-row |
+| **GPU clocked up, and bandwidth re-measured there** | two phases, because no single load clocks both domains: judge *compute* on SM clock (>=80% of max, drift <5%) and power (>=80% of the enforced limit); judge *bandwidth* on memory clock == `clocks.max.memory`. **Do not gate on `pstate == P0`** - it follows the memory domain and reads P4 during correct compute-bound work. **PASSED 2026-08-23**: 27.6 TFLOP/s fp16 at 2662 MHz / 99 W, 308.3 GB/s read at P0 / 12001 MHz. `bench/gpu_probe.py` | E-4, P-4, and every P-row |
 | Determinism | generate twice, same seed, `cmp` the pixel blobs | F-4, E-1 |
 | Sanitizers clean | full generation run under ASan+UBSan, zero reports | E-3 |
 | Throughput | binary reports frames/sec at exit, assert >= 500 | P-6 |
@@ -662,7 +680,11 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | What the fixed per-call cost actually was | measured by toggling MuJoCo's visual defaults | `shadowsize=4096` and `offsamples=4`. Zeroing both cut `mjr_render` 316 -> 26 us and readback 71 -> 25 us; the readback share was an MSAA resolve. **Promotes `<quality offsamples="0" shadowsize="0"/>` from cosmetic to a hard `arm_blocks.xml` requirement with a measured justification.** `castshadow="false"` was listed alongside it in error - it is a `<light>` attribute and the compiler rejects it on a geom |
 | Hardware GL context on Windows (F-3) | `bench/readback_probe.py` asserts `GL_RENDERER` contains "RTX 5060" | confirmed - assert passes, offscreen framebuffer selected and non-empty. Not `GDI Generic`, not `Microsoft Basic Render Driver` |
 | Target machine: sm_120, CUDA version, WSL2 availability | queried | **partly refuted** - capability (12,0) and CUDA 13.0 > required 12.8 both confirmed, and it is a 5060 **Laptop** GPU, which the docs do not distinguish. But WSL2 running is not the same as WSL2 rendering: its GL path is broken here, so the project moved to Windows |
-| **448 GB/s memory bandwidth** | attempted, **measurement invalid** | got 66-77 GB/s, but at 6.16 W / P4 / 36% SM clock - the GPU never left a low-power state. Neither confirms nor refutes 448. **Re-measure at P0.** Surfaced the E-4 / P-4 power-state requirement above |
+| **448 GB/s memory bandwidth** | re-measured clocked up, `bench/gpu_probe.py` | **REFUTED.** `clocks.max.memory` is 12001 MHz and nvidia-smi reports half the GDDR7 data rate, so the ceiling is 12001 x 2 x 16 B (128-bit bus) = **384 GB/s**. 448 is the *desktop* 5060 at 28 Gbps; the Laptop part runs 24. Measured **262 GB/s copy / 308.3 read / 318.9 write** = 68-83% of the real 384. Entered the project via `world_model_ingredients.md`. **Fork table recalculated against 308.3** - floors +45%, CUDA graphs now required on both paths, 144 path at 100% of budget without DiagD |
+| **`pstate == P0` as a benchmark validity gate** | **run, refuted** | The reported pstate follows the **memory** clock domain. Under compute-bound fp16 matmul the driver correctly drops memory to 9001 MHz and pstate reads **P4** while the SMs hold 2662 MHz of 3090 at 99 W of a 100 W cap - fully clocked up. P0 appears only under memory-bound load. **No single load clocks both domains**, so gate compute on SM clock + power and bandwidth on memory clock. The earlier P0 rule would have rejected every valid compute number this machine can produce |
+| GPU thermal state gates everything above | measured before and after a chassis cooling fix | **Enforced power limit 55 W -> 99.86 W, idle 73 C -> 58 C, fp16 matmul 3.0 -> 27.6 TFLOP/s - 9x from cooling alone.** The instantaneous throttle flags all read `Not Active` throughout; the evidence was in `nvidia-smi -q -d PERFORMANCE` **counters**, which showed SW Thermal Slowdown for essentially the whole uptime. **Sample the counters, not just the flags.** Compute now peaks at 85 C with no measurable decay (-0.3%) |
+| Full per-frame generation cost, real scene | measured, `bench/frame_probe.py`, 5x1000 calls, XML `main` camera, segmentation pass included | **`mjv_updateScene` 1.1 us** - the last day-1 unknown, and negligible. 1-pass frame 61.6 us, 2-pass 144.0, **step + 2-pass 178.5 us = 5,602 fps, 11.2x over P-6**. **Parallel generation is not needed.** 300k frames in ~1 min single-threaded. p99 2008 us exceeds the whole frame budget but P-6 is throughput not latency, so at 1% weight it costs ~10% of mean. Taken while the GPU was thermally capped, so it is a pessimistic bound |
+| `mjv_updateScene` before any `mj_forward`/`mj_step` | **run, silently wrong** | renders an entirely black frame while `scene.ngeom` reads a correct 6. mjData's derived `xpos`/`xmat` are zero until forward dynamics runs. Checking the geom count does not catch it - same family as the `cam_targetbodyid = -1` entry |
 | MuJoCo step time for this scene | **measured** - `bench/step_probe.py`, 5x1000 steps, reset every 200, idle and driven arms, 6 reruns | **10.5-10.8 us median driven** (floor over 6 runs; the first run after other machine load reads up to 14.1), **p99 32-60 us**, at 12-14 total contacts. **131-176x under the ~1850 us P-6 allowance - P-6 is not at risk from physics.** The guard is now arm-block specific (geom-pair filter excluding the table, which rests under every block): **77.9% driven vs 0.0% idle**, replacing an earlier `ncon > 0` check that scored both arms at 100% and was vacuous. Contact counts and both fractions came back **bit-identical across 6 separate processes** - unseeded determinism, relevant to the Phase 0 replay gate. Max is 11-100x median on both arms: Windows scheduler preemption, not solver work. **E-4's 5% is not demonstrated for this number** - the series had not plateaued after 6 runs and needs a quiescent-machine protocol. CPU-only - GPU pstate does not apply |
 | Offscreen GL on WSL2 | attempted, **refuted** | `bench/egl_probe.py` reaches a context but `GL_RENDERER` is `llvmpipe` (CPU) under every platform and driver override. Root cause is below Mesa: `dxgkio_query_adapter_info: Ioctl failed: -22`, no `/dev/dri` node. CUDA is unaffected - different ioctl path. **Moved all rendering to Windows** |
 | ASan-under-CPython specifics | **not verified in detail** | claim softened; the boundary decision does not depend on the magnitude |

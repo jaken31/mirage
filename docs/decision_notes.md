@@ -513,7 +513,7 @@ kind of project fails.
   draw, and temperature, and the measurement harness refuses to start if the card
   is not at full power or its clocks are below a configured fraction of maximum.
 - **Why** this came out of a real, invalid measurement. We measured raw memory
-  bandwidth at 66-77 GB/s against an assumed 448, but the card was drawing **6.16
+  bandwidth at 66-77 GB/s against an assumed 448 (since refuted - the real ceiling is 384 and the card delivers 308.3; that first attempt was invalid because it was drawing **6.16
   watts** at 36% of its maximum clock speed during a heavy computation - it never
   left a low-power state. That does not refute the assumed figure; it means the
   measurement was meaningless. Two consequences beyond the number itself: the

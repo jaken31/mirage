@@ -14,6 +14,7 @@ tokens_*.bin
 # C++ / CMake
 build/
 build-*/
+build-asan/
 *.o
 *.so
 *.a
