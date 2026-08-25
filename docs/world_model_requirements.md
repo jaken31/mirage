@@ -12,7 +12,7 @@ Tiers: **M** = must (v1 does not ship without it), **S** = should, **C** = could
 |---|---|---|---|
 | F-1 | M | MuJoCo scene: 2-link planar arm, 3 pushable blocks, fixed camera | Scene loads, arm reaches all blocks |
 | F-2 | M | Flat-render config enforced: ambient-only light, no shadows, box geoms, no textures, offsamples=0 | Rendered frame has <= 24 unique RGB values |
-| F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer | `glGetString(GL_RENDERER)` names the RTX 5060. Reject `GDI Generic` and `Microsoft Basic Render Driver`. Asserted at context creation |
+| F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer | `glGetString(GL_RENDERER)` names neither `GDI Generic` nor `Microsoft Basic Render Driver`. Deny-list, not an allow-list on "RTX 5060", which would fail on any other machine that is perfectly fine. Asserted at context creation |
 | F-4 | M | Deterministic given a seed | Same seed and action sequence give bit-identical frames |
 | F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Action histogram roughly uniform over 9 actions |
 | F-6 | M | Arm-block contact events exceed 5% of frames | Contact counter over a full run |

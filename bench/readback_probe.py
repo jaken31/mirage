@@ -10,7 +10,11 @@ m = mujoco.GLContext(640, 640)
 m.make_current()
 
 renderer = glGetString(GL_RENDERER).decode()
-assert "RTX 5060" in renderer, f"not hardware GL: got {renderer!r}"
+# Reject-list, not an allow-list: naming the exact GPU fails on any other
+# machine that is perfectly fine. These two strings are the Windows
+# software fallbacks (CLAUDE.md, environment facts).
+SOFTWARE_GL = ("GDI Generic", "Microsoft Basic Render Driver")
+assert not any(s in renderer for s in SOFTWARE_GL), f"software GL, not hardware: {renderer!r}"
 
 model = mujoco.MjModel.from_xml_string(
     '<mujoco><visual><global offwidth="640" offheight="640"/><quality offsamples="0" shadowsize="0"/></visual>'

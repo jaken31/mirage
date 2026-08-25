@@ -125,8 +125,10 @@ Order of operations:
 1. `glfwInit`, then `glfwWindowHint` with `GLFW_VISIBLE` set to false, then
    `glfwCreateWindow`, then `glfwMakeContextCurrent`. The hidden window exists
    only to own the context - you never draw into it.
-2. Read `glGetString(GL_RENDERER)` and assert it names the RTX 5060. Reject
-   `GDI Generic` and `Microsoft Basic Render Driver`.
+2. Read `glGetString(GL_RENDERER)` and assert it is neither `GDI Generic` nor
+   `Microsoft Basic Render Driver`. Deny-list, not an allow-list on "RTX 5060":
+   the allow-list form fails on any other machine that is perfectly fine, while
+   those two spellings are what actually indicate the software fallback.
 3. `mjr_defaultContext`, then `mjr_makeContext` against the loaded `mjModel`.
 4. `mjr_setBuffer` with `mjFB_OFFSCREEN`, so rendering targets the offscreen
    buffer and not the window.
