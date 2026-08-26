@@ -29,10 +29,11 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
 
 ## Phase 0 build order
 
-1. `mirage/config.py` - sectioned JSON, hash tree, `Shapes`
-2. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert. **De-risked** - the
-   day-1 readback cleared GLFW, so this is a plain port of what
-   `bench/readback_probe.py` already does. No pbuffer
+1. `mirage/config.py` - sectioned JSON, hash tree, `Shapes` - **done**
+2. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert - **done 2026-08-26**.
+   Prints `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2` at 64x64; the renderer
+   deny-list, the `currentBuffer` check, the viewport-vs-XML check and
+   `mjr_getError` are all fatal at startup. No pbuffer was needed
 3. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
 4. `sim/truth.*` - segmentation pixel counts, contact mask, poses
 5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
