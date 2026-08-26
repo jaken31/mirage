@@ -92,9 +92,13 @@ Q-5 replaces velocity-preservation. A model that hallucinates arm geometry is th
 |---|---|---|---|
 | E-1 | M | Deterministic sim given a seed | Same as F-4 |
 | E-2 | M | Clean build from scratch, MuJoCo and the offscreen GL context linked | Documented in README, verified once |
-| E-3 | M | ASan and UBSan clean on the full data-generation run | Zero reports |
+| E-3 | M | ASan clean on the full data-generation run; every shard offset and frame counter 64-bit, with a bounds assert at the write site | Zero ASan reports, and the assert fires on a deliberately overflowed offset |
 | E-4 | M | Every bench number reproducible from a config hash | Rerun matches within 5% |
 | E-5 | M | Append-only run log: config hash, change, number, conclusion | One entry per run |
+
+E-3 was ASan **and** UBSan until 2026-08-26. MSVC has no UBSan, and a second
+toolchain was rejected in favour of typing the offsets: reasoning and the trigger
+that would reverse it are in `world_model_architecture.md`, "Sanitizer cost".
 
 ---
 

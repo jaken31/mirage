@@ -51,7 +51,7 @@ Per the roadmap's own "just-in-time, not up front" rule.
 `gen_data` is an executable writing shards to disk; Python only reads files. No
 pybind11.
 
-Decisive argument is **E-3** (ASan/UBSan clean on the full data-generation run):
+Decisive argument is **E-3** (ASan clean on the full data-generation run):
 ASan through a Python extension module requires preloading the ASan runtime before
 the interpreter starts, plus typically a suppression file for interpreter
 internals, whereas ASan on a standalone binary is `./gen_data`. The magnitude of
@@ -452,19 +452,37 @@ lever is the FSQ levels table. Worth knowing before spending a week on it.
 
 ## Sanitizer cost, and keeping E-3 cheap
 
-E-3 requires ASan and UBSan clean on the **full** data-generation run. **MSVC
-provides ASan only.** Microsoft lists `/fsanitize=undefined` and `/fsanitize=leak`
-among sanitizers it may ship *later*, so on this toolchain E-3's UBSan half has no
-implementation and there is no leak detection either. Two ways out, undecided:
-add a clang-cl configuration carrying UBSan, or restate E-3 as ASan-clean plus the
-UBSan-class defects `/W4 /WX` already rejects at compile time.
+E-3 requires ASan clean on the **full** data-generation run, plus 64-bit shard
+offsets carrying a bounds assert. **MSVC provides ASan only.** Microsoft lists
+`/fsanitize=undefined` and `/fsanitize=leak` among sanitizers it may ship *later*,
+so this toolchain has no UBSan and no leak detection.
+
+**Decided 2026-08-26: E-3 drops the UBSan half rather than adding a clang-cl
+configuration.** Of the UBSan classes that apply to this code - MuJoCo calls, a
+pixel buffer, segid integer math, appending to a blob - ASan already covers
+out-of-bounds and use-after-free, and `/W4 /WX` rejects the sloppy casts
+(`/w14242` lossy conversion, `/w14826` sign extension). The one real gap is
+**signed overflow on shard byte offsets**: 300k frames at 64x64x3 is 3.6 GB
+against `2^31` = 2.1e9, so an offset held in a signed 32-bit int wraps somewhere
+past frame ~175k and silently corrupts the back half of a shard. That single class
+is closed by typing every offset and frame counter `size_t`/`int64_t` and
+asserting the computed offset against the mapped blob size before each append -
+a check that runs in the optimised build, which a side-configuration sanitizer
+would not. The alternative costs a second set of flag spellings and a second set
+of MuJoCo/GLFW link quirks, to instrument ~200 lines of loop arithmetic.
+
+**Trigger to revisit:** UB suspected in code ASan does not cover - alignment or
+type-punning on the pixel buffer, or arithmetic outside the offset math above.
+Whether clang-cl's UBSan works on Windows in diagnostic mode or only in trap mode
+(`-fsanitize-trap=undefined`) is **unverified**; check it if the trigger fires,
+not before.
 
 Published overheads, for the ASan half that does exist:
 
 | Sanitizer | Measured |
 |---|---|
 | ASan | **73% average** on SPEC CPU2006 (original paper), worst case 2.6x; 103% average in a later study |
-| UBSan, full set | **up to 228%** on SPEC2006 across all 19 sub-sanitizers; 59% average elsewhere - relevant only if the clang-cl build happens |
+| UBSan, full set | **up to 228%** on SPEC2006 across all 19 sub-sanitizers; 59% average elsewhere - no longer applicable, kept as the cost the clang-cl route would have carried |
 
 Both are pure-CPU benchmarks, and this loop is dominated by GPU render and pixel
 readback which ASan does not instrument, so end-to-end slowdown should land well
@@ -649,7 +667,7 @@ Each **M** requirement gets one runnable check. Phase 0's gate is these passing.
 | **MuJoCo step time for this scene** | time `mj_step` alone, report us/step, with a guard that the measured steps actually contain arm-block contact. **PASSED 2026-08-23**: 10.5-10.8 us median driven, 131-176x under the ~1850 us the frame leaves after render+readback. `bench/step_probe.py`. CPU-only, so the P0 blocker does not apply | P-6 |
 | **GPU clocked up, and bandwidth re-measured there** | two phases, because no single load clocks both domains: judge *compute* on SM clock (>=80% of max, drift <5%) and power (>=80% of the enforced limit); judge *bandwidth* on memory clock == `clocks.max.memory`. **Do not gate on `pstate == P0`** - it follows the memory domain and reads P4 during correct compute-bound work. **PASSED 2026-08-23**: 27.6 TFLOP/s fp16 at 2662 MHz / 99 W, 308.3 GB/s read at P0 / 12001 MHz. `bench/gpu_probe.py` | E-4, P-4, and every P-row |
 | Determinism | generate twice, same seed, `cmp` the pixel blobs | F-4, E-1 |
-| Sanitizers clean | full generation run under ASan+UBSan, zero reports | E-3 |
+| Sanitizers clean | full generation run under ASan, zero reports. No UBSan on MSVC: its one relevant class is covered by 64-bit offsets plus an offset-vs-blob-size assert, verified by deliberately overflowing an offset in a unit check | E-3 |
 | Throughput | binary reports frames/sec at exit, assert >= 500 | P-6 |
 | Dataset size | `du -sh` the dataset dir, assert <= 20 GB | R-4 |
 | Memmap round-trip | write a known buffer in C++, read via `np.memmap`, byte-compare | F-8 |

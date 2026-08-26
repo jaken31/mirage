@@ -97,10 +97,10 @@ mode, scipy, version integers, an IDM for Q-4.
 | Soft spot | The line |
 |---|---|
 | Nothing past Phase 0 is measured | "Phase 0 is verified end to end. Everything later is a budget, not a result." |
-| UBSan has no implementation on MSVC | Open: clang-cl config, or restate E-3. Do not pretend it is settled |
+| UBSan has no implementation on MSVC | Settled: E-3 is ASan-only. The one class that mattered - signed overflow across 3.6 GB of shard offsets - is 64-bit offsets plus a write-site assert, not a second toolchain |
 | E-4's 5% not demonstrated for `mj_step` | Series had not plateaued after 6 runs. Needs a quiescent-machine protocol |
 | Object permanence may not emerge at 15M | Tiered **S**, not M, on purpose. Ships without it, reports the negative result |
-| C++ toolchain unverified | Remaining Phase 0 prerequisite |
+| C++ toolchain unverified | Closed: MSVC via `Visual Studio 18 2026`, C++20 confirmed by the binary printing `202002`, default and ASan builds both compile and run |
 | 26 us render is one sphere, a floor | Re-run against the real scene. Readback is per-pixel, so 25 us holds |
 
 ## If you only remember one thing

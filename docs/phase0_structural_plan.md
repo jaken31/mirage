@@ -64,8 +64,11 @@ the build failing:
 | `/Zi` plus linker `/DEBUG` | without debug info MSVC emits `C5072`, which `/WX` makes fatal, and an ASan report without symbols is useless anyway |
 | post-build copy of `clang_rt.asan_dynamic-x86_64.dll` | MSVC links the ASan runtime dynamically whatever the CRT setting, and the DLL is on `PATH` only inside a Developer prompt. Derived from `CMAKE_CXX_COMPILER`'s directory, so no MSVC version is hardcoded |
 
-**Open: E-3 asks for ASan *and* UBSan clean, and MSVC has no UBSan.** Either add a
-clang-cl configuration for the UBSan half or restate E-3. Not decided here.
+**Settled 2026-08-26: E-3 is ASan-clean only.** MSVC has no UBSan and the clang-cl
+configuration was rejected. The one UBSan class that matters here - signed overflow
+on shard byte offsets - is handled by 64-bit offsets plus a bounds assert at the
+write site, which lands in `shard_writer` (item 6). Reasoning and reversal trigger
+in `world_model_architecture.md`, "Sanitizer cost".
 
 `main.cpp` grows alongside items 3 through 6 and is finished with item 6.
 
