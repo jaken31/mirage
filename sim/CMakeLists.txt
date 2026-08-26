@@ -44,7 +44,7 @@ FetchContent_MakeAvailable(glfw)
 
 find_package(OpenGL REQUIRED)
 
-add_executable(mirage_sim main.cpp)
+add_executable(mirage_sim main.cpp gl_context.cpp)
 target_link_libraries(mirage_sim PRIVATE mujoco::mujoco glfw OpenGL::GL)
 
 add_custom_command(TARGET mirage_sim POST_BUILD
