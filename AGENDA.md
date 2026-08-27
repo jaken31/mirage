@@ -42,7 +42,15 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
    came out of it: **episodes are 600 steps x 500, not 200 x 1500** (at 200 the arm
    cannot cross to a block inside 0.4 s of sim time), and the histogram knobs are
    `jacobian_deadband` + `reach_digit_noise_prob`, not whole-action noise
-4. `sim/truth.*` - segmentation pixel counts, contact mask, poses
+4. `sim/truth.*` - segmentation pixel counts, contact mask, poses - **done 2026-08-27**.
+   `Truth::read` fills one reusable `TruthFrame`; `truth_dry_run` is the check.
+   Three fatal checks - some block visible at rest, a block moved out of frame
+   reads exactly 0, restoring it returns the same count - plus printed F-6/F-7
+   rates. Two things to carry into item 6: **the segmentation pass leaves the
+   framebuffer holding id colours, so the RGB readback has to happen before
+   `read()`**, and the dry run's rates are biased high in both directions - a
+   block knocked off the table reads 0 forever - so they say the measurement
+   responds, not that the scene passes
 5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
 6. `mirage/data.py` - memmap reader, episode-aware sampler
 7. `mirage/validator.py` - measurement vector, both modes, threshold sweep
@@ -70,6 +78,33 @@ whole plan derives from the Phase 3 profile. Drafting those early is guessing.
 F-6 (arm-block contact > 5% of frames) and F-7 (full occlusion >= 3%) are the
 checks most likely to fail on the first scene. Both are fixed by editing the XML -
 arm reach versus block placement - not by changing code.
+
+`truth_dry_run` prints both already, but it drives actuator 0 at full torque, a
+cruder sweep than the policy produces. **Its numbers are evidence, not the
+verdict.** Run 2026-08-27: **F-6 60.93%**, 12x the floor, so the playbook below
+is unlikely to be needed. F-7 read 79.73% but mostly because block 0 is hidden
+at rest, so that one is passing on a technicality. The verdict needs the real policy driving: count `contact_mask` over
+the 2,000 x 600 dry run, beside F-5's histogram. Open question it settles -
+F-5 compliance cost arrival 44% -> 35.7%, and whether that cost any contact is
+reasoned about but unmeasured (`docs/world_model_architecture.md`, "F-5's
+threshold is the knee of a measured curve").
+
+### If F-6 misses, in this order
+
+1. **Move the blocks in `scene/arm_blocks.xml`.** They sit at radius 0.20-0.21
+   against a 0.33 total reach. Pulling them into the mid-sweep band raises
+   contact for the random half as well, and costs F-5 nothing. This is K4 in
+   `docs/decision_notes.md` - contact frequency is tuned by moving objects.
+2. **Tighten `sim.reach_done_dist` to ~0.025 m**, the block half-size. At 0.04
+   the reach re-targets while the fingertip is still 1.5 cm of air away from a
+   head-on block face, so the arm turns away before touching. Arrival will read
+   lower; it is a diagnostic.
+3. **Spend F-5's margin.** Ratio 2.06 against the 2.5 ceiling, min share 7.15%
+   against 5%. `reach_digit_noise_prob` 0.15 -> ~0.10 buys reach quality back,
+   and the 14-configuration frontier already has that point measured.
+
+**Do not raise `reach_done_dist`.** It improves the printed arrival rate and
+produces no extra contact - the one change here that makes a diagnostic lie.
 
 ---
 

@@ -599,14 +599,13 @@ void policy_dry_run(const mjModel* model, PolicyParams params, int base_seed,
                 meets ? "meets F-5" : "MISSES F-5",
                 episodes >= 2000 ? "" : " (indicative - F-5 wants >= 2,000 episodes)");
     // Roughly half is the scripted half arriving. Far below half means the reach
-    // is not closing - check the row-major Jacobian indexing and the sign before
-    // touching reach_done_dist. Far above means random episodes are drifting into
-    // blocks, which makes reach_done_dist too generous to mean anything.
-    // Roughly half is the scripted half arriving. Read the two numbers together:
-    // a median well below the random half's typical miss means the reach is
-    // closing and only the threshold is tight; a median near it means the reach
-    // is not steering at all, and the row-major Jacobian indexing and the sign of
-    // the projection are the two places to look before touching reach_done_dist.
+    // is not closing; far above means random episodes are drifting into blocks,
+    // which makes reach_done_dist too generous to mean anything. Read the two
+    // numbers together: a median well below the random half's typical miss means
+    // the reach is closing and only the threshold is tight; a median near it
+    // means the reach is not steering at all, and the row-major Jacobian indexing
+    // and the sign of the projection are the two places to look before touching
+    // reach_done_dist.
     const std::size_t middle = closest_per_episode.size() / 2;
     std::nth_element(closest_per_episode.begin(),
                      closest_per_episode.begin() + static_cast<std::ptrdiff_t>(middle),

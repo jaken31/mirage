@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 #include "gl_context.h"
 #include "policy.h"
+#include "truth.h"
 
 int main(int argc, const char** argv) {
     printf("C++ version: %ld\n", __cplusplus);
@@ -51,6 +52,12 @@ int main(int argc, const char** argv) {
         // above: base_seed comes from sim.seed, shard_index from the loop that
         // does not exist yet.
         Policy policy(model, /*base_seed=*/0, /*shard_index=*/0, policy_params);
+
+        // Needs the context, so it runs here rather than beside
+        // policy_dry_run. 1500 steps is 3 s of sim time at timestep 0.002 -
+        // enough for joint 0 to sweep past all three blocks at least once, so
+        // the F-6 and F-7 rates it prints have something in them.
+        truth_dry_run(model, context, /*steps=*/1500);
 
         // The episode and step loops go here.
     }
