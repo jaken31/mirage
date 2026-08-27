@@ -71,6 +71,11 @@ public:
 
     int block_count() const { return static_cast<int>(block_body_ids_.size()); }
 
+    // How many joint angles a TruthFrame carries. Available before the first
+    // read(), which is when shard_writer needs it to size the meta record - the
+    // vectors inside TruthFrame are empty until then.
+    int joint_count() const { return static_cast<int>(joint_qposadr_.size()); }
+
     // Body id of block index i - the same index every TruthFrame field uses.
     // Public because "which block is this count about?" is otherwise
     // unanswerable outside this file; truth_dry_run needs it to teleport one.

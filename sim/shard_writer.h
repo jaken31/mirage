@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdio>
+#include <fstream>
 #include <string>
 
 #include "truth.h"
@@ -84,8 +84,11 @@ public:
 private:
     void write_sidecar();
 
-    std::FILE* pixels_ = nullptr;
-    std::FILE* meta_ = nullptr;
+    // ofstream rather than FILE*: MSVC's /W4 /WX makes fopen's C4996
+    // deprecation warning fatal, and silencing it with _CRT_SECURE_NO_WARNINGS
+    // would turn the warning off for every file in the target.
+    std::ofstream pixels_;
+    std::ofstream meta_;
 
     std::string dir_;
     int shard_index_;

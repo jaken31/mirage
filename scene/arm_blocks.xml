@@ -48,8 +48,16 @@
 
 		<!-- Three blocks, each its own body with a free joint: nq = 2 + 3*7 = 23.
 		     Placed past link0's own length so joint1 has to participate to
-		     reach them, and inside the 0.33 total reach so contact is possible. -->
-		<body name="block0_body" pos="0.20 0.06 0.025">
+		     reach them, and inside the 0.33 total reach so contact is possible.
+
+		     block0's y is NEGATIVE on purpose. The camera sits at y=-0.5 looking
+		     toward +y, and the arm rests along +x at y=0, so any block at small
+		     positive y is behind the arm in the rest pose. block0 was at +0.06
+		     and read 0 visible px at rest: F-7 then scored 79.7% from one static
+		     configuration rather than from the arm passing in front of anything.
+		     At -0.06 it reads 46 px at rest and still touches 0 mid-sweep, which
+		     is the occlusion F-7 exists to measure. Do not flip the sign back. -->
+		<body name="block0_body" pos="0.20 -0.06 0.025">
 			<freejoint name="block0_free"/>
 			<geom name="block0" size="0.025 0.025 0.025" rgba="0.85 0.10 0.10 1"/>
 		</body>

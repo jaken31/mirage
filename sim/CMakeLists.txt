@@ -42,10 +42,23 @@ set(GLFW_BUILD_EXAMPLES OFF)
 set(GLFW_INSTALL OFF)
 FetchContent_MakeAvailable(glfw)
 
+FetchContent_Declare(
+    nlohmann_json
+    URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
+    # Computed locally from the downloaded asset, not copied from a page:
+    # curl -sL <the URL above> | sha256sum
+    URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+# The release tarball, not the git repo: 115 KB against a clone with the whole
+# test suite in it. Same CMP0077 reasoning as GLFW's options above.
+set(JSON_BuildTests OFF)
+FetchContent_MakeAvailable(nlohmann_json)
+
 find_package(OpenGL REQUIRED)
 
-add_executable(mirage_sim main.cpp gl_context.cpp policy.cpp truth.cpp)
-target_link_libraries(mirage_sim PRIVATE mujoco::mujoco glfw OpenGL::GL)
+add_executable(mirage_sim main.cpp gl_context.cpp policy.cpp truth.cpp shard_writer.cpp)
+target_link_libraries(mirage_sim PRIVATE mujoco::mujoco glfw OpenGL::GL nlohmann_json::nlohmann_json)
 
 add_custom_command(TARGET mirage_sim POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

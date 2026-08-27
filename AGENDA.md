@@ -52,6 +52,17 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
    block knocked off the table reads 0 forever - so they say the measurement
    responds, not that the scene passes
 5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
+   - **done 2026-08-27**, and `main.cpp` is finished with it. The binary now takes
+   a config, not a scene: `mirage_sim <config.json> --data-hash <hex> --git-sha
+   <hex>`, run from the repo root. Both flags are required - **`data_hash` is
+   passed in, never recomputed in C++**, because a second canonical-JSON hash
+   would have to match Python's float formatting byte for byte. `nlohmann/json`
+   v3.12.0 is pinned by a locally computed SHA256. Shards rotate **on episode
+   boundaries only** (Policy is seeded per shard, so rotating mid-episode would
+   reseed mid-episode), and episodes are spread evenly rather than packed.
+   `shard_writer_self_check` covers the layout and the overflow predicate;
+   measured on a 6-episode run: **6,760 fps**, and two runs at one seed are
+   **bit-identical**
 6. `mirage/data.py` - memmap reader, episode-aware sampler
 7. `mirage/validator.py` - measurement vector, both modes, threshold sweep
 
@@ -81,10 +92,17 @@ arm reach versus block placement - not by changing code.
 
 `truth_dry_run` prints both already, but it drives actuator 0 at full torque, a
 cruder sweep than the policy produces. **Its numbers are evidence, not the
-verdict.** Run 2026-08-27: **F-6 60.93%**, 12x the floor, so the playbook below
-is unlikely to be needed. F-7 read 79.73% but mostly because block 0 is hidden
-at rest, so that one is passing on a technicality. The verdict needs the real policy driving: count `contact_mask` over
-the 2,000 x 600 dry run, beside F-5's histogram. Open question it settles -
+verdict.** Run 2026-08-27: **F-6 50.00%**, 10x the floor, so the playbook below
+is unlikely to be needed. F-7 reads **58.07%** after `block0` moved to y=-0.06 -
+at +0.06 it was hidden at rest and F-7 scored 79.73% off one static pose. F-7
+still cannot tell a genuine occlusion from a block knocked off the table.
+
+**First numbers under the real policy, from a written shard** (1,200 frames, 2
+episodes, `shard_001` of a 6-episode run, counted in numpy off the meta blob):
+**F-6 62.4%** and **F-7 40.3%**. Both are an order of magnitude over their floors,
+and the sample is 2 episodes, not 2,000. The verdict still wants the full run:
+count `contact_mask` and `visible_px == 0` over the 500 x 600 shard set, which is
+now a one-line numpy pass over the meta blobs rather than a dry run. Open question it settles -
 F-5 compliance cost arrival 44% -> 35.7%, and whether that cost any contact is
 reasoned about but unmeasured (`docs/world_model_architecture.md`, "F-5's
 threshold is the knee of a measured curve").
