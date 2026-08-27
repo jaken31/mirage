@@ -12,6 +12,13 @@ above - when a decision changes, change it there first.
 Phase 0 is budgeted at 5 days. Its gate: 300k frames on disk, deterministic
 replay, hardware render confirmed by the renderer name.
 
+**Gate met 2026-08-27, all three conditions.** 300,000 frames over 7 shards,
+3.7 GB, written in 44.3 s at 6,775 fps. Replay: two full runs at seed 0 produced
+**bit-identical** `.pixels` and `.meta` for all 7 shards. Renderer reads
+`NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. Measured over the whole set -
+F-5 min share 7.15% and ratio 2.27, F-6 20.69%, F-7 16.18%, F-2 7 colours,
+episodes 0..499 each with exactly 600 steps. Items 6 and 7 remain.
+
 ---
 
 ## Day 1 measurements - four numbers, each gating a decision
@@ -97,12 +104,11 @@ is unlikely to be needed. F-7 reads **58.07%** after `block0` moved to y=-0.06 -
 at +0.06 it was hidden at rest and F-7 scored 79.73% off one static pose. F-7
 still cannot tell a genuine occlusion from a block knocked off the table.
 
-**First numbers under the real policy, from a written shard** (1,200 frames, 2
-episodes, `shard_001` of a 6-episode run, counted in numpy off the meta blob):
-**F-6 62.4%** and **F-7 40.3%**. Both are an order of magnitude over their floors,
-and the sample is 2 episodes, not 2,000. The verdict still wants the full run:
-count `contact_mask` and `visible_px == 0` over the 500 x 600 shard set, which is
-now a one-line numpy pass over the meta blobs rather than a dry run. Open question it settles -
+**Settled over the full 300k set** (numpy pass over all 7 meta blobs):
+**F-6 20.69%** against its 5% floor and **F-7 16.18%** against 3%. Both pass with
+room, and the playbook below is not needed. A 2-episode sample taken first read
+62.4% and 40.3% - **3x high, in both cases**, which is what a 1,200-frame window
+of a 300,000-frame run is worth. Quote the full-set numbers, not those. Open question it settles -
 F-5 compliance cost arrival 44% -> 35.7%, and whether that cost any contact is
 reasoned about but unmeasured (`docs/world_model_architecture.md`, "F-5's
 threshold is the knee of a measured curve").
