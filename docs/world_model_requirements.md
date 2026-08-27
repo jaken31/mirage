@@ -14,7 +14,7 @@ Tiers: **M** = must (v1 does not ship without it), **S** = should, **C** = could
 | F-2 | M | Flat-render config enforced: ambient-only light, no shadows, box geoms, no textures, offsamples=0 | Rendered frame has <= 24 unique RGB values |
 | F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer | `glGetString(GL_RENDERER)` names neither `GDI Generic` nor `Microsoft Basic Render Driver`. Deny-list, not an allow-list on "RTX 5060", which would fail on any other machine that is perfectly fine. Asserted at context creation |
 | F-4 | M | Deterministic given a seed | Same seed and action sequence give bit-identical frames |
-| F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Action histogram roughly uniform over 9 actions |
+| F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Over >= 2,000 episodes at the configured length: every one of the 9 actions holds **>= 5% of frames**, and **max bin / min bin <= 2.5**. Both reported by `policy_dry_run` |
 | F-6 | M | Arm-block contact events exceed 5% of frames | Contact counter over a full run |
 | F-7 | M | Block fully occluded by arm in >= 3% of frames | Occlusion counter via visible-pixel test |
 | F-8 | M | Shard writer emits packed frames and actions | Round-trip via numpy memmap matches the C++ buffer byte for byte |
@@ -77,7 +77,7 @@ P-6 dropped from 20k/sec. MuJoCo plus offscreen render is far slower than a hand
 | Q-2 | M | Token entropy vs uniform over 512 codes | >= 70% |
 | Q-3 | M | Coherence horizon: frames until F-9 validator fails | >= 200 |
 | Q-3b | S | Same | >= 500 |
-| Q-4 | M | Action-following accuracy via inverse dynamics model | >= 90% |
+| Q-4 | M | Action-following accuracy via inverse dynamics model | >= 90%, scored on an **action-balanced** eval subset - equal frames per action, drawn from the val split - not on the raw split. F-5's 5% floor is what makes that subset drawable |
 | Q-5 | M | Arm kinematic plausibility: link lengths stable across a 200-step rollout | drift <= 10% |
 | Q-6 | S | **Object permanence**: block reappears in correct position after full occlusion | >= 80% of occlusion events |
 | Q-6b | C | Same, with position error <= 2 px | >= 60% |

@@ -228,7 +228,57 @@ A scripted reach needs consecutive steps to complete; coin-flipping per frame
 destroys the property the 50/50 mix exists for. F-5's near-uniform action
 histogram still holds in aggregate because the random half carries it. Corollary:
 keep episodes >> ctx. At 300 steps, 4.7% of frames are lost to boundaries; at 100
-steps, 14%.
+steps, 14%. **`steps_per_episode` is 600, not 200**: at 200 steps the episode is
+0.4 s of sim time and the arm cannot cross to a block, so the scripted half
+completes 13% of the time instead of 44%. 500 x 600 is the same 300k frames.
+
+## F-5's threshold is the knee of a measured curve, not a round number
+
+The scripted reach can only ever emit a **corner** action - both joints driven -
+because it commands `sign(gain)` and a double is never exactly zero. Measured over
+120k steps: the four corners took 70.6% against a uniform 44.4%, max/min 4.26.
+
+Two knobs move it, measured across 14 configurations at 600 steps:
+
+- **Jacobian deadband.** Command zero when a joint moves the tip less than the
+  threshold. State-dependent and physically correct - the joint really cannot
+  help. At 0.04 m/rad: ratio 4.26 -> 2.55, arrival 44% -> 42.5%.
+- **Per-digit noise** instead of whole-action replacement. Corrupting one joint
+  leaves the other steering. Dominates whole-action noise at every setting once
+  the deadband is on: 2.09 at 39% arrival, against 2.17 at 33.5%.
+
+The frontier has a knee. Arrival is flat at 42.5-44% down to ratio 2.44, then
+falls off - 33.5% at 2.17, 29.5% at 1.87. **2.5 is the flattest point reachable
+without paying reach quality**, which is why the threshold sits there rather than
+at an aesthetically rounder 1.5.
+
+Below ~1.7 is unreachable by any tuning. At deadband 0.04 the corner-vs-edge
+problem is already gone (corners 48.4% against 44.4%); what remains is same-sign
+corners at 19,200 against opposite-sign at 9,300, because a two-link planar arm
+reaching outward turns both hinges the same way. That is kinematics. A threshold
+under 1.7 would be a requirement nothing can satisfy.
+
+**Shipped: `jacobian_deadband = 0.04`, `reach_digit_noise_prob = 0.15`.** Verified
+at F-5's own sample size, 2,000 episodes x 600 steps: min share **7.15%**, ratio
+**2.06**, both inside the thresholds with margin. The cost is arrival 44% -> 35.7%
+and median closest 0.042 -> 0.052 m. Arrival is a diagnostic, not a requirement -
+F-6's contact rate is the number that would make this a bad trade, and `truth.cpp`
+does not measure it yet. Re-check when it does.
+
+The 5% floor is a different quantity - coverage, not balance. It puts >= 15,000
+frames of the rarest action in a 300k set, against roughly 1,000 per class that
+Q-4's balanced eval subset needs. **The link from examples-per-action to Q-4
+accuracy is unverified**: no inverse dynamics model exists yet. Trigger to raise
+it: Q-4 misses 90% and its confusion matrix concentrates on the rare actions.
+
+**Rejected: a compensating prior on the random half.** Solving
+`r = (1/9 - s*q)/(1 - s)` for the random half's distribution makes the total
+histogram exactly flat at zero cost to the reach, and every weight comes out
+positive, so it is feasible. It would also drop actions 0 and 8 to ~1.3% of random
+draws and raise action 4 to 20% - random episodes would coast a fifth of the time
+and almost never sweep both joints together. That buys a flat action marginal by
+distorting state visitation, which is what the pixel model actually learns from.
+Revisit only if the residual same-sign bias is measured hurting Q-4.
 
 ## Parallelism and replay: both deleted
 
@@ -713,6 +763,16 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | "Decorations off in `mjvOption`" by zeroing the flag array | **run, refuted as written** | `mjv_defaultOption` already leaves every decoration off; zeroing all flags also clears `mjVIS_STATIC` and worldbody geoms stop drawing entirely. Do not zero the array |
 | MSVC sanitizer capability | Microsoft docs, then **built and run** | ASan only: `/fsanitize=undefined` and `/fsanitize=leak` are listed as possible future work, so **E-3's UBSan half has no implementation and there is no leak detection**. ASan also needs `/Zi` (`C5072` is fatal under `/WX`) and its runtime DLL copied beside the binary - `/MT` does not remove the dynamic import. C++20 builds clean |
 | `record.cc` "ships with MuJoCo" | **checked the installed wheel** | refuted for pip: `mujoco` 3.12.0 ships headers and two test XMLs, no samples and no model zoo. Read it in the GitHub repo instead |
+| Action encoding round-trips, and the model's ids resolve (`sim/policy.*`) | built `/W4 /WX` clean in both configurations, then **run** against `scene/arm_blocks.xml` | confirmed 2026-08-26 - all 9 actions decode to distinct `ctrl` pairs and re-encode to the same index; `nu=2`, so `action_count` is `3^2 = 9`. Block bodies discovered by name prefix as ids **3 4 5**, `joint0`/`joint1` `qposadr` **0**/**1**, matching a direct model probe. Sanitizer build runs clean. Note `jnt_qposadr` and `jnt_dofadr` **diverge** for free joints - block1 is 9 vs 8, block2 16 vs 14, because a free joint is 7 wide in `qpos` and 6 in `qvel`. Never compute either address, always read the array |
+| `sim.action_hold_steps = 20` | **unverified - a guess** | Estimated from the joint's settling time `inertia / damping`, using the compiled model's `dof_damping = 0.5` and `dof_armature = 0.01`. The estimate is ~15 steps and 20 was chosen above it. **Q-4's 90% action-following depends on this number**: for roughly one settling time after each sign flip the joint is still moving the old way, so `sign(theta_t+1 - theta_t)` disagrees with the commanded sign. Too short and Q-4 is unreachable by any model. Replace with the sweep - log commanded sign against `sign(delta theta)` and find where agreement crosses 90%. Measure the settling time directly first: drive one joint at constant `+1`, log `qvel`, take the step count at 63% of terminal |
+| `sim.reach_noise_prob = 0.15` | **superseded - now measured**, see the frontier row below | Probability that the scripted reach substitutes a uniform random action. Exists so the scripted half does not collapse into three deterministic trajectories. The "tune against the histogram, not by eye" instruction was followed and the answer was that **this is the wrong knob**: whole-action replacement is dominated at every setting by the Jacobian deadband, and by per-digit corruption once the deadband is on |
+| `sim.reach_done_dist = 0.04` m | **measured 2026-08-27** | Fingertip-to-block distance at which the reach re-targets. Sized against the scene: blocks are 0.025 half-size, `link1` is 0.018 half-width, total arm reach 0.33. At 600 steps the median closest approach is **0.042 m** - the threshold sits almost exactly on the median, which is the most sensitive place it could be, so arrival rate is unusually responsive to it. Left at 0.04 because arrival is a diagnostic, not a requirement; F-6's contact rate is the number that would justify moving it, and truth.cpp does not measure that yet |
+| `begin_episode` / `step`, and F-4 for the action stream (`sim/policy.*`) | built `/W4 /WX` clean in both configurations, then **run** - `policy_dry_run`, 200 episodes x 600 steps, twice | confirmed 2026-08-27 - both passes byte-identical over 120,000 actions. The fingertip offset derives to **(0.15, 0, 0)** body-local, exactly the geom `pos.x + size.x` the XML implies, and `qposadr/dofadr` read **0/0** and **1/1**. ASan build runs clean. `mj_jac` takes a `const mjData*`, so `step` cannot perturb the sim |
+| `sim.steps_per_episode = 200` | **run, refuted** | 200 steps is 0.4 s of sim time and the arm cannot cross to a block from a random start angle: the scripted half arrives in **13%** of episodes, median closest **0.193 m**. At 600 it is **44%** and **0.042 m**, at 1500 **52.5%**. Changed to 600 x 500 episodes, the same 300k frames, which also cuts ctx=15 boundary loss from 7.5% to 2.5%. The A/B that separates "reach is broken" from "episode too short" is steering-off (`reach_noise_prob = 1.0`): 4% arrival, median 0.258 m, a 6x separation in median |
+| The scripted reach emits only corner actions | **measured** | 120k steps at 600: corners (both joints driven) took **70.6%** against a uniform 44.4%, max/min **4.26**. Cause is structural, not a bug - `sign(gain)` on a double is never zero, so the neutral digit is unreachable by the reach. Random draws account for every non-corner count: predicted 7,667 per bin, observed 6,080-7,700 |
+| `sim.reach_noise_prob = 0.15`, and the flatness/reach frontier | **measured**, 14 configurations at 200 episodes x 600 steps | Arrival is flat at 42.5-44% down to ratio **2.44**, then falls - 33.5% at 2.17, 29.5% at 1.87. Jacobian deadband **0.04 m/rad** buys 4.26 -> 2.55 for 1.5 points of arrival; per-digit noise dominates whole-action noise once it is on (2.09 at 39% against 2.17 at 33.5%). Every no-deadband configuration is strictly dominated. F-5's 2.5 threshold is set at this knee |
+| A flatness below ~1.7 is reachable | **refuted by measurement** | At deadband 0.04 the corner-vs-edge imbalance is already gone - corners 48.4% against 44.4%. The residual is same-sign corners at ~19,200 against opposite-sign at ~9,300, because a two-link planar arm reaching outward turns both hinges the same way. Kinematic, not tunable |
+| F-5 passes with `jacobian_deadband = 0.04` and `reach_digit_noise_prob = 0.15` | built `/W4 /WX` clean in both configurations, then **run at F-5's own sample size** - 2,000 episodes x 600 steps, twice, 22.4 s | confirmed 2026-08-27 - min share **7.15%** against the 5% floor, ratio **2.06** against the 2.5 ceiling, and both passes identical over 1.2M actions. Costs arrival 44% -> 35.7%, median closest 0.042 -> 0.052 m. ASan build reports nothing. The startup smoke run is 200 episodes and reads 2.30 / 6.55%, so it is marked indicative - at 200 episodes the ratio moves ~0.2 between samples, which is why F-5 names 2,000 |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
 [Debloating ASan (USENIX Sec '22)](https://www.usenix.org/system/files/sec22summer_zhang-yuchen.pdf),

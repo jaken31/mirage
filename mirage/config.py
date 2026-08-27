@@ -6,7 +6,9 @@ from types import MappingProxyType
 from typing import Any, Mapping, NamedTuple
 
 EXPECTED_KEYS: dict[str, frozenset[str]] = {
-    "sim": frozenset(["scene_xml", "seed", "episodes", "steps_per_episode", "height", "width", "frames_per_shard"]),
+    "sim": frozenset(["scene_xml", "seed", "episodes", "steps_per_episode", "height", "width", "frames_per_shard",
+                      "action_hold_steps", "reach_digit_noise_prob", "jacobian_deadband",
+                      "reach_done_dist"]),
     "data": frozenset(["shard_dir", "ctx", "val_fraction"]),
     "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
@@ -17,7 +19,8 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
 # Counts that must be a positive int. Zero or negative hashes perfectly well and
 # names a run that cannot exist, so the hash stops identifying a real artifact.
 POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
-    "sim": frozenset(["episodes", "steps_per_episode", "height", "width", "frames_per_shard"]),
+    "sim": frozenset(["episodes", "steps_per_episode", "height", "width", "frames_per_shard",
+                      "action_hold_steps"]),
     "data": frozenset(["ctx"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers"]),
@@ -25,8 +28,24 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
 
 # Rates and splits, all of which must lie in [0, 1).
 FRACTION_KEYS: dict[str, frozenset[str]] = {
+    "sim": frozenset(["reach_digit_noise_prob"]),
     "data": frozenset(["val_fraction"]),
     "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
+}
+
+# Physical thresholds, in metres. Positive but unbounded above, which is why
+# they are not FRACTION_KEYS: a distance over 1 m is legitimate the moment the
+# scene grows, and validating one as a fraction would reject it for no reason.
+POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
+    "sim": frozenset(["reach_done_dist"]),
+}
+
+# Same physical family, but zero is meaningful: a jacobian_deadband of 0 is the
+# old sign-only behaviour, legal and occasionally what a sweep wants. Negative is
+# not - it inverts the comparison and makes every gain including exact zero read
+# as a direction, which is the corner-only bug wearing a different hat.
+NON_NEGATIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
+    "sim": frozenset(["jacobian_deadband"]),
 }
 
 
@@ -70,6 +89,18 @@ def _check_values(raw: dict[str, Any]) -> None:
             value = raw[section][key]
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{section}.{key} must be a positive int, got {value!r}")
+
+    for section, keys in POSITIVE_FLOAT_KEYS.items():
+        for key in sorted(keys):
+            value = raw[section][key]
+            if type(value) not in (int, float) or value <= 0.0:
+                raise ValueError(f"{section}.{key} must be a positive float, got {value!r}")
+
+    for section, keys in NON_NEGATIVE_FLOAT_KEYS.items():
+        for key in sorted(keys):
+            value = raw[section][key]
+            if type(value) not in (int, float) or value < 0.0:
+                raise ValueError(f"{section}.{key} must be a non-negative float, got {value!r}")
 
     for section, keys in FRACTION_KEYS.items():
         for key in sorted(keys):
@@ -210,6 +241,10 @@ def _self_check() -> None:
         ("sim", "episodes", True, "positive int"),
         ("sim", "seed", -1, "non-negative"),
         ("data", "val_fraction", 1.0, "[0, 1)"),
+        ("sim", "action_hold_steps", 0, "positive int"),
+        ("sim", "reach_digit_noise_prob", 1.0, "[0, 1)"),
+        ("sim", "jacobian_deadband", -0.01, "non-negative float"),
+        ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),
     ]:

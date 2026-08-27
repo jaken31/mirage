@@ -34,7 +34,14 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
    Prints `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2` at 64x64; the renderer
    deny-list, the `currentBuffer` check, the viewport-vs-XML check and
    `mjr_getError` are all fatal at startup. No pbuffer was needed
-3. `sim/policy.*` - per-episode 50/50 random vs scripted reach, episodes >= 200 steps
+3. `sim/policy.*` - per-episode 50/50 random vs scripted reach - **done 2026-08-27**.
+   Two seeded streams (`seed_seq`, not `base + i`), `begin_episode`/`step`, and a
+   transpose-Jacobian reach. `policy_dry_run` is the check: F-4 aborts on
+   divergence, F-5 prints a verdict. Verified at F-5's own 2,000-episode sample
+   size - min share 7.15%, ratio 2.06, both inside threshold. Two config changes
+   came out of it: **episodes are 600 steps x 500, not 200 x 1500** (at 200 the arm
+   cannot cross to a block inside 0.4 s of sim time), and the histogram knobs are
+   `jacobian_deadband` + `reach_digit_noise_prob`, not whole-action noise
 4. `sim/truth.*` - segmentation pixel counts, contact mask, poses
 5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
 6. `mirage/data.py` - memmap reader, episode-aware sampler
