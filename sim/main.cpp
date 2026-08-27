@@ -4,6 +4,7 @@
 #include <mujoco/mujoco.h>
 #include <GLFW/glfw3.h>
 #include "gl_context.h"
+#include "policy.h"
 
 int main(int argc, const char** argv) {
     printf("C++ version: %ld\n", __cplusplus);
@@ -23,8 +24,10 @@ int main(int argc, const char** argv) {
     if (!model) {
         mju_error("Failed to load model from '%s': %s", argv[1], error_buffer);
     }
-
+    policy_self_check(model);
     GlContext context(model);
     mj_deleteModel(model);
     return 0;
 }
+
+
