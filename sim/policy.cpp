@@ -217,10 +217,14 @@ Policy::Policy(const mjModel* model, int base_seed, int shard_index, PolicyParam
         mju_error("reach_digit_noise_prob = %g is not a probability",
                   params_.reach_digit_noise_prob);
     }
-    // Negative would invert the comparison and make SignWithDeadband return the
-    // sign of everything including exact zero, which is the old bug in disguise.
-    if (!(params_.jacobian_deadband >= 0.0)) {
-        mju_error("jacobian_deadband = %g m/rad is negative",
+    // Negative would invert the comparison in SignWithDeadband and make every
+    // gain including exact zero read as a direction - the corner-only bug in
+    // disguise. Zero is rejected too, matching config.py's POSITIVE_FLOAT_KEYS:
+    // it behaves identically to 1e-9, so allowing it would buy one more rule and
+    // no capability.
+    if (!(params_.jacobian_deadband > 0.0)) {
+        mju_error("jacobian_deadband = %g m/rad is not positive; to disable the "
+                  "dead zone use a small positive value, not 0",
                   params_.jacobian_deadband);
     }
     if (!(params_.reach_done_dist > 0.0)) {

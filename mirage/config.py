@@ -33,19 +33,17 @@ FRACTION_KEYS: dict[str, frozenset[str]] = {
     "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
 }
 
-# Physical thresholds, in metres. Positive but unbounded above, which is why
-# they are not FRACTION_KEYS: a distance over 1 m is legitimate the moment the
-# scene grows, and validating one as a fraction would reject it for no reason.
+# Physical thresholds - metres, or metres per radian. Positive but unbounded
+# above, which is why they are not FRACTION_KEYS: a distance over 1 m is
+# legitimate the moment the scene grows, and validating one as a fraction would
+# reject it for no reason.
+#
+# Positive rather than merely non-negative, including jacobian_deadband, where
+# zero would be defensible: a deadband of 0 and one of 1e-9 behave identically,
+# so "off" costs nothing to spell as a small positive number, and the bound stays
+# one rule instead of two.
 POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
-    "sim": frozenset(["reach_done_dist"]),
-}
-
-# Same physical family, but zero is meaningful: a jacobian_deadband of 0 is the
-# old sign-only behaviour, legal and occasionally what a sweep wants. Negative is
-# not - it inverts the comparison and makes every gain including exact zero read
-# as a direction, which is the corner-only bug wearing a different hat.
-NON_NEGATIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
-    "sim": frozenset(["jacobian_deadband"]),
+    "sim": frozenset(["reach_done_dist", "jacobian_deadband"]),
 }
 
 
@@ -95,12 +93,6 @@ def _check_values(raw: dict[str, Any]) -> None:
             value = raw[section][key]
             if type(value) not in (int, float) or value <= 0.0:
                 raise ValueError(f"{section}.{key} must be a positive float, got {value!r}")
-
-    for section, keys in NON_NEGATIVE_FLOAT_KEYS.items():
-        for key in sorted(keys):
-            value = raw[section][key]
-            if type(value) not in (int, float) or value < 0.0:
-                raise ValueError(f"{section}.{key} must be a non-negative float, got {value!r}")
 
     for section, keys in FRACTION_KEYS.items():
         for key in sorted(keys):
@@ -243,7 +235,7 @@ def _self_check() -> None:
         ("data", "val_fraction", 1.0, "[0, 1)"),
         ("sim", "action_hold_steps", 0, "positive int"),
         ("sim", "reach_digit_noise_prob", 1.0, "[0, 1)"),
-        ("sim", "jacobian_deadband", -0.01, "non-negative float"),
+        ("sim", "jacobian_deadband", 0.0, "positive float"),
         ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),
