@@ -147,8 +147,11 @@ class GridAttention(nn.Module):
     64 positions, so the attention matrix is 64x64 and costs nothing. It is also
     the only mechanism by which the 64 codes describe the frame *jointly* rather
     than independently, and independently is measured: a 512-entry k-means
-    codebook over real 8x8 patches reaches 29.02 dB against the 30 dB Q-1 bar.
-    The 0.98 dB gap is what context has to buy.
+    codebook over real 8x8 patches, fit on the train episodes and scored on the
+    val ones, reaches **28.27 dB** against the 30 dB Q-1 bar. The **1.73 dB** gap
+    is what context has to buy. (The 29.02 dB / 0.98 dB pair quoted elsewhere is
+    the same measurement fit *and* scored on a sample that straddled the split -
+    0.75 dB of leak. `bench/patch_probe.py` prints both.)
 
     Because that margin is inside a training run's noise, this layer's value
     shows up in gate row 2 and not row 1. R0 and R1 run without it.
@@ -441,8 +444,11 @@ def _self_check() -> None:
     # No tanh and no clamp on the output, so an untrained decoder must be free to
     # leave [0, 1]. A range pinned inside it would mean an activation crept in.
     wide = Tokenizer((8, 8, 8))
+    out_conv = wide.decoder[-1]
+    assert isinstance(out_conv, nn.Conv2d) and out_conv.bias is not None, \
+        "the decoder does not end in a biased conv - something follows it"
     with torch.no_grad():
-        wide.decoder[-1].bias.fill_(3.0)
+        out_conv.bias.fill_(3.0)
         reach = float(wide(x).max())
     assert reach > 1.0, "the output is clamped or squashed somewhere"
     print(f"output is unbounded: a +3.0 output bias reaches {reach:.3f}, "
@@ -451,11 +457,12 @@ def _self_check() -> None:
     for attention in (False, True):
         m = Tokenizer((8, 8, 8), attention=attention, quantize=True)
         m(x).sum().backward()
-        missing = [n for n, p in m.named_parameters() if p.grad is None]
+        grads = {name: p.grad for name, p in m.named_parameters()}
+        missing = sorted(name for name, g in grads.items() if g is None)
         assert not missing, f"the STE did not reach {missing}"
-        assert all(torch.isfinite(p.grad).all() for p in m.parameters()), \
+        assert all(torch.isfinite(g).all() for g in grads.values() if g is not None), \
             "a parameter gradient is non-finite"
-        n = len(list(m.parameters()))
+        n = len(grads)
         print(f"attention={attention}: gradient reaches all {n} parameter tensors "
               f"through the quantizer, all finite")
 

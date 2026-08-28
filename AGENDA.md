@@ -94,7 +94,7 @@ row misses.
 | # | Measure | Bar | Req |
 |---|---|---|---|
 | 1 | Held-out PSNR, uint8, over the 16,200 val frames | **>= 30.0 dB** | Q-1 |
-| 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +0.98 dB**, i.e. `30.0 - 29.02`, the k-means++ floor re-measured 2026-08-28. Report the floor the eval computes beside it - if they disagree the val split is not the probe's sample | is the conv context earning its keep |
+| 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +1.73 dB**, i.e. `30.0 - 28.27`, the **held-out** floor - k-means++ fit on the 473 train episodes and scored on the 27 val ones, measured 2026-08-28. The old `+0.98` came from `29.02`, which was fit *and* scored on a sample straddling the split; `bench/patch_probe.py` now prints both, and the 0.75 dB between them is that leak. Report the floor the eval computes beside it | is the conv context earning its keep |
 | 3 | Token entropy / `log2(codebook)`, all 300,000 frames | **>= 70%** | Q-2 |
 | 4 | Token cache rows == `shard.frames`, every shard | **exact** | the Phase 2 handoff |
 | 5 | Re-encode from one checkpoint twice | **bit-identical** | E-1 |
