@@ -16,7 +16,7 @@ Each item carries its evidence, because a debt claim without one is an opinion -
 
 ## Tier 1 - Baked into the dataset. Only these get more expensive.
 
-### [ ] D1. `action_hold_steps = 20` is an unmeasured guess, and Q-4 depends on it
+### [x] D1. `action_hold_steps = 20` is an unmeasured guess, and Q-4 depends on it
 
 **Evidence.** Architecture doc verification log, row `sim.action_hold_steps = 20`:
 marked **"unverified - a guess"**. Estimated from the compiled model's
@@ -80,7 +80,7 @@ trade with the decision still open. See the joint recommendation under D2.
 
 ---
 
-### [ ] D2. 58.7% of ctx=15 training windows contain no action change at all
+### [x] D2. 58.7% of ctx=15 training windows contain no action change at all
 
 **Evidence - measured this session** against `data/shards/shard_000.meta`:
 
@@ -166,6 +166,50 @@ re-verification of F-5, F-6 and F-7 - the numbers that justify the scene as it i
 **B and C are not exclusive**, and taking both is the only combination where every
 requirement is both satisfiable and honestly stated.
 
+#### LANDED 2026-08-28 - B and C both taken, dataset regenerated and re-verified
+
+`scene/arm_blocks.xml` scales gear and damping 3x each, 2/0.5 -> 6/1.5.
+`action_hold_steps` 20 -> 15. Q-4 restated as **90% of the simulator's own
+agreement on the same subset, both numbers reported**. `data_hash` moved
+`0259947e` -> `219ab0af`, and `validator_hash` with it.
+
+**Every M-tier row re-verified over the new 300,000 frames**, not predicted:
+
+| | before | after | bar |
+|---|---|---|---|
+| **Q-4 ground-truth ceiling** | 83.1% | **91.5%** | was 90% absolute, now 82.3% relative |
+| **ctx=15 window coverage** | 41.3% | **60.9%** | D2 - a 1.47x increase |
+| joint0 settling time | 34 steps | **12** | - |
+| joint1 settling time | 12 steps | **5** | - |
+| terminal velocity | 3.92 rad/s | **4.00** | unchanged by design |
+| F-2 unique colours | 7 | **7** | <= 24 |
+| F-5 min share / ratio | 7.15% / 2.27 | **7.17% / 2.15** | >= 5% / <= 2.5 |
+| F-6 contact | 20.69% | **16.63%** | > 5% |
+| F-7 occlusion | 16.18% | **19.83%** | >= 3% |
+| F-9 offpalette on truth | 0 | **0** | 0 |
+| throughput | 6,775 fps | **4,993-7,033** | >= 500 |
+| scripted arrival | 36.4% | **40.0%** | diagnostic |
+
+F-4 holds: two runs at one seed gave **bit-identical** blobs, all 14 compared by
+SHA256. F-8's 448 records still double-decode. Mode 2 still matches segmentation
+truth **exactly on 100.0%** of 6,000 block readings.
+
+**The Q-4 ceiling now clears the old absolute 90% outright**, so C stopped being
+load-bearing for *passing* the moment B landed. It is kept anyway: the ceiling is
+a property of the physics, and a bar that only happens to sit under it is one
+scene edit away from being wrong again. That is the whole lesson of this item.
+
+**Two costs, both expected and both small.** F-6 fell to 16.63%, still 3.3x its
+floor - fewer frames in contact because the arm passes through faster. Throughput
+fell because a more responsive arm makes more contacts for the solver. Arrival
+went the other way, 36.4% -> 40.0%.
+
+**Not reconciled: `AGENDA.md`.** The main checkout's copy was rewritten for Phase
+1 while this branch ran, and still quotes the superseded F-6 20.69% / F-7 16.18%
+/ 6,775 fps. Left alone deliberately rather than creating a merge conflict over
+it - reconcile at merge. Its Phase 1 build order item 1 regenerates the dataset,
+which is now already done here.
+
 ---
 
 ### [ ] D3. The meta record cannot say which policy half produced an episode
@@ -176,7 +220,7 @@ D2's split above had to be inferred from a bimodal histogram with a hand-chosen
 0.55 cutoff, which is why that section reports clusters rather than a clean 50/50.
 
 **Why it is debt.** Any per-half question is guesswork from the dataset alone:
-does F-6's 20.69% contact come mostly from the scripted half? Does Q-4 fail on
+does F-6's contact come mostly from the scripted half? Does Q-4 fail on
 random episodes specifically? The 50/50 coin is the single biggest structural
 choice in the policy and the dataset cannot report on it.
 

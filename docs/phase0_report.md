@@ -1,7 +1,13 @@
 # Mirage: Phase 0 Report
 
-**Status: Phase 0 complete. Gate met 2026-08-27, all three conditions.**
-Working tree clean at `14d2fb7`. 300,000 frames on disk.
+**Status: Phase 0 complete. Gate met 2026-08-27 and re-met 2026-08-28** after the
+`gear 6 / damping 1.5` scene change, all three conditions both times. 300,000
+frames on disk at `data_hash 219ab0af`.
+
+> **Superseded numbers.** Everything below describes the current dataset. The
+> original `0259947e` set read F-6 20.69%, F-7 16.18%, F-5 ratio 2.27 and
+> 6,775 fps; those figures describe a scene that no longer exists. Both gate
+> runs are in the verification log.
 
 Derived document, same class as `timeline.md` and `decision_notes.md`. Every
 number here traces to the verification log at the end of
@@ -50,9 +56,9 @@ Verified on disk this session by reading all seven sidecars and stat-ing the blo
 | Resolution | 64 x 64 x 3, `uint8` |
 | Pixel bytes | **3,686,400,000** = 3.686 GB, against R-4's 20 GB ceiling |
 | Meta bytes | 13,800,000 = 13.8 MB - **0.374% of pixel bytes** |
-| Wall clock | **44.3 s at 6,775 fps** - 13.6x over P-6's 500 fps floor |
-| `data_hash` | `0259947e...`, identical across all 7 sidecars |
-| `git_sha` | `ce5c193`, identical across all 7 sidecars |
+| Wall clock | **42.7-60.1 s at 4,993-7,033 fps** - 10-14x over P-6's 500 fps floor |
+| `data_hash` | `219ab0af...`, identical across all 7 sidecars |
+| `git_sha` | `29604ae`, identical across all 7 sidecars |
 
 Three files per shard, and the write order is the crash-safety mechanism:
 
@@ -101,12 +107,12 @@ All figures over the **full 300k set** unless marked otherwise.
 | F-2 | Palette adherence | <= 24 unique RGB | **7** | pass, whole set |
 | F-3 | Hardware GL, not a software rasterizer | deny `GDI Generic` / `Basic Render Driver` | `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2` | pass |
 | F-4 | Determinism given a seed | bit-identical | **two full runs, byte-identical `.pixels` and `.meta`, all 7 shards** | pass |
-| F-5 | Action coverage / balance | min share >= 5%, max/min <= 2.5 | **7.15%**, ratio **2.27** | pass |
-| F-6 | Arm-block contact | > 5% of frames | **20.69%** | pass, 4x |
-| F-7 | Full block occlusion | >= 3% of frames | **16.18%** | pass, 5x |
+| F-5 | Action coverage / balance | min share >= 5%, max/min <= 2.5 | **7.17%**, ratio **2.15** | pass |
+| F-6 | Arm-block contact | > 5% of frames | **16.63%** | pass, 3.3x |
+| F-7 | Full block occlusion | >= 3% of frames | **19.83%** | pass, 6.6x |
 | F-8 | Shard round-trip byte-exact | numpy matches C++ | 448 records decode identically two independent ways | pass |
 | F-9 | Validator, zero false positives | 0 FP on ground truth | **`offpalette_px` = 0 on every ground-truth frame at tau 8** | pass, thresholds not yet written |
-| P-6 | Generation throughput | >= 500 fps | **6,775 fps** | pass, 13.6x |
+| P-6 | Generation throughput | >= 500 fps | **4,993-7,033 fps** | pass, 10-14x |
 | P-7 | Full 300k epoch | <= 30 min | **5.9 s sequential / 39 s random** | pass, 306-734x |
 | R-4 | Dataset on disk | <= 20 GB | **3.686 GB** | pass |
 | E-3 | ASan clean on the generation run | zero reports | clean, both build types | pass |
