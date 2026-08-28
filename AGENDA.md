@@ -125,7 +125,11 @@ frames" first.
    3.49 at 64x64, **2.62 instead of 7.85** at 96x96, one 7-entry LUT for both.
    Takes the palette rgb as an argument - `validator` imports `data`. Building it
    costs 37.5 s at 64x64 and 87.8 s at 96x96, paid once per run
-4. `mirage/logging.py` - `log(dict)` to jsonl always, W&B behind a flag
+4. ~~`mirage/logging.py`~~ **done 2026-08-28.** `Run.log(dict)` -> one jsonl line
+   in `runs/<run_id>/`, always, each carrying the run id and the caller's hashes;
+   W&B only when `wandb_project` is passed. **The W&B mirror is UNVERIFIED** -
+   wandb is not installed here, which is the condition the rest was verified
+   against. Do not quote it as working until someone runs it
 5. `mirage/fsq.py` - quantizer, encoder/decoder, train loop, eval, token cache.
    **Run rung R0 before FSQ is wired in at all**
 6. F-9 recalibration against reconstructions, then the verdict thresholds finally

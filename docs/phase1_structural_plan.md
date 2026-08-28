@@ -207,6 +207,22 @@ Doc page: none. Stdlib `json`, `pathlib`, `time`.
 **Working when:** a run writes a readable jsonl with W&B absent from the
 environment entirely, and `pandas.read_json(..., lines=True)` parses it.
 
+**Done 2026-08-28**, both, plus `meta.json` per run directory. `python -m
+mirage.logging` is the check. **The W&B mirror stays unverified** and is marked
+so in the source - wandb is absent here, which is the very condition above, so
+that branch has never executed.
+
+Two bugs the self-check caught, worth knowing because both are the quiet kind:
+`log()` returned the caller's dict rather than the serialised line, so numpy
+fields made the return value and the file disagree; and `Path` through `str()`
+writes backslashes on Windows. Now `json.loads` of the written line, and
+`as_posix()`.
+
+Artifacts live in `runs/<run_id>/`, named by run id and not by hash, because two
+runs at one config and different seeds share a hash and would overwrite each
+other. **`runs/` beside `runs.jsonl` is a trap**: the `.gitignore` trailing slash
+is the only thing keeping the hand-authored notebook tracked.
+
 ### 5. `mirage/fsq.py`
 
 The whole phase in one file, built in five stages. Roughly 360 lines, which is

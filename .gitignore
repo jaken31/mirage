@@ -18,6 +18,14 @@ tokens_*.bin
 # NOT ignored: runs.jsonl. It is the E-5 append-only lab notebook, hand-authored,
 # and belongs in version control. Do not add a *.jsonl rule here.
 
+# Per-run machine metrics from mirage/logging.py: runs/<run_id>/metrics.jsonl
+# plus meta.json. Layer 2, written by a tool, thousands of lines per training
+# run - the opposite of runs.jsonl in every way except the extension.
+#
+# The trailing slash matters. `runs/` matches the directory only, so runs.jsonl
+# stays tracked; `runs` without it would ignore the lab notebook too, silently.
+runs/
+
 # C++ / CMake. The build-dir rules are not enough on their own: a manual
 # `cl main.cpp` in sim/ drops its artifacts one level above them, which is
 # how 11.8 MB of them reached the index once already.
