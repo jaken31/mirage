@@ -202,8 +202,9 @@ Three choices that are not stylistic:
   matrix is 64x64 and costs nothing. It is also the only mechanism by which the
   64 codes describe the frame *jointly* rather than independently, and
   independently is measured: a k-means codebook of 512 entries over real 8x8
-  patches reaches **26.39 dB** against Q-1's 30 dB bar. The 3.6 dB gap is what
-  context has to buy.
+  patches reaches **29.02 dB** against Q-1's 30 dB bar. The **0.98 dB** gap is what
+  context has to buy - and because that margin is inside a training run's noise,
+  the attention layer's value shows up in gate row 2, not row 1.
 - **`GroupNorm` + `SiLU`, no residual blocks.** Residual blocks are the first
   capacity lever if rung R2 falls short, not a starting assumption.
 
@@ -222,7 +223,7 @@ entries is **47,814**, so classification needs ~99.6% pixel accuracy to clear
 30 dB while regression can hedge with a blend.
 
 MSE's hedging is a real hole: it rewards blurring edges, and edges are where
-**99.86%** of the error lives. The counterweight is item 6 - `offpalette_px` on
+**99.95%** of the error lives. The counterweight is item 6 - `offpalette_px` on
 reconstructions punishes precisely the blur that PSNR rewards, and the two
 numbers cannot both be gamed. Report them together or neither means much.
 
@@ -255,7 +256,7 @@ FSQ is wired in at all:
 | Rung | Config | Answers |
 |---|---|---|
 | R0 | continuous bottleneck, quantizer bypassed, no attention | the architecture's ceiling. **If R0 misses 30 dB, no levels table will ever help** and the encoder is what needs work |
-| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the 26.39 dB k-means floor |
+| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the **29.02 dB** k-means floor |
 | R2 | R1 plus attention at 8x8 | what joint coding buys |
 | R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder - with the paired LR check below |
 
@@ -334,16 +335,19 @@ unchanged.
 
 ## The numbers already taken, so item 5 does not re-derive them
 
-All from the 300,000 frames on disk, before any of Phase 1 exists.
+All from the 300,000 frames on disk, before any of Phase 1 exists. Re-measured
+2026-08-28 at `data_hash 18a76531` by `bench/patch_probe.py`, which is also where
+the k-means rows' method lives - **quote a k-means number from anywhere else and
+you are probably quoting a random-init run**, which reads 2.6 dB low.
 
 | Measure | Number | What it settles |
 |---|---|---|
 | Union of distinct byte triples, whole set | **7**, worst palette distance 0.75 | item 3's palette-index preload is lossless, 1.16 GB not 3.49 GB |
-| 8x8 patches that are one flat colour | 63.22% | most of the frame is free to reconstruct |
-| Interior cells with a fully flat 22x22 receptive field | 19.96%, all table | Q-2's provable ceiling is 94.4% of uniform, so **the data does not force Q-2 to fail** |
-| k-means, 512 centroids, real patches | **26.39 dB**, 150 of 512 centroids live | the floor item 5 must beat by 3.6 dB, and direct evidence Q-2 is at risk |
-| same, 1024 centroids | 27.60 dB | more codes barely helps; context is the lever, not vocabulary |
-| Share of that error in non-flat patches | **99.86%** | the fork diagnostic is close to predetermined - if Q-1 misses, 96x96 is indicated |
+| 8x8 patches that are one flat colour | 63.47% | most of the frame is free to reconstruct |
+| Interior cells with a fully flat 22x22 receptive field | 20.28%, all table | Q-2's provable ceiling is 94.3% of uniform, so **the data does not force Q-2 to fail** |
+| k-means, 512 centroids, real patches | **29.02 dB**, all 512 centroids live | the floor item 5 must beat by **0.98 dB**. The superseded 26.39 dB / 150-live pair came from an unrecorded random initialisation, and was the only direct evidence Q-2 was at risk |
+| same, 1024 centroids | **30.51 dB** | doubling the vocabulary clears Q-1 outright, so vocabulary *is* a lever - it is just one the token budget forbids, since codes per token is fixed at 512 by the Phase 2 handoff |
+| Share of that error in non-flat patches | **99.95%**, in 36.53% of patches | the fork diagnostic is close to predetermined - if Q-1 misses, 96x96 is indicated |
 | Loader at ctx=0, cold / warm | 6,804 / 109,682 frames/s | against a ~13,000 need: preload, do not hope |
 | FSQ levels tables checked | `[8,8,8]` `[8,6,5]` `[5,5,5]` `[4,4,4]` | `prod(levels)` codes exactly, index bijection holds |
 

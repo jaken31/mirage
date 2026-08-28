@@ -699,11 +699,14 @@ kind of project fails.
   is real added scope.
 
   The measured facts, which are new. First, **the simplest possible compressor
-  falls clearly short**: a fixed dictionary of the 512 most representative tiles
-  scores 26.4 against a bar of 30, and 1,024 entries reach only 27.6. So this is
-  not a formality that a week of training clears. Second, and decisively, **99.9%
-  of that shortfall sits at the boundaries between objects** rather than in flat
-  areas. Misplaced edges are precisely what the larger size fixes. So the branch
+  falls short, though by less than first reported**: a fixed dictionary of the 512
+  most representative tiles scores **29.0** against a bar of 30, and 1,024 entries
+  reach 30.5 and clear it. (The 26.4 and 27.6 figures this note first carried were
+  re-checked on 2026-08-28 and withdrawn - they came from a sloppier way of
+  building that dictionary, not from the pictures.) So it is not a formality, but
+  the shortfall is about one point rather than four. Second, and decisively - this
+  part re-measured and confirmed - **99.9% of that shortfall sits at the
+  boundaries between objects** rather than in flat areas. Misplaced edges are precisely what the larger size fixes. So the branch
   this note used to treat as the unlikely one is the branch the evidence points
   at, and holding the larger size "in reserve" would mean discovering that late.
 
@@ -729,9 +732,11 @@ kind of project fails.
   the vocabulary down - 512, then 240, then 125, then 64 - and stop at the first
   size that passes. Do not add a term to the training that rewards using more of
   it. Added 2026-08-28.
-- **Why** three things. **The risk is real and measured**: the best simple
-  dictionary keeps only **150 of its 512 entries** in genuine use, which is direct
-  evidence that this scene does not need 512 distinct values. **Shrinking is
+- **Why** three things. **The risk is now unmeasured rather than measured**: the
+  evidence used to be that the best simple dictionary keeps only 150 of its 512
+  entries in genuine use, but on 2026-08-28 that turned out to be an artifact of
+  how the dictionary was built - built properly it uses all 512. So take a step
+  down this ladder when the check actually fails, not in anticipation. **Shrinking is
   free**: the speed budget for the prediction program is set by *how many* numbers
   each picture becomes - 64, which never changes - not by how many distinct values
   each number may take. A smaller vocabulary actually makes the prediction program
