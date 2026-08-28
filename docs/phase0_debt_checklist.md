@@ -241,7 +241,7 @@ single README pass** - they are the same file and the same sitting.
 
 ---
 
-### [ ] D8. The verification log and the doc body drift, in both directions
+### [x] D8. The verification log and the doc body drift, in both directions
 
 **Investigated 2026-08-28, after D6 turned up one instance by accident.** The
 sweep method: every verification-log row that reports a refutation or a
@@ -340,9 +340,29 @@ the wrong version is the useful part. Six run-discovered rows added, and the
 section says the thing that matters about them: **five of the six fail silently** -
 the run completes, the numbers look plausible, nothing reports an error.
 
-**Still open: item 1, the "asserted at" column.** That is the change that would
-have prevented all ten sites, and it is a schema change to the verification log
-rather than a text fix.
+**Item 1 landed too - D8 is closed.** The verification log now carries a fourth
+column, **Asserted at**, backfilled across all 43 rows: the 19 refutation rows name
+their sites, the other 24 read `-`. Sites are cited as `file, "Section name"`,
+never as line numbers, matching the convention `sim/policy.h` and `sim/truth.cpp`
+already use - a line reference rots exactly the way the claims did.
+
+The column's rule sits above the table, because a column with no stated convention
+is a column nobody fills: a refutation row lists every site asserting the refuted
+claim and marks each corrected or standing; it is filled **when the row is
+written**, since filling it later means grepping this row's wording against an
+assertion phrased differently, which is precisely how the `mjvOption` and
+`record.cc` sites survived; and **an empty sites column on a real finding is the
+signal to give that finding a home** rather than a clean bill.
+
+Two things the backfill exposed that the prose audit had not:
+
+- **The `pstate == P0` row is the worst case in the table.** Three sites asserted
+  the refuted gate for five days *after* the row refuting it was written, and one
+  of them was an instruction to the reader.
+- **A pre-existing markdown bug.** The F-9 row's result cell contains a literal
+  `max |diff| 0`, so that row had been rendering as six columns, splitting its own
+  result text. Escaped. Found only because adding a column forced a structural
+  check of the table - a schema change is a free excuse to validate the rows.
 
 #### Done when - and the fix is not a sync tool
 
