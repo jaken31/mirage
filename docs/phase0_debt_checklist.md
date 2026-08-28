@@ -241,26 +241,98 @@ single README pass** - they are the same file and the same sitting.
 
 ---
 
-### [ ] D8. Nine docs, overlapping, with nothing keeping the derived ones in sync
+### [ ] D8. The verification log and the doc body drift, in both directions
 
-**Evidence.** `docs/` now holds 9 files. `timeline.md`, `decision_notes.md` and
-`phase0_report.md` all declare themselves derived from the architecture and
-requirements docs, but nothing enforces it. `CLAUDE.md` names this exact failure:
-"expect the stale copies to outnumber the decision that caused them."
+**Investigated 2026-08-28, after D6 turned up one instance by accident.** The
+sweep method: every verification-log row that reports a refutation or a
+correction names a claim the rest of the tree may still assert. Grep the tree for
+each refuted spelling.
 
-**Why it is debt.** D6 and D7 *are* this failure, already happening, in the most
-visible file in the repo. **Confirmed worse than first written:** the D6 pass found
-the refuted `pstate == P0` rule surviving in `world_model_architecture.md` itself,
-two hundred lines above the verification-log row that refutes it. The drift is not
-only derived-file drift - the authoritative doc contradicts itself.
+**Scale: 19 of the log's 43 rows (44%) carry a refutation or correction.**
 
-**Done when.** Pick one and stop:
-- a `> Derived from: X, Y` header line on each derived file, plus one line in
-  AGENDA saying a decision change requires a re-derivation pass; **or**
-- accept the drift explicitly and say so.
+#### Type A - the body still asserts what the log refuted
 
-**Do not build a sync tool.** The real mitigation is doing D6 and D7. Lowest
-priority item on this list.
+Twelve sites across five files.
+
+| Site | Asserts | Refuted by |
+|---|---|---|
+| `world_model_architecture.md:180` | "disable visualization decorations in `mjvOption`" | log: `mjv_defaultOption` already leaves every decoration off, and zeroing the flag array clears `mjVIS_STATIC` so worldbody geoms stop drawing entirely |
+| `phase0_structural_plan.md:267` | "Turn them off in `mjvOption`" | same |
+| `phase0_structural_plan.md:270` | "Prebuilt MuJoCo plus the leak checker ... expect a small suppression file" | log: MSVC has **no leak detection at all**, so the situation cannot arise |
+| `phase0_structural_plan.md:139` | "Read the `record.cc` sample before writing" | log: not in the pip wheel - `mujoco` 3.12.0 ships headers and two test XMLs |
+| `phase0_structural_plan.md:264` | "`record.cc` handles it" | same |
+| `phase0_structural_plan.md:286` | `mj_step` timing is "**Next**" | measured 2026-08-23 |
+| `phase0_structural_plan.md:289` | "the GPU pstate blocker" | pstate gate refuted 2026-08-23 |
+| `world_model_ingredients.md:80` | "C++ harness: **EGL context**, step loop" | EGL is out; the backend is GLFW |
+| `world_model_ingredients.md:128` | Phase 0 gate is "**EGL verified**" | the gate was hardware-render verified under GLFW |
+| `world_model_learning_roadmap.md:62` | "the **EGL context**. This is where your C++ harness lives" | same |
+| `world_model_learning_roadmap.md:151` | "where the **EGL** and offscreen-rendering answers actually live" | low severity - points a reader at the wrong search term |
+| `.gitattributes:6` | "Work happens on Windows and **builds in WSL2**" | WSL2 is out. The LF conclusion survives; its stated reason does not |
+
+#### Type B - the log holds findings the body never absorbed
+
+`phase0_structural_plan.md` has a **"Gotchas, and how you would notice"** table -
+the designated sink for exactly this. It holds **8 rows, every one of them a
+pre-Phase-0 prediction read out of documentation**. It holds **zero** of the
+gotchas Phase 0 discovered by running code:
+
+| Discovered gotcha | Why it belongs in a gotchas table |
+|---|---|
+| `mjv_updateScene` before any `mj_forward`/`mj_step` | Renders an entirely black frame while `scene.ngeom` reads a correct 6 |
+| `<camera mode="targetbody">` without `target=` | Compiles clean, `cam_targetbodyid = -1`, aims nowhere, no error |
+| The segmentation pass leaves the framebuffer holding id colours | Reverse the order and the shard stores id colours; nothing downstream fails |
+| Slicing an `np.memmap` is lazy and touches no pages | A probe reported 3.4M fps having timed slice arithmetic |
+| `jnt_qposadr` and `jnt_dofadr` diverge for free joints | Computing either silently indexes the wrong element |
+| `rgba * 255` does not land exactly, and not by a modellable rule | Byte-rounded equality calls 4 of 7 palette entries missing on a flawless frame |
+
+**And 3 of the table's 8 existing rows are themselves now stale** - the two
+`mjvOption` and `record.cc` rows plus the leak-checker row above. So the table is
+**0 for 6 on current findings and 3 for 8 stale on old ones.**
+
+This is time-sensitive. AGENDA names the Phase 0 structural plan as the standing
+template - "same shape as the Phase 0 one" - and Phase 1's plan is being drafted
+from it now.
+
+#### Why it drifted - the mechanism, and it is not carelessness
+
+**Corrections propagate by string match, not by meaning.** The evidence is that
+drift is not uniform *within a single file*:
+
+- **`castshadow`** is a distinctive, greppable token. Fixed in **all six** places
+  it appears. Nothing survives.
+- **`record.cc`** was corrected inline in `world_model_learning_roadmap.md:63`,
+  with a "checked:" note - and **not** in its sibling `phase0_structural_plan.md`,
+  where the same claim is phrased differently.
+- **The `mjvOption` row is titled "by zeroing the flag array".** The body never
+  says "zeroing"; it says "disable". Grepping the refutation's own key term does
+  not find the assertion it refutes.
+- **`EGL`**: the architecture doc added a blanket escape hatch - "read every 'EGL'
+  below as 'the offscreen GL context'" - which **licensed leaving the occurrences
+  in place**. That instruction scopes to one file. The ingredients and roadmap
+  docs kept theirs with no such license.
+- `world_model_ingredients.md` had its header (448 GB/s) and three table rows
+  corrected while rows 80 and 128 were missed. Same file, same session. "Nobody
+  updated this doc" does not explain that.
+
+The predictor of survival is **whether the refuted claim is phrased in the same
+words as the refutation.**
+
+#### Done when - and the fix is not a sync tool
+
+1. **Add an "asserted at" column to the verification log.** The log records what
+   was wrong and what came back; it never records **where the wrong thing is
+   asserted**. Filling that in when the row is written makes propagation
+   mechanical instead of dependent on a later reader guessing the right synonym.
+   This is the change that would have prevented all twelve Type A sites.
+2. **Route run-discovered gotchas into the gotchas table**, and fix its three
+   stale rows. One line in the standing practice note: a phase's structural plan
+   is updated at phase close, not only written at phase start.
+3. Correct the twelve Type A sites.
+
+**Reprioritised from "lowest priority item on this list".** It was written as doc
+hygiene on the assumption of one instance. Twelve Type A sites and a gotchas table
+that is 0-for-6 on real findings is a different item, and item 2 above decays as
+Phase 1's plan gets written from the stale template.
 
 ---
 
