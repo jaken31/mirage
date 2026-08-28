@@ -47,7 +47,7 @@ almost entirely performance work.
 |---|---|---|---|
 | **0. Unblock the machine** | 2-4 days, possibly 2 weeks | The graphics card runs at full power on demand, pictures come out of the real graphics hardware rather than a slow software imitation, and the compiler toolchain works | Copying finished pictures off the graphics card may be far slower than assumed. This is the single riskiest unknown in the project |
 | **1. Build the picture factory** | 5 days | 300,000 pictures on disk, the same settings produce byte-identical pictures twice, and the automatic frame checker never wrongly flags a good picture | The arm may not touch or hide the blocks often enough. Fixed by moving things in the scene file, not by changing code |
-| **2. Build the compressor** | 1 week | A picture survives being squeezed to a short list of numbers and rebuilt, at a measured quality bar | **This is the branch point.** If quality falls short we switch to larger pictures, and the back half gets materially harder |
+| **2. Build the compressor** | 1 week | A picture survives being squeezed to a short list of numbers and rebuilt, at a measured quality bar | **This is the branch point, and measurement has made it the likeliest stage to force a change.** The simplest version of this falls clearly short of the bar, and the reason it falls short is the exact reason we would switch to larger pictures - which makes the back half materially harder |
 | **3. Build the predictor** | 2 weeks | It can imagine 200 pictures in a row without the scene falling apart | Output looks bad for a while before it looks good. Expected, not a signal to change plans |
 | **4. Make it playable** | 3 days | Keyboard drives the arm with the physics simulation switched off, and we have written down the honest starting speed | Nothing much. This stage exists to produce the number the next stage optimises |
 | **5. Make it fast** | 6 weeks | Five specific speed-ups measured one at a time, at least 3x faster than the starting point, and 30 pictures per second sustained | The hardest and longest stage. Progress often looks flat at first |
@@ -232,23 +232,79 @@ produce one number at a time, in sequence. So the *length* of that list sets the
 speed budget for everything after. Sixty-four numbers per picture is comfortable.
 The fallback is 144, and that is not comfortable.
 
+**What we measured before writing any of it, and what it changed.** We built the
+simplest thing that could possibly work and scored it: take the 512 most
+representative 8-by-8 tiles from the real pictures, keep them as a fixed
+dictionary, and replace every tile with its closest dictionary entry. That scores
+**26.4 on the quality scale where the bar is 30**. Doubling the dictionary to
+1,024 entries only reaches 27.6, so a bigger vocabulary is not the answer.
+
+Put in pixels rather than a scale: **clearing the bar means getting all but about
+17 of a picture's 4,096 pixels exactly right. The simple version gets about 38
+wrong.** The week's job is to halve that.
+
+The consequence is that a compressor which looks at each tile *in isolation*
+cannot pass, and we know that before starting. The entire gap has to come from
+the tiles being allowed to describe each other - each number carrying
+information about its neighbours, and the rebuilding step reading a whole
+neighbourhood rather than one tile at a time. That is a specific thing to build,
+not a matter of training longer.
+
+**And the failure has an address.** Of all the mistakes the simple version makes,
+**99.9% sit at the boundaries between objects** - the edges of blocks and arm
+links. Almost none are in the large flat areas. That matters because misplaced
+edges are the one problem larger pictures fix, and the one problem that retuning
+the compressor's internal settings does not. So the branch the plan had been
+treating as an unlikely fallback is the branch the evidence points at.
+
 **Work:** build the compressor, train it on the pictures from Week 1, measure how
 closely rebuilt pictures match the originals on pictures it has never seen. Also
 check that it actually uses its whole vocabulary rather than collapsing onto a
 handful of favourites.
 
+Four short training runs rather than one, each answering exactly one question.
+Each takes about six minutes, so the whole set is an afternoon:
+
+1. **The control run**, with the number-rounding switched off entirely. This tells
+   us whether a shortfall is the compressor's shape or the rounding. **If the
+   control run cannot clear the bar, no amount of vocabulary tuning will** - the
+   problem is the compressor and nothing else. Run this one first.
+2. The real thing, tiles treated independently. Directly comparable to the 26.4
+   above, so it says what the rounding costs.
+3. The real thing plus the mechanism that lets tiles describe each other. This
+   is where the missing quality is supposed to come from.
+4. Only if 3 falls short: more capacity.
+
+**Then runs 2-4 again at the larger picture size.** This is a change from the
+earlier plan, and the measurement above is why: rather than hold the larger size
+in reserve and switch later on a diagnosis, we measure both this week. It costs
+one settings file, about 45 seconds of regenerating pictures, and one extra
+training run - and it replaces a guess about how hard the back half will be with
+a number.
+
 **Gate - and this is the branch point:**
 
 | Result | Meaning | Consequence |
 |---|---|---|
-| Quality clears the bar | 64 numbers per picture works | The straightforward path. The starting speed in Week 5 will already be close to the 30-pictures-per-second target, and the remaining work is proving a 3x improvement on top |
-| Quality falls short **because edges and small details are misplaced** | The pictures are too small relative to the things in them | Move to larger pictures and 144 numbers each. **This makes the back half materially harder**: the naive speed becomes more than twice the entire budget, and one of the optional speed-ups becomes mandatory |
-| Quality falls short **because colours drift or the overall layout is lost** | Bigger pictures will not help | Do not switch sizes. The fix is retuning the compressor's internal settings. Worth knowing this in advance, because switching to bigger pictures on the wrong diagnosis costs a week and fixes nothing |
+| Quality clears the bar at the small size | 64 numbers per picture works | The straightforward path. The starting speed in Week 5 will already be close to the 30-pictures-per-second target, and the remaining work is proving a 3x improvement on top. **Now the less likely of the two outcomes** |
+| Quality falls short **because edges and small details are misplaced** | The pictures are too small relative to the things in them | Move to larger pictures and 144 numbers each. **This makes the back half materially harder**: the naive speed becomes about two and a half times the entire budget rather than just over it, and one of the optional speed-ups becomes mandatory. **This is the expected failure, not the surprising one** |
+| Quality falls short **because colours drift or the overall layout is lost** | Bigger pictures will not help | Do not switch sizes; retune the compressor's internal settings instead. **Measurement has made this branch unlikely** - 99.9% of the error in the simple version is already at edges, so there is very little colour-and-layout error left for this branch to describe |
 
-That distinction - *which kind* of failure - is the most valuable thing to get
-right this week. The compression ratio is provably identical at both picture
-sizes, so bigger pictures do not give the compressor an easier job in general.
-They only help with one specific problem.
+The compression ratio is provably identical at both picture sizes, so bigger
+pictures do not give the compressor an easier job in general. They help with one
+specific problem, and that problem is the one the evidence says we have.
+
+**The vocabulary check is at genuine risk, and its fix is free.** The best simple
+dictionary keeps only **150 of its 512 entries** in real use, which is direct
+evidence the scene does not need 512 distinct values. If the trained compressor
+does the same, the answer is to shrink the vocabulary - 512, then 240, then 125,
+then 64 - and stop at the first size that passes. **That costs the project
+nothing**, because the speed budget for Weeks 3-6 is set by *how many* numbers
+each picture becomes, which never changes, not by how many distinct values each
+number may take. Shrinking actually makes the prediction program slightly
+smaller. What we must *not* do is add a term to the training that rewards
+spreading the vocabulary out: that would hide the very collapse the check exists
+to detect.
 
 **Also this week, and cheap:** re-run the frame checker's calibration against the
 compressor's rebuilt pictures, not just the original clean ones. The clean ones
@@ -447,7 +503,7 @@ Everything else is execution. These three are genuine forks:
 | When | The question | If it goes badly |
 |---|---|---|
 | **Week 0** | How long does it take to copy one finished picture off the graphics card? | Below half a millisecond: proceed. Above: switch to the cheaper drawing approach. Near 30 milliseconds: hand-build a direct connection to the graphics driver, and add 3-5 days |
-| **End of Week 2** | Is the rebuilt-picture quality good enough at the small size? | Switch to larger pictures, 144 numbers per picture, and the back half gets harder: one optional speed-up becomes mandatory and the naive starting speed goes from "nearly good enough" to "less than half of what we need" |
+| **End of Week 2** | Is the rebuilt-picture quality good enough at the small size? | Switch to larger pictures, 144 numbers per picture, and the back half gets harder: one optional speed-up becomes mandatory and the naive starting speed goes from "just over budget" to "two and a half times budget". **Measurement has moved this from an unlikely fork to the expected one** - 99.9% of the error in the simplest version of the compressor is the exact kind larger pictures fix. Both sizes are measured in Week 2 rather than one being held in reserve, so this fork is answered with a number instead of a diagnosis |
 | **Week 5** | Is the time really split 80/20 between the main processor and the graphics card? | A very different split means the measurement is wrong, not the program. Fix the measurement before optimising anything, or six weeks get spent on the wrong bottleneck |
 
 ---
@@ -459,7 +515,8 @@ Everything else is execution. These three are genuine forks:
 | Copying pictures off the graphics card is fixed-cost slow | Medium-high. Public reports say it is | Week 0 becomes two weeks | Measure on day one, in isolation. Three pre-decided responses, each with a numeric trigger |
 | The graphics card refuses to hold full power under sustained load | Medium. It is a laptop card | Every performance margin in the plan compresses at once | Discovered in Week 0 rather than Week 10, which is the entire reason Week 0 exists |
 | The arm does not touch or hide blocks often enough | High on the first attempt | One or two extra rounds in Week 1 | Fixed by editing the scene, not the code. Already budgeted |
-| Rebuilt-picture quality falls short | Medium | Larger pictures, harder back half | Pre-decided, and the diagnosis matters more than the switch |
+| Rebuilt-picture quality falls short at the small size | **Medium-high, raised from medium.** The simplest version of the compressor scores 26.4 against a bar of 30, and the whole gap has to be earned by one specific mechanism | Larger pictures, harder back half | Both sizes are measured in Week 2, so the switch is a measurement rather than a diagnosis. A control run with rounding switched off, taken first, separates "the compressor is too weak" from "the rounding costs too much" |
+| The compressor collapses onto a handful of its vocabulary | Medium. The best simple dictionary uses only 150 of 512 entries | None, if handled correctly | Shrink the vocabulary until the check passes - 512, 240, 125, 64. Costs nothing, because the speed budget depends on how many numbers per picture, not how many values each may take. Never add a training term that rewards spreading out; that hides the collapse instead of fixing it |
 | The program never learns to remember hidden blocks | Medium-high | The most interesting result is a negative one | Explicitly optional. Measure it, report it either way, ship without it |
 | Performance work runs long | High. It always does | Eats the slack | Two weeks of slack, plus the graphics-card study pulled forward into Weeks 3-4 |
 | Bit-identical repeats stop being bit-identical after a driver update | Low, and expected | A caveat rather than a failure | Documented up front: exact repeatability holds for a fixed driver and a fixed build |

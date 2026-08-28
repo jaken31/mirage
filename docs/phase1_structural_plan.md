@@ -321,7 +321,7 @@ unchanged.
 |---|---|---|
 | **`scene/arm_blocks.xml` is frozen, comments included** | Any byte changes `data_hash` and orphans 300,000 frames | `load_shards(dir, cfg.data_hash)` raises - but only if you pass the hash. Pass it. Notes about `offwidth` belong in `main.cpp` |
 | The FSQ straight-through gradient is not 1.0 | A levels comparison silently becomes an LR comparison | Two levels tables rank differently at two LRs. Measured: 0.858 / 1.001 / 0.668 for `[8,8,8]` / `[5,5,5]` / `[4,4,4]` |
-| `Shapes.token_grid` is floor division | `height=100` silently drops 4 pixels off every frame | Nothing fails. Add a `height % stride == 0` assert to `config.py` |
+| `Shapes.token_grid` is floor division | `height=100` would silently drop 4 pixels off every frame | **Already guarded** - `config.py`'s `_check_values` rejects `sim.height`/`width` not divisible by `tokenizer.stride`, and `_self_check` covers it. Verified 2026-08-28: `100/8` and `64/6` rejected, `96/8` accepted as `token_grid=(12, 12)`. Do not re-add it |
 | The pixel blob is bottom-up | `preload` bypasses the sampler's flip | Every angle and `link_extent` mirrors. Visible immediately if you look at one frame, silent forever if you do not |
 | PSNR computed on the raw float output | Reports ~0.01 dB the pipeline never delivers | It does not fail, it just is not the number. Round to `uint8` first, and hand the validator the same frames |
 | `ConvTranspose2d` in the decoder | Checkerboard artifacts read as edge error | Sends the project to 96x96 for a week on a false diagnosis |

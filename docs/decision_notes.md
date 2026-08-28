@@ -291,6 +291,32 @@ kind of project fails.
   fingerprint internally, so we get content-addressing for correctness and
   settings-linkage for traceability, both.
 
+### D6. The scene file is now frozen, and the picture size moved into settings
+
+- **Chose** the size of the drawing buffer is written into the simulator from the
+  settings file at startup, rather than stated in the scene file where it used to
+  live. Added 2026-08-28.
+- **Why** the dataset's fingerprint covers **the scene file's raw bytes**, so any
+  edit to it - including a comment - changes the fingerprint and orphans the
+  300,000 pictures already on disk. Measuring both picture sizes (I1) needs the
+  buffer at the larger size, which the scene file stated literally as the smaller
+  one. Moving that one value into settings costs three lines of low-level code,
+  leaves the scene file byte-for-byte unchanged, and turns "a second picture size"
+  into a settings-only change. The alternative was regenerating the existing
+  dataset in order to make a second one possible.
+- **Wrong if** someone later needs to change the scene itself - different block
+  positions, a third arm link. That is a real regeneration and always was; this
+  decision does not make it worse, it just means the *buffer size* is no longer a
+  reason to trigger one.
+- **Fallback** none needed, but one consequence has to be carried: **the scene
+  file's stated buffer size is now decorative, and the comment explaining that
+  cannot be added to the scene file.** It lives in the low-level code and in the
+  design document.
+- **Watch for** the two existing safety checks still work and must not be
+  removed - one compares the buffer the graphics driver actually gave us against
+  the requested size, the other compares it against the settings file. Both now
+  read the settings value, so both still catch a mismatch.
+
 ---
 
 ## E. What behaviour gets recorded
@@ -444,8 +470,23 @@ kind of project fails.
   pictures says nothing about the rate on imperfect ones. The rebuilt pictures
   cost nothing extra - the compressor stage produces them anyway for its own
   quality measurement, and they exist before the prediction stage needs them.
+
+  **Strengthened 2026-08-28: the second calibration is not merely cheap, it is
+  the only thing checking a hole in the compressor's own quality score.** That
+  score rewards *blurring* the boundaries between objects - a soft blend across an
+  edge costs it less than a crisp edge placed one pixel wrong - and boundaries are
+  where 99.9% of the error lives. So a compressor could score well by smearing
+  every edge. The checker's off-palette pixel count measures exactly what a smear
+  produces, so the two numbers cannot both be satisfied by cheating. **Report them
+  together or neither means much.** This is why the second calibration is a
+  pass/fail row in the compressor stage's gate rather than a follow-up chore.
 - **Wrong if** even the rebuilt pictures are too clean to represent what the
   prediction program will produce.
+- **Watch for** the "at most 24 distinct colours per picture" rule must **not** be
+  applied to rebuilt pictures. That rule describes the drawing program, which
+  emits exactly 7 colours; a healthy compressor emits hundreds, because it
+  outputs continuous colour rather than picking from a list. Applying it to
+  rebuilt pictures would fail a perfectly good compressor.
 - **Fallback** (1) Calibrate a third time against the prediction program's own
   early output, once it exists. (2) Set the thresholds deliberately loose and
   accept missing subtle failures, prioritising zero false alarms - which is the
@@ -631,30 +672,84 @@ kind of project fails.
 
 ## I. The picture-size fork
 
-### I1. Start at the smaller picture size; switch only on a specific diagnosis
+### I1. Measure both picture sizes in Week 2, rather than starting small and switching on a diagnosis
 
-- **Chose** train the compressor at 64-by-64 first. Switch to the larger size
-  only if quality falls short, and only if the failure looks like misplaced edges
-  and small details.
-- **Why** two computed facts make this decision mechanical rather than a
-  judgement call. First, **the compression ratio is provably identical at both
-  sizes** - exactly 170.667 to 1, and the arithmetic cancels to a
+- **Chose** build and score the compressor at both 64-by-64 and the larger size
+  in the same week. **Revised 2026-08-28 - this used to read "start at the
+  smaller size; switch only on a specific diagnosis."**
+- **Why** two computed facts, plus two measured ones that changed the decision.
+
+  The computed facts, unchanged: **the compression ratio is provably identical at
+  both sizes** - exactly 170.667 to 1, and the arithmetic cancels to a
   size-independent constant. So the larger size does not give the compressor an
   easier ratio. It helps only because the scene becomes oversampled relative to
   the size of the things in it: a block that occupies exactly one small tile at
   the smaller size spans a bit over two tiles at the larger, so each tile carries
-  a simpler piece of an edge. Second, the larger size makes the naive speed
-  **228% of the entire budget** rather than 95%, which promotes the
-  several-numbers-at-once speed-up from optional to mandatory. That is real added
-  scope.
-- **Wrong if** we switch on the wrong diagnosis. If quality fails because colours
-  drift or the overall layout is lost, the larger size will not fix it and we
-  will have spent a week finding that out.
-- **Fallback** (1) If the failure is colour or global structure, the lever is the
-  compressor's internal precision settings, not the picture size. (2) Switch to
-  the larger size *and* accept 20 pictures per second rather than 30, reporting
-  the curve honestly instead of cutting a speed-up from the list. That is the
-  pre-agreed answer if the larger path cannot reach the frame rate.
+  a simpler piece of an edge. And the larger size makes the naive speed **251% of
+  the entire budget rather than 103%** (both figures recalculated against the
+  measured memory bandwidth of 308 GB/s, not the 448 originally assumed), which
+  promotes the several-numbers-at-once speed-up from optional to mandatory. That
+  is real added scope.
+
+  The measured facts, which are new. First, **the simplest possible compressor
+  falls clearly short**: a fixed dictionary of the 512 most representative tiles
+  scores 26.4 against a bar of 30, and 1,024 entries reach only 27.6. So this is
+  not a formality that a week of training clears. Second, and decisively, **99.9%
+  of that shortfall sits at the boundaries between objects** rather than in flat
+  areas. Misplaced edges are precisely what the larger size fixes. So the branch
+  this note used to treat as the unlikely one is the branch the evidence points
+  at, and holding the larger size "in reserve" would mean discovering that late.
+
+  Measuring both costs one settings file, about 45 seconds of regenerating
+  pictures, and one extra training run of about six minutes. Against that, what
+  it buys is that Stage 5's difficulty is known before Stage 3 starts rather than
+  after.
+- **Wrong if** the larger size turns out to help less than the edge-localisation
+  evidence suggests, in which case we spent one training run and about 8 GB of
+  disk finding that out. That is a far cheaper way to be wrong than the previous
+  version of this decision allowed for.
+- **Fallback** (1) If both sizes fall short, the lever is the compressor's shape -
+  more capacity, and the mechanism that lets tiles describe each other - not the
+  picture size and not the internal precision settings. The control run described
+  in I2 is what tells these apart. (2) Take the larger size *and* accept 20
+  pictures per second rather than 30, reporting the curve honestly instead of
+  cutting a speed-up from the list. That remains the pre-agreed answer if the
+  larger path cannot reach the frame rate.
+
+### I2. If the vocabulary collapses, shrink it - never reward spreading it out
+
+- **Chose** if the compressor uses too little of its 512-value vocabulary, walk
+  the vocabulary down - 512, then 240, then 125, then 64 - and stop at the first
+  size that passes. Do not add a term to the training that rewards using more of
+  it. Added 2026-08-28.
+- **Why** three things. **The risk is real and measured**: the best simple
+  dictionary keeps only **150 of its 512 entries** in genuine use, which is direct
+  evidence that this scene does not need 512 distinct values. **Shrinking is
+  free**: the speed budget for the prediction program is set by *how many* numbers
+  each picture becomes - 64, which never changes - not by how many distinct values
+  each number may take. A smaller vocabulary actually makes the prediction program
+  slightly smaller and its final step slightly cheaper. And **the alternative
+  destroys the measurement**: this compressor was chosen over the older, more
+  complicated family specifically because it has no learned dictionary and
+  therefore cannot collapse the way those do. A training term that rewards
+  spreading the vocabulary out would improve the number while hiding whether the
+  underlying problem exists, which is the one outcome worth avoiding.
+- **Wrong if** the check is measuring the wrong thing. It compares the vocabulary
+  actually used against a perfectly even spread, and a perfectly even spread is
+  not something this scene has any reason to produce - so a smaller vocabulary
+  scores better on it than a large one does, which is a slightly perverse
+  incentive. It is kept as a pass/fail bar anyway, because the failure it is
+  really watching for - the compressor ignoring almost all of its vocabulary - is
+  a genuine failure whichever way the bar is phrased.
+- **Fallback** (1) Report the number of vocabulary entries in real use alongside
+  the evenness figure, so a reader can see which of the two is doing the work.
+  (2) If shrinking all the way to 64 still fails, that is evidence the compressor
+  itself is too weak, and the answer moves to I1's first fallback.
+- **Watch for** changing the vocabulary size quietly changes how strongly the
+  compressor learns. The rounding step passes a gradient of 0.858 at 512 values,
+  1.001 at 125 and 0.668 at 64 - a spread of about 1.5x. So every vocabulary
+  comparison has to be run at two learning rates, or the result is partly a
+  learning-rate result wearing a vocabulary label.
 
 ---
 
