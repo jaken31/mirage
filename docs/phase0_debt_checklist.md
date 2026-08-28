@@ -317,6 +317,33 @@ drift is not uniform *within a single file*:
 The predictor of survival is **whether the refuted claim is phrased in the same
 words as the refutation.**
 
+#### LANDED 2026-08-28 - items 2 and 3 below
+
+**Ten of the twelve Type A sites corrected**, plus the gotchas table.
+`world_model_architecture.md:180` now says the decorations are *already* off and
+warns against zeroing the array; `.gitattributes` keeps the LF rule and drops the
+WSL2 reason; the four EGL sites name GLFW; the two stale status markers in the
+structural plan are current. Verified by re-running the same sweep - the only
+surviving `EGL` hits are the architecture doc's own historical framing at `:8` and
+`:639`, both immediately adjacent to their corrections.
+
+**One of the twelve was a false positive.** `phase0_structural_plan.md:139` already
+read "It lives in the MuJoCo GitHub repo under `sample/`, not in the pip wheel" -
+the grep matched the token `record.cc`, not a stale claim. Its sibling at `:264`
+was left as-is for the same reason: `record.cc handles it` is accurate once `:139`
+has told the reader where the file lives. **So the real count was ten, not twelve** -
+a keyword sweep over-reports, which is itself an argument for item 1 below.
+
+**The gotchas table is now two tables.** The eight predicted-from-docs rows stay,
+with the three stale ones marked **Corrected** in place rather than deleted, since
+the wrong version is the useful part. Six run-discovered rows added, and the
+section says the thing that matters about them: **five of the six fail silently** -
+the run completes, the numbers look plausible, nothing reports an error.
+
+**Still open: item 1, the "asserted at" column.** That is the change that would
+have prevented all ten sites, and it is a schema change to the verification log
+rather than a text fix.
+
 #### Done when - and the fix is not a sync tool
 
 1. **Add an "asserted at" column to the verification log.** The log records what
@@ -327,7 +354,7 @@ words as the refutation.**
 2. **Route run-discovered gotchas into the gotchas table**, and fix its three
    stale rows. One line in the standing practice note: a phase's structural plan
    is updated at phase close, not only written at phase start.
-3. Correct the twelve Type A sites.
+3. ~~Correct the twelve Type A sites.~~ **DONE** - ten real ones; see above.
 
 **Reprioritised from "lowest priority item on this list".** It was written as doc
 hygiene on the assumption of one instance. Twelve Type A sites and a gotchas table

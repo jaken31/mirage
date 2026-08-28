@@ -2,9 +2,11 @@
 #
 # docs/world_model_architecture.md defines
 #   data_hash = sha256(canon(sim) + canon(data) + arm_blocks.xml)
-# so the scene XML's raw bytes enter the provenance hash. Work happens on Windows
-# and builds in WSL2, so a CRLF/LF split would make one scene produce two
-# different data_hash values and silently fork E-4's provenance chain.
+# so the scene XML's raw bytes enter the provenance hash. A CRLF/LF split would
+# make one scene produce two different data_hash values and silently fork E-4's
+# provenance chain. Everything runs natively on Windows now - WSL2 cannot render
+# here and is out - but the rule stays: git's autocrlf, an editor, or a future
+# checkout on another OS can each reintroduce the split on their own.
 * text=auto eol=lf
 
 # Byte-exact inputs to hashes and comparisons.

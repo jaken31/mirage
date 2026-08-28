@@ -177,8 +177,12 @@ touches the pixel path, and occlusion counts stop costing a pass. Cost is
 reversibility - a shaded or textured variant needs the second pass back. Switching
 later costs one regeneration, ~10 minutes.
 
-Either way, disable visualization decorations (contact points, joint axes) in
-`mjvOption` - they pollute both the palette and the segmentation.
+Either way, visualization decorations (contact points, joint axes) must stay off
+- they pollute both the palette and the segmentation. **They already are:
+`mjv_defaultOption` leaves every decoration off, so the correct action is to call
+it and change nothing.** Do not zero the flag array to "make sure": that also
+clears `mjVIS_STATIC`, and every worldbody geom silently stops drawing. Measured
+2026-08-23; the row is in the verification log.
 
 ## Provenance and artifact naming
 
