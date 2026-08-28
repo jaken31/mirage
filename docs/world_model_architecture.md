@@ -674,11 +674,24 @@ to 1 handoff is the token cache and that seam should be right. Leave 2-4 undraft
 - Distinct saturated colours per block make "block count" a per-colour pixel
   threshold rather than connected-component labelling. **No scipy in the shipped
   design** - it appears only if the deferred CC diagnostic is added in Phase 2.
-- **The palette has exactly one home: the XML's `rgba` attributes.** The validator
-  reads them with `xml.etree.ElementTree` (stdlib, ~5 lines) rather than duplicating
-  the list in config JSON. Duplication here is the same class of bug as two
-  validator implementations - the copies drift, and the symptom is a validator
-  reporting "block missing" for a block that is present.
+- **The palette has exactly one home: the XML's `rgba` attributes**, plus one
+  entry no `rgba` can name. The validator reads the attributes with
+  `xml.etree.ElementTree` (stdlib, ~5 lines) rather than duplicating the list in
+  config JSON. Duplication here is the same class of bug as two validator
+  implementations - the copies drift, and the symptom is a validator reporting
+  "block missing" for a block that is present.
+
+  **Measured correction 2026-08-27: the palette is the six `rgba` colours plus
+  an implicit black void.** 14.1% of a frame is `(0,0,0)` - the framebuffer
+  clear colour, showing past the far edge of a finite table with no skybox - and
+  it appears in no `rgba` attribute. Without the extra entry `offpalette_px`
+  reads ~578 px on a flawless frame and F-9 can never reach zero false
+  positives. The entry lives in `mirage/validator.py` (`VOID_RGB`), not in the
+  scene: adding a black geom to the XML would change `data_hash` and invalidate
+  300k frames to fix a reader's bookkeeping. Also **keep the palette unrounded**
+  - comparing against `0.90 * 255 = 229.5` rather than `230` halves every
+  distance, and the worst a rendered pixel then sits from its own entry is 0.75
+  over 8,000 frames.
 - Keep the palette under F-2's 24-colour ceiling. Current count is ~7 (background,
   table, 2 arm links, 3 blocks), so there is headroom, but every new
   distinctly-coloured object spends from a budget that also protects the tokenizer.
@@ -747,6 +760,7 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 
 | Claim | Method | Result |
 |---|---|---|
+| **F-9, F-2 over the full set, and the validator's two modes** (`mirage/validator.py`) | **run** - `python -m mirage.validator`: F-2 over all 300,000 frames, the F-9 sweep over 8,000 frames drawn from 500 windows | confirmed 2026-08-27. **F-2: max 7 unique colours over every frame** against the 24 ceiling - measured on the whole set, not a sample. **F-9's sweep is executable and mostly passes**, with one field it rules out. Passing: `offpalette_px` reads **0 on every ground-truth frame** at tau 8, and the worst distance any rendered pixel sits from its own palette entry is **0.75**, so tau has 11x headroom - that is the viable verdict expression today. **Ruled out: `px_count` cannot be a per-frame threshold.** The smallest `px_count` on a block ground truth calls *visible* is **1 px with margin 0**, because F-7 makes partial occlusion common - so a "block missing" rule has no headroom at all and the sweep says so rather than picking a number off a cliff. This is why `Sweep` reports `px_count_margin`. **Mode 2 is validated directly against ground truth**: pixel-only `px_count` equals the segmentation `visible_px` **exactly on 100.0% of 6,000 block readings, max |diff| 0** - the id-colour decode and the palette agree with each other to the pixel. **Two corrections to this doc, both found by measurement.** (1) `rgba * 255` does not land exactly - link0's `0.90 0.75 0.10` renders (229, 191, 25), and 0.65 rounds *up* to 166 while 0.90 rounds *down* to 229, so there is no rule worth modelling. With a byte-rounded palette, exact RGB equality counts zero pixels for **4 of 7 entries** and calls block0, block2, link1 and table missing on a flawless frame - the measured case for nearest-palette-by-argmin, which the design already specified. Keeping `Palette.rgb` unrounded is what takes the worst distance to 0.75. (2) **The palette needed a seventh entry the XML cannot provide** - see the palette bullet above. F-6 **20.69%** and F-7 **16.18%** re-confirmed from the meta over the full set. **Not yet done**: thresholds are printed, not written into config, because the documented build order recalibrates them against Phase 1 tokenizer reconstructions and writing a Phase-0-only number into `validator_hash` now would be a guess |
 | **F-8, and the loader against P-7** (`mirage/data.py`, `bench/loader_probe.py`) | **run** over the full 300k set - `python -m mirage.data`, then `python bench/loader_probe.py` | confirmed 2026-08-27. **F-8 holds**: 448 sampled records decode identically through the structured dtype and through an independent `struct.unpack` at the documented offsets, and both blobs are exactly `frames x per-frame` bytes. Index: **500 episodes of 600 steps, ids 0..499 each once, none split across shards**, built in 9 ms. 20,000 sampled windows of 16 all carry **one `episode_id` with contiguous `step_idx`**. Throughput single-threaded, no DataLoader workers: sequential sweep **5.9 s = 50,979 fps** (597 MiB/s), random episode-aware windows **5,642 -> 7,646 win/s = 90,269 -> 122,342 fps** (131-177 us/window) across three passes. Against **P-7's 167 fps floor that is 306x sequential and 734x random**, so the loader costs 0.14-0.33% of the 30-minute epoch budget and **needs no workers, prefetch, or caching layer** - 3.43 GiB of pixels in 31.6 GB of RAM means the page cache holds the whole set, which is why pass 1 to pass 3 moves only 35%. **New gotcha, found by getting it wrong**: slicing an `np.memmap` returns a lazy view and touches no pages, so a first probe reported 3.4M fps having timed slice arithmetic - `__getitem__` returns `np.array(...)` and any probe must force the copy. **Row order settled**: the blob is bottom-up (`mjr_readPixels` origin is bottom-left, nothing in `sim/` flips it), and the flip belongs in the sampler, not in `Shard.pixels`, which stays raw so F-8 has something to compare. Verified against the scene rather than the convention - the camera at y=-0.5 at ~24 deg elevation puts the void past the far table edge at the **top**, which only happens after the flip, matching `bench/preview.png`. Split is by **episode, hashed** - 473 train / 27 val (5.4%) at `val_fraction` 0.05, disjoint; by frame it would leak, since consecutive frames differ by one 2 ms step |
 | All dataset / meta / token-cache / KV / param / budget / diagonal arithmetic | computed | confirmed; values in the tables above |
 | Ingredients doc's budget table | recomputed from first principles | KV 28.1/59.7 us vs its "~28/~60"; weights 65.0 us vs "~67"; params 14.56M vs "15M"; DiagD 4.27x/6.26x vs "4.3x/6.3x". **The doc's arithmetic is sound.** |

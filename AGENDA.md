@@ -17,7 +17,14 @@ replay, hardware render confirmed by the renderer name.
 **bit-identical** `.pixels` and `.meta` for all 7 shards. Renderer reads
 `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. Measured over the whole set -
 F-5 min share 7.15% and ratio 2.27, F-6 20.69%, F-7 16.18%, F-2 7 colours,
-episodes 0..499 each with exactly 600 steps. Item 7 remains.
+episodes 0..499 each with exactly 600 steps.
+
+**All seven Phase 0 items are done as of 2026-08-27.** What is not done is
+threshold calibration: `mirage/validator.py` prints the set that gives zero
+false positives on ground truth, and the documented build order recalibrates it
+against Phase 1 tokenizer reconstructions before anything is written into
+config. Phase 1's structural plan is the next thing to write - only the shard
+format gated it, and that format is now read as well as written.
 
 ---
 
@@ -84,7 +91,22 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
    flip them itself, or `link_angle` comes out mirrored - and **the split is by
    episode, hashed**, so a per-frame split anywhere downstream reintroduces the
    leak this removed
-7. `mirage/validator.py` - measurement vector, both modes, threshold sweep
+7. `mirage/validator.py` - measurement vector, both modes, threshold sweep -
+   **done 2026-08-27**. `python -m mirage.validator` is the check. **F-2 holds
+   over all 300,000 frames at 7 colours**, and mode 2's `px_count` equals the
+   segmentation `visible_px` **exactly on 100% of 6,000 block readings**, which
+   validates the pixel-only path against ground truth directly rather than by
+   threshold. Three things came out of it. **The palette needed a seventh entry
+   the XML cannot name** - 14.1% of every frame is the black void past the table
+   edge, and without it `offpalette_px` reads ~578 px on a perfect frame.
+   **`rgba * 255` does not land exactly** and not by a modellable rule, so
+   nearest-palette is load-bearing, not a nicety: byte-rounded exact equality
+   calls 4 of 7 entries missing on a flawless frame. And **`px_count` is not
+   usable as a per-frame threshold** - a block ground truth calls visible
+   reaches 1 px with margin 0, because F-7 makes partial occlusion common, so
+   the viable verdict today is `offpalette_px` alone at tau 8, which has 11x
+   headroom over render rounding. Do not write thresholds into config until the
+   Phase 1 recalibration
 
 Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed
 by `sim/main.cpp` printing `202002`, and both `sim/build/` and `sim/build-asan/`
