@@ -43,6 +43,41 @@ presents as a modelling failure.
 changes, so every tokenizer checkpoint, dynamics checkpoint, token cache, eval row
 and bench row computed from the current shards becomes unreachable by name.
 
+**MEASURED 2026-08-28 - `bench/hold_probe.py`. The parameter does not settle,
+because the requirement it serves is broken.**
+
+The estimate was wrong in a specific way: it read `dof_armature = 0.01` as the
+inertia, but **armature is the term *added* to the mass-matrix diagonal, not the
+diagonal.** The link inertia was omitted.
+
+| | measured | doc estimate |
+|---|---|---|
+| joint0 settling time | **21-34 steps**, by link1's angle (M00 0.0203-0.0350) | ~15 |
+| joint1 settling time | **12 steps**, configuration-independent | ~15 |
+
+The first-order `M/b` prediction matches every measurement - 34 vs 35.0, 30 vs
+29.4, 21 vs 20.3, 12 vs 12.3 - so both numbers are trustworthy.
+
+**The finding that matters is not the settling time. It is that Q-4's 90% bar sits
+above its own ceiling.** Ground-truth frames score **83.1%** action-following at
+the shipped hold, so **a model that reproduced the simulator exactly would fail
+Q-4 by 7 points.** That is a defect in the requirement, not in any dataset or
+model, and it holds whatever the hold is set to. Recorded in
+`world_model_requirements.md`, "Requirements at risk".
+
+**And no hold satisfies both this and D2**, at the shipped physics:
+
+| hold | agreement (Q-4 wants >= 90%) | ctx=15 windows carrying a change |
+|---|---|---|
+| 12 | 77.9% | 90.0% |
+| 15 | 80.1% | 82.8% |
+| **20 - shipped** | **83.1%** | **62.1%** |
+| 45 | 90.0% | 28.1% |
+| 60 | **91.3%** | **19.4%** |
+
+**`action_hold_steps` is unchanged at 20.** It is no longer a guess; it is a known
+trade with the decision still open. See the joint recommendation under D2.
+
 ---
 
 ### [ ] D2. 58.7% of ctx=15 training windows contain no action change at all
@@ -93,6 +128,43 @@ a known number before Phase 2, not a discovery after it.**
 
 **Do this with D1, not separately** - both are settled by the same sweep and the
 same regeneration.
+
+**MEASURED 2026-08-28, jointly with D1. The trade is real but not forced.**
+
+The transient length is not a constant: it is `tau = M / damping`, while the arm's
+speed is `v_term = gear * ctrl / damping`. **Scaling gear and damping together
+holds the speed and shrinks the transient** - it moves the frontier instead of
+sliding along it.
+
+| gear | damping | v_term | tau0 | hold 15 agreement | hold 15 window coverage |
+|---|---|---|---|---|---|
+| 2.0 - shipped | 0.50 | 3.92 | 34 | 79.9% | 83.3% |
+| 4.0 | 1.00 | 4.00 | 18 | 86.9% | 83.3% |
+| **6.0** | **1.50** | **4.00** | **12** | **90.3%** | **83.3%** |
+
+Terminal velocity is flat, so the arm is not made faster - only more responsive.
+At `gear 6 / damping 1.5`, **hold 15 clears both bars**, which nothing does at the
+shipped physics.
+
+**One caveat survives the fix.** The coverage column is the **random half only**.
+The shipped 50/50 mix reads 41.3% against the random half's 62.1% at hold 20, so
+the scripted half roughly halves coverage - and no physics change touches that
+cause. Option (c) above, making the scripted half re-draw a *different* action on
+repeat, is still the lever for that half.
+
+#### The decision, which is not mine to make
+
+All three paths cost a regeneration, which is 44 seconds of compute and a
+re-verification of F-5, F-6 and F-7 - the numbers that justify the scene as it is.
+
+| Path | Buys | Costs |
+|---|---|---|
+| **A. Hold 60, no scene change** | Q-4 ground truth reads 91.3% | Coverage falls to 19.4%. Only 10 actions per 600-step episode |
+| **B. Scene edit, gear 2->6 and damping 0.5->1.5, hold 15** | Both bars clear on the random half | Moves `data_hash`; F-5, F-6, F-7 all need re-running; the scripted half still halves coverage |
+| **C. Rescore Q-4 against the simulator's own number** | Costs nothing, and is the honest form of the metric - the ceiling is a property of the physics, not of the model | A requirements change. Does nothing for D2 |
+
+**B and C are not exclusive**, and taking both is the only combination where every
+requirement is both satisfiable and honestly stated.
 
 ---
 
