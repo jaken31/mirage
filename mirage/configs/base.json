@@ -7,7 +7,7 @@
         "height": 64,
         "width": 64,
         "frames_per_shard": 50000,
-        "action_hold_steps": 20,
+        "action_hold_steps": 15,
         "reach_digit_noise_prob": 0.15,
         "jacobian_deadband": 0.04,
         "reach_done_dist": 0.04

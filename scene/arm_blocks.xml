@@ -18,10 +18,20 @@
 		<headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
 	</visual>
 
+	<!-- gear and damping are scaled together on purpose, 3x each from the
+	     original 2 / 0.5. Terminal velocity is gear*ctrl/damping, so it is
+	     unchanged at ~4 rad/s - the arm is not faster, only more responsive.
+	     The settling time is inertia/damping, and it drops from 34 steps to 12
+	     for joint0. That is what Q-4 needs: agreement is scored as
+	     sign(delta theta) against the commanded sign, and every frame inside
+	     one settling time after a sign flip disagrees with the command no
+	     matter how good the model is. At 2 / 0.5 the simulator itself scored
+	     83.1% and Q-4 could not be met by a perfect model. Measured in
+	     bench/hold_probe.py; do not change one of these without the other. -->
 	<default>
 		<geom type="box" friction="1 0.005 0.0001"/>
-		<joint armature="0.01" damping="0.5"/>
-		<motor ctrllimited="true" ctrlrange="-1 1" gear="2"/>
+		<joint armature="0.01" damping="1.5"/>
+		<motor ctrllimited="true" ctrlrange="-1 1" gear="6"/>
 	</default>
 
 	<worldbody>

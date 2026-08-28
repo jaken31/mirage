@@ -341,6 +341,16 @@ Three properties this buys:
   ground-truth frames and applied to generated frames carries an unquantified
   generalization gap that a geometric measurement does not.
 
+  **Run the same measurement on ground-truth frames and report both numbers.**
+  The metric has a ceiling below 100% that has nothing to do with the model: for
+  about one joint settling time after each commanded sign flip, the joint is
+  still moving the old way, so the sign disagrees with the command in the
+  simulator itself. Measured 2026-08-28 at 83.1% under the shipped
+  `action_hold_steps`. **Q-4 is therefore scored as a fraction of that ceiling,
+  not against an absolute 90%** - an absolute bar above the ceiling fails a model
+  that is exactly right. Recompute the ceiling whenever the scene or the hold
+  changes; `bench/hold_probe.py` produces it.
+
 **Why colour counting and not CC for the verdict** - the argument is correctness,
 not effort. F-7 requires full occlusion in >=3% of frames, so partial occlusion is
 common. An arm crossing a block splits it into two disconnected same-colour blobs,
