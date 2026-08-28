@@ -510,6 +510,183 @@ of an edge.
 looks like colour drift or lost global structure, 96x96 will not fix it and the real
 lever is the FSQ levels table. Worth knowing before spending a week on it.
 
+**Measured correction 2026-08-28: the "colour drift" branch is close to dead, and
+the fork is therefore likelier than this table assumed.** A k-means codebook of 512
+entries over real 8x8 patches carries **99.86% of its squared error in the 37% of
+patches that are not a single flat colour** - flat patches contribute 0.14%. Edge
+placement is not one of two comparably likely failure modes; it is where essentially
+all of the error already lives before any training has happened. So the branch that
+sends this project to 96x96 is the branch the data points at, and the consequences
+below - DiagD required, F-16 promoted to **M**, graphs as table stakes rather than the
+headline - should be treated as more likely than not until Phase 1 says otherwise.
+**That is why the 96x96 arm is in Phase 1's ladder rather than held as a fallback**:
+one config file, ~45 s of generation and one training run replaces this prior with a
+number.
+
+## Phase 1 decisions: the tokenizer
+
+Recorded here so item 5 of `phase1_structural_plan.md` does not re-derive them. Each
+carries the trigger that would reverse it.
+
+### Q-1 is the phase's real risk, and Q-2 is at risk for the opposite reason
+
+Both claims are measured, over the 300,000 frames on disk, before any of Phase 1
+exists.
+
+**Q-1.** A patch-independent tokenizer cannot pass. k-means with 512 centroids over
+real 8x8 patches reaches **26.39 dB** against Q-1's 30 dB; 1,024 centroids reach
+**27.60 dB**, so vocabulary is not the lever. The entire 3.6 dB has to come from the
+22x22 receptive field, the attention layer and a shared decoder - the 64 codes
+describing the frame *jointly* rather than independently, since 26.39 dB *is* the
+independent number. Restated physically, because a wrong pixel costs **47,814**
+squared error on this palette: the floor gets ~38 of 4,096 pixels wrong and the bar
+is ~17.
+
+**Q-2.** The data does not force low entropy. Only **19.96%** of interior cells have
+a fully flat 22x22 receptive field (all of them table), which puts the provable
+entropy ceiling at **94.4% of uniform** at 512 codes - cells whose receptive fields
+hold identical pixels must get identical codes, and that is the only hard constraint
+the data imposes. What is at risk is that the scene does not *need* 512 codes: the
+same k-means run keeps only **150 of 512** centroids alive, and the exact-8x8-patch
+distribution carries just **4.43 bits** of entropy against the 9 available.
+
+**If Q-2 misses, shrink the vocabulary. Do not add an entropy loss.** An auxiliary
+loss undoes the reason FSQ was chosen over VQ, and it makes the collapse question
+permanently unanswerable. Ladder, in order: `[8,8,8]`=512 -> `[8,6,5]`=240 ->
+`[5,5,5]`=125 -> `[4,4,4]`=64. Token count never changes, so inference cost is
+untouched and the output head shrinks.
+
+**Trigger to revisit:** if R0 - the continuous-bottleneck control - also misses 30 dB,
+then neither of the above is the problem and the encoder is. Fix capacity before
+touching levels.
+
+### The straight-through gradient is not 1.0, and it moves with the levels table
+
+Measured by running it: the gradient of the quantizer output with respect to its
+input, at zero, is **0.858** for `[8,8,8]`, **1.001** for `[5,5,5]` and **0.668** for
+`[4,4,4]`. The straight-through estimator bypasses only the rounding, so the `tanh`
+derivative inside `bound` stays in the path, and it depends on `levels` through
+`half_l` and `offset`.
+
+Consequence: **walking the shrink ladder rescales the effective bottleneck learning
+rate by up to 1.5x**, and a comparison run at one LR reports a levels result that is
+partly an LR result. Run each variant at the base LR and at the base LR scaled by
+`0.858 / g_new`. This is the one place in the phase where a plausible-looking
+experiment silently answers a different question than the one asked.
+
+### Loss is plain MSE, and the F-9 recalibration is its counterweight
+
+PSNR is a monotone function of MSE, so the loss *is* the gate. No perceptual term, no
+GAN, and none of FSQ's absent auxiliary losses.
+
+**Per-pixel 7-way cross-entropy was considered and loses.** It would give hard edges,
+which is attractive given where the error lives. But a misclassified pixel costs the
+full 47,814, so classification needs ~99.6% pixel accuracy to clear 30 dB, while
+regression can hedge with a blend and pay far less. CE is worse aligned with the gate,
+not better.
+
+**The hole this leaves is real: MSE rewards blurring edges, and edges carry 99.86% of
+the error.** A model could clear Q-1 by hedging every boundary. The counterweight is
+the F-9 recalibration - `offpalette_px` over reconstructions counts exactly the
+pixels a blend produces, so PSNR and `offpalette_px` cannot both be gamed. **Report
+them together or neither means much.** This is what turns the leftover Phase 0
+calibration item into a load-bearing part of Phase 1 rather than a chore.
+
+**Trigger:** if Q-1 passes while `offpalette_px` on reconstructions is far worse than
+the render-rounding baseline, add a small cross-entropy term as an auxiliary and
+re-measure both. Not before that evidence exists.
+
+### Decoder upsampling is nearest-plus-conv, never transposed
+
+`ConvTranspose2d` checkerboarding presents as misplaced edges. Misplaced edges are
+the exact signal that decides the 64-vs-144 fork, and the fork costs a week and
+reshapes Phase 4. A checkerboard artifact would therefore not merely add noise - it
+would produce a *false positive on the one diagnostic the phase exists to read*. No
+trigger reverses this; the cost of being wrong is asymmetric.
+
+### One self-attention layer on the 8x8 grid
+
+64 positions, so the attention matrix is 64x64 and the cost is negligible against
+three conv stages. It is also the only mechanism in the design by which codes
+cooperate, which the 26.39 dB floor establishes is the whole game. It is a ladder
+rung (R2) rather than an assumption, so its contribution is measured rather than
+asserted.
+
+**Trigger to add more:** if R2 still falls short, residual blocks at the bottleneck
+come before wider channels, and both come before touching `levels`.
+
+### fp32 for Phase 1, not bf16
+
+`world_model_ingredients.md` specifies bf16 training. That line is about the
+15M-parameter dynamics model at context 1024, where it is necessary. The tokenizer is
+~1.5M parameters with ~400 MB of activations at batch 128, so fp32 costs nothing
+against R-1's 7.5 GB and removes a class of numerical doubt from the single number
+the whole phase turns on - an MSE around 1e-3 has little headroom in an 8-bit
+mantissa.
+
+**Trigger:** a measured step time that makes the ladder inconvenient. Then autocast
+the forward pass only, keep the loss reduction in fp32, and re-run one rung both ways
+to confirm the PSNR is unchanged.
+
+### PSNR is computed on uint8-rounded reconstructions
+
+The float decoder output is not what the pipeline delivers, and it is not what the
+validator sees. Rounding first costs ~0.01 dB of optimism and makes rows 1 and 6 of
+the gate describe the same frames. Cheap, and the alternative is a number that is
+quietly about something else.
+
+### The scene XML is frozen, and the offscreen size moves to config
+
+`data_hash` is `sha256(canon(sim) + canon(data) + xml_bytes)`, so **any** byte of
+`scene/arm_blocks.xml` - including a comment - changes it and orphans 300,000 frames.
+The 96x96 arm needs `offwidth`/`offheight` at 96, which the XML currently states
+literally at 64.
+
+**Resolved by writing `model->vis.global.offwidth`/`offheight` from config between
+`mj_loadXML` and context creation.** They are plain mutable `int` fields on `mjModel`
+(`mjmodel.h`, `struct mjVisual_`), read by `mjr_makeContext`. Both existing guards
+keep their teeth: `gl_context.cpp` still compares `mjr_maxViewport` against
+`model->vis.global.offwidth`, now the config value, and `main.cpp` still cross-checks
+the viewport against `cfg.width`/`cfg.height`. Cost is three lines and both
+resolutions become a config-only change; the alternative was regenerating the
+existing dataset in order to make a second one possible.
+
+**Consequence to carry: the XML's literal `offwidth="64"` is now decorative, and the
+comment explaining that cannot be added to the XML.** It lives in `main.cpp` and
+here.
+
+### Frames are preloaded as palette indices, not RGB
+
+The loader reads **6,804 frames/s cold against 109,682 warm** at ctx=0, and training
+needs ~13,000. With ~4.9 GB free against a 3.5 GB working set the page cache sits
+exactly on the boundary, so the cold case is a real failure mode rather than a
+first-epoch transient.
+
+**The union of distinct byte triples over all 300,000 frames is exactly 7**, one per
+palette entry, worst distance 0.75 - measured as a union over the whole set, not a
+per-frame count, because "at most 7 per frame" would permit a larger union and make a
+7-entry LUT lossy. So one byte per pixel is lossless and the train split preloads in
+**1.16 GB instead of 3.49 GB**.
+
+Two things this must not get wrong: the blob is bottom-up and `preload` bypasses the
+sampler's flip, and nearest-palette-by-argmin is required because `rgba * 255` does
+not land on integers. Both are assertions in the function, not comments.
+
+**Trigger:** a scene change that adds a distinctly-coloured object raises the LUT
+size. It stays a `uint8` index up to 256 entries, well past F-2's 24-colour ceiling.
+
+### The token cache is per-shard and named by the run
+
+One `.npy` of `uint16` per shard, shape `(frames, 8, 8)`, in a directory named by run
+id, plus a manifest carrying `tokenizer_hash`, the checkpoint and per-shard frame
+counts. 38.4 MB total.
+
+Per-shard rather than one flat array, because a flat array is addressed through a
+cumulative frame offset and that is an off-by-one factory; per-shard makes
+`len(tokens) == shard.frames` a loud assert. Named by run rather than by
+`tokenizer_hash` for the reason already recorded under provenance: two runs at
+identical config and different seeds share a hash and produce different tokens.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 E-3 requires ASan clean on the **full** data-generation run, plus 64-bit shard
@@ -760,7 +937,7 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 
 | Claim | Method | Result |
 |---|---|---|
-| **F-9, F-2 over the full set, and the validator's two modes** (`mirage/validator.py`) | **run** - `python -m mirage.validator`: F-2 over all 300,000 frames, the F-9 sweep over 8,000 frames drawn from 500 windows | confirmed 2026-08-27. **F-2: max 7 unique colours over every frame** against the 24 ceiling - measured on the whole set, not a sample. **F-9's sweep is executable and mostly passes**, with one field it rules out. Passing: `offpalette_px` reads **0 on every ground-truth frame** at tau 8, and the worst distance any rendered pixel sits from its own palette entry is **0.75**, so tau has 11x headroom - that is the viable verdict expression today. **Ruled out: `px_count` cannot be a per-frame threshold.** The smallest `px_count` on a block ground truth calls *visible* is **1 px with margin 0**, because F-7 makes partial occlusion common - so a "block missing" rule has no headroom at all and the sweep says so rather than picking a number off a cliff. This is why `Sweep` reports `px_count_margin`. **Mode 2 is validated directly against ground truth**: pixel-only `px_count` equals the segmentation `visible_px` **exactly on 100.0% of 6,000 block readings, max |diff| 0** - the id-colour decode and the palette agree with each other to the pixel. **Two corrections to this doc, both found by measurement.** (1) `rgba * 255` does not land exactly - link0's `0.90 0.75 0.10` renders (229, 191, 25), and 0.65 rounds *up* to 166 while 0.90 rounds *down* to 229, so there is no rule worth modelling. With a byte-rounded palette, exact RGB equality counts zero pixels for **4 of 7 entries** and calls block0, block2, link1 and table missing on a flawless frame - the measured case for nearest-palette-by-argmin, which the design already specified. Keeping `Palette.rgb` unrounded is what takes the worst distance to 0.75. (2) **The palette needed a seventh entry the XML cannot provide** - see the palette bullet above. F-6 **20.69%** and F-7 **16.18%** re-confirmed from the meta over the full set. **Not yet done**: thresholds are printed, not written into config, because the documented build order recalibrates them against Phase 1 tokenizer reconstructions and writing a Phase-0-only number into `validator_hash` now would be a guess |
+| **F-9, F-2 over the full set, and the validator's two modes** (`mirage/validator.py`) | **run** - `python -m mirage.validator`: F-2 over all 300,000 frames, the F-9 sweep over 8,000 frames drawn from 500 windows | confirmed 2026-08-27. **F-2: max 7 unique colours over every frame** against the 24 ceiling - measured on the whole set, not a sample. **F-9's sweep is executable and mostly passes**, with one field it rules out. Passing: `offpalette_px` reads **0 on every ground-truth frame** at tau 8, and the worst distance any rendered pixel sits from its own palette entry is **0.75**, so tau has 11x headroom - that is the viable verdict expression today. **Ruled out: `px_count` cannot be a per-frame threshold.** The smallest `px_count` on a block ground truth calls *visible* is **1 px with margin 0**, because F-7 makes partial occlusion common - so a "block missing" rule has no headroom at all and the sweep says so rather than picking a number off a cliff. This is why `Sweep` reports `px_count_margin`. **Mode 2 is validated directly against ground truth**: pixel-only `px_count` equals the segmentation `visible_px` **exactly on 100.0% of 6,000 block readings, max \|diff\| 0** - the id-colour decode and the palette agree with each other to the pixel. **Two corrections to this doc, both found by measurement.** (1) `rgba * 255` does not land exactly - link0's `0.90 0.75 0.10` renders (229, 191, 25), and 0.65 rounds *up* to 166 while 0.90 rounds *down* to 229, so there is no rule worth modelling. With a byte-rounded palette, exact RGB equality counts zero pixels for **4 of 7 entries** and calls block0, block2, link1 and table missing on a flawless frame - the measured case for nearest-palette-by-argmin, which the design already specified. Keeping `Palette.rgb` unrounded is what takes the worst distance to 0.75. (2) **The palette needed a seventh entry the XML cannot provide** - see the palette bullet above. F-6 **20.69%** and F-7 **16.18%** re-confirmed from the meta over the full set. **Not yet done**: thresholds are printed, not written into config, because the documented build order recalibrates them against Phase 1 tokenizer reconstructions and writing a Phase-0-only number into `validator_hash` now would be a guess |
 | **F-8, and the loader against P-7** (`mirage/data.py`, `bench/loader_probe.py`) | **run** over the full 300k set - `python -m mirage.data`, then `python bench/loader_probe.py` | confirmed 2026-08-27. **F-8 holds**: 448 sampled records decode identically through the structured dtype and through an independent `struct.unpack` at the documented offsets, and both blobs are exactly `frames x per-frame` bytes. Index: **500 episodes of 600 steps, ids 0..499 each once, none split across shards**, built in 9 ms. 20,000 sampled windows of 16 all carry **one `episode_id` with contiguous `step_idx`**. Throughput single-threaded, no DataLoader workers: sequential sweep **5.9 s = 50,979 fps** (597 MiB/s), random episode-aware windows **5,642 -> 7,646 win/s = 90,269 -> 122,342 fps** (131-177 us/window) across three passes. Against **P-7's 167 fps floor that is 306x sequential and 734x random**, so the loader costs 0.14-0.33% of the 30-minute epoch budget and **needs no workers, prefetch, or caching layer** - 3.43 GiB of pixels in 31.6 GB of RAM means the page cache holds the whole set, which is why pass 1 to pass 3 moves only 35%. **New gotcha, found by getting it wrong**: slicing an `np.memmap` returns a lazy view and touches no pages, so a first probe reported 3.4M fps having timed slice arithmetic - `__getitem__` returns `np.array(...)` and any probe must force the copy. **Row order settled**: the blob is bottom-up (`mjr_readPixels` origin is bottom-left, nothing in `sim/` flips it), and the flip belongs in the sampler, not in `Shard.pixels`, which stays raw so F-8 has something to compare. Verified against the scene rather than the convention - the camera at y=-0.5 at ~24 deg elevation puts the void past the far table edge at the **top**, which only happens after the flip, matching `bench/preview.png`. Split is by **episode, hashed** - 473 train / 27 val (5.4%) at `val_fraction` 0.05, disjoint; by frame it would leak, since consecutive frames differ by one 2 ms step |
 | All dataset / meta / token-cache / KV / param / budget / diagonal arithmetic | computed | confirmed; values in the tables above |
 | Ingredients doc's budget table | recomputed from first principles | KV 28.1/59.7 us vs its "~28/~60"; weights 65.0 us vs "~67"; params 14.56M vs "15M"; DiagD 4.27x/6.26x vs "4.3x/6.3x". **The doc's arithmetic is sound.** |
@@ -803,6 +980,19 @@ What has been checked and how, so future sessions neither re-derive nor over-tru
 | F-5 passes with `jacobian_deadband = 0.04` and `reach_digit_noise_prob = 0.15` | built `/W4 /WX` clean in both configurations, then **run at F-5's own sample size** - 2,000 episodes x 600 steps, twice, 22.4 s | confirmed 2026-08-27 - min share **7.15%** against the 5% floor, ratio **2.06** against the 2.5 ceiling, and both passes identical over 1.2M actions. Costs arrival 44% -> 35.7%, median closest 0.042 -> 0.052 m. ASan build reports nothing. The startup smoke run is 200 episodes and reads 2.30 / 6.55%, so it is marked indicative - at 200 episodes the ratio moves ~0.2 between samples, which is why F-5 names 2,000 |
 | `sim/truth.*`, and F-6 / F-7 under a single-joint sweep | built `/W4 /WX` clean, then **run** against `scene/arm_blocks.xml` - `truth_dry_run`, 1500 steps, joint 0 at full torque | confirmed 2026-08-27 - **F-6 60.93%** of frames against the 5% floor, 12x margin; F-7 79.73% against 3%. All three fatal checks pass, which is what validates the id-colour decode `r + 256*g + 65536*b`: at rest `visible_px` = **0 175 44** of 4096, block 1 teleported below the table reads exactly **0**, restoring it returns **175**. **Both rates are indicative.** F-7's 79.73% was an artifact - block 0 read 0 px in the resting pose, so every unmoved frame counted as a full occlusion; fixed in the row below. Neither is the verdict: the sweep is not the 50/50 policy, and the enforcing check is the validator over a shard |
 | `block0` moved to y = **-0.06**, and what it costs | **run** - `truth_dry_run` 1500 steps, then F-5 re-run at its own 2,000 x 600 sample size, 21.5 s | confirmed 2026-08-27 - block 0 goes **0 -> 46 visible px at rest** and still reaches 0 mid-sweep, so F-7 now measures the arm passing in front of a block rather than one static pose. Cause: the camera is at y=-0.5 looking toward +y and the arm rests along +x at y=0, so any block at small positive y is behind it. Costs: **F-6 60.93% -> 50.00%** (still 10x the floor), **F-7 79.73% -> 58.07%**, and **F-5 ratio 2.06 -> 2.18** against the 2.5 ceiling with min share 7.15% -> **7.05%**. Arrival 35.7% -> 36.4%, median closest 0.052 -> 0.053 m. The F-5 row above was measured at y = +0.06 and its exact figures no longer describe this scene; the verdict is unchanged. **F-7 keeps one known bias** - a block knocked off the table reads zero px forever and counts as occluded, which these numbers cannot separate from a genuine occlusion |
+
+### Phase 1 pre-work, measured 2026-08-28 before any of Phase 1 was written
+
+| Claim | Method | Result |
+|---|---|---|
+| **A patch-independent tokenizer can pass Q-1** | **refuted by measurement** - Lloyd's k-means, 25 iterations on GPU, 179,200 real 8x8 patches from 2,800 frames sampled evenly across all 7 shards, PSNR from summed squared error over all pixels and channels | **26.39 dB at 512 centroids**, 25.67 at 240, **27.60 at 1024** - all short of Q-1's 30 dB, so vocabulary is not the lever. Only **150 of 512** centroids stay live, which is the Q-2 risk stated directly. A frequency-ranked dictionary of the top-512 exact patches does slightly worse, 26.02 dB, and needs **2,048** entries to reach 29.31. **The 3.6 dB gap is what the 22x22 receptive field, the attention layer and a shared decoder have to buy** - the phase's whole task, and the reason R2 exists |
+| **Q-1's failure mode will be edge placement, not colour drift** | **measured** - per-patch squared error from the k-means run, split by whether the patch is a single flat colour | **99.86% of all error sits in the 37% of patches that are not flat**; flat patches carry 0.14%. At 240 centroids 99.76%, at 1024 99.93%. The fork table's "colour drift" branch is close to dead before training starts, which is what moved the 96x96 arm from fallback into Phase 1's ladder |
+| **Q-2's 70% bar is reachable at all** | **measured, as a provable ceiling** - a code is a deterministic function of its cell's 22x22 receptive field, so cells whose receptive fields hold identical pixels must share a code. Counted flat receptive fields over the 36 interior cells of 64, on 3,500 frames across all 7 shards, then maximised entropy subject to that collapsed mass | **19.96%** of interior cells have a fully flat receptive field, all of them table - **no black-void cell collapses**, because the void band sits outside every interior cell's field. Ceiling is **8.494 bits = 94.4% of uniform** at 512 codes, 95.1% at 240. **So the data does not force Q-2 to fail.** Context: 63.22% of plain 8x8 patches are one flat colour, and the exact-patch distribution carries only **4.43 bits** against the 9 available, so nothing forces Q-2 to *pass* either - it is a property of the trained model, not of the dataset |
+| **The palette-index preload is lossless** | **measured over the whole set**, not a sample - union of packed RGB triples across all 300,000 frames, then nearest-palette by argmin | Union is **exactly 7** byte triples, one per palette entry, worst distance **0.75**: `(0,0,0)` void, `(76,82,97)` table, `(217,25,25)` `(38,191,51)` `(140,64,217)` blocks, `(229,191,25)` `(25,166,229)` links. **The existing F-9 entry's "at most 7 per frame" does not imply this** - it permits a larger union - so the check had to be redone as a union. One byte per pixel is therefore lossless, and the train split preloads in **1.16 GB instead of 3.49 GB**. Scan took 21.3 s at 14,059 frames/s |
+| **The ctx=0 loader is fast enough to feed training** | **refuted for the cold case** - `WindowSampler(ctx=0)`, 20,000 random frames read twice from a fresh process, then the same via a vectorised memmap fancy-index | **6,804 frames/s cold vs 109,682 warm, a 16x swing**, against a ~13,000 frames/s need at batch 128. Vectorised reads give 24,207 cold / 207,104 warm, so **it is I/O bound, not Python bound** - grouping a batch by shard is not the fix. With 4.9 GB free against a 3.5 GB working set the page cache sits on the boundary, which is why `preload` exists rather than a DataLoader worker |
+| **The FSQ bound/quantize/index math, as written into the plan** | **measured** - 40,001 inputs over `[-25, 25]` per dimension, plus full enumeration of the digit grid, plus one backward pass | `[8,8,8]` `[8,6,5]` `[5,5,5]` `[4,4,4]` each yield **exactly `prod(levels)` distinct values per dimension** and `codes_to_indices` is a bijection onto `0..prod(levels)-1`. **Correction to an assumption: the straight-through gradient is not 1.0.** It reads **0.858 / 1.001 / 0.668** for `[8,8,8]` / `[5,5,5]` / `[4,4,4]` - the STE bypasses only the rounding, so `tanh`'s derivative inside `bound` stays in the path and scales with `levels`. Confirmed analytically: `(1 - (offset/half_l)^2) * half_l / (levels//2)`. **Walking the Q-2 shrink ladder therefore rescales the bottleneck LR by up to 1.5x**, so every levels comparison needs a paired LR run |
+| **`offwidth`/`offheight` can move from the XML to config** | **verified by reading the pinned header** - `mjmodel.h` from the MuJoCo 3.12.0 archive CMake fetches | `struct mjVisual_`'s `global` sub-struct declares `int offwidth` and `int offheight` as plain mutable fields, read by `mjr_makeContext`. Setting them between `mj_loadXML` and context creation leaves `scene/arm_blocks.xml` byte-identical, so **the existing 300,000 frames keep their `data_hash`** and the 96x96 arm costs one config file. **Not yet run** - the byte-identical regeneration is Phase 1 item 1 and is the actual proof |
+| **Q-1's bars, restated in pixels** | **computed** from the palette: mean squared distance between two distinct entries | **47,814** (min 15,593, max 97,863). So 30 dB is about **17 of 4,096 pixels completely wrong** (0.41%), 35 dB is 5.3, and the k-means floor is 38.4. Phase 1's task is to halve the floor's error count. Also the reason per-pixel cross-entropy loses to MSE: one misclassified pixel spends 1/17th of the entire 30 dB budget, so classification needs ~99.6% pixel accuracy where regression can hedge |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
 [Debloating ASan (USENIX Sec '22)](https://www.usenix.org/system/files/sec22summer_zhang-yuchen.pdf),
