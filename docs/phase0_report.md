@@ -1,13 +1,18 @@
 # Mirage: Phase 0 Report
 
-**Status: Phase 0 complete. Gate met 2026-08-27 and re-met 2026-08-28** after the
-`gear 6 / damping 1.5` scene change, all three conditions both times. 300,000
-frames on disk at `data_hash 219ab0af`.
+**Status: Phase 0 complete. Gate met 2026-08-27 and re-met twice on 2026-08-28**,
+all three conditions every time. 300,000 frames on disk at `data_hash 18a76531`.
 
-> **Superseded numbers.** Everything below describes the current dataset. The
-> original `0259947e` set read F-6 20.69%, F-7 16.18%, F-5 ratio 2.27 and
-> 6,775 fps; those figures describe a scene that no longer exists. Both gate
-> runs are in the verification log.
+> **Superseded hashes, and why there are three.** `0259947e` was the original
+> physics; it read F-6 20.69%, F-7 16.18%, F-5 ratio 2.27 and 6,775 fps, and
+> those figures describe a scene that no longer exists. `219ab0af` was the
+> `gear 6 / damping 1.5` scene change. `18a76531` is the **same scene** as
+> `219ab0af`: the hash moved not because anything about the data changed but
+> because `data_hash` was being computed over the scene XML's **CRLF** bytes in a
+> stale working tree, so no fresh clone could reproduce it. Line endings are now
+> normalised inside `mirage.config.scene_bytes`. Every measured value is
+> unchanged across that move; the meta record additionally gained D3's
+> scripted-episode flag. All gate runs are in the verification log.
 
 Derived document, same class as `timeline.md` and `decision_notes.md`. Every
 number here traces to the verification log at the end of
@@ -56,9 +61,9 @@ Verified on disk this session by reading all seven sidecars and stat-ing the blo
 | Resolution | 64 x 64 x 3, `uint8` |
 | Pixel bytes | **3,686,400,000** = 3.686 GB, against R-4's 20 GB ceiling |
 | Meta bytes | 13,800,000 = 13.8 MB - **0.374% of pixel bytes** |
-| Wall clock | **42.7-60.1 s at 4,993-7,033 fps** - 10-14x over P-6's 500 fps floor |
-| `data_hash` | `219ab0af...`, identical across all 7 sidecars |
-| `git_sha` | `29604ae`, identical across all 7 sidecars |
+| Wall clock | **45.1-50.1 s at 5,987-6,653 fps** - 12-13x over P-6's 500 fps floor |
+| `data_hash` | `18a76531...`, identical across all 7 sidecars |
+| `git_sha` | `8735d7f`, identical across all 7 sidecars |
 
 Three files per shard, and the write order is the crash-safety mechanism:
 
@@ -85,11 +90,27 @@ table:
 | `qpos[2]` | `f32 x2` | calibration reference for pixel-measured link angles (Q-4, Q-5) |
 | `block_xy[3][2]` | `f32 x6` | Q-6 position error |
 | `visible_px[3]` | `u16 x3` | F-7 occlusion rate, Q-6 occlusion events |
-| `contact_mask` | `u8` | F-6 contact rate |
+| `contact_mask` bits 0..6 | `u8` | F-6 contact rate - bit *i* is "block *i* touches the arm" |
+| `contact_mask` bit 7 | (same byte) | scripted-vs-random: which half of the 50/50 policy mix produced this episode |
 | `episode_id` | `u32` | prevents a training window spanning a reset |
 | `step_idx` | `u16` | same |
 
-Two non-obvious choices worth restating:
+**`contact_mask` is two fields in one byte.** The scripted flag is packed into
+bit 7 rather than given its own `u8`, which would have taken the record to 47 B
+for one boolean. `sim/truth.cpp` caps a scene at seven blocks so the fields cannot
+collide, and the writer aborts if a block bit ever reaches bit 7 anyway. **Every
+reader must mask**: `contact_mask != 0` on the raw byte counts every scripted
+frame as a contact, which reads F-6 as over 50% instead of 16.63% and fails
+nothing. The constant lives once per language - `kScriptedBit` in
+`sim/shard_writer.h`, `SCRIPTED_BIT` in `mirage/data.py`.
+
+Before this the 50/50 coin - the single biggest structural choice in the policy -
+was invisible in the dataset, and the ctx=15 action-coverage split had to be
+inferred from a bimodal histogram with a hand-chosen cutoff. It now reads
+directly: **53.2% of the 500 episodes are scripted**, constant across every frame
+of each.
+
+Two more non-obvious choices worth restating:
 
 - **Counts, not booleans.** `visible_px` stores pixel counts rather than
   `is_occluded`. A boolean bakes a threshold into the dataset; counts let F-7 and
@@ -111,11 +132,19 @@ All figures over the **full 300k set** unless marked otherwise.
 | F-6 | Arm-block contact | > 5% of frames | **16.63%** | pass, 3.3x |
 | F-7 | Full block occlusion | >= 3% of frames | **19.83%** | pass, 6.6x |
 | F-8 | Shard round-trip byte-exact | numpy matches C++ | 448 records decode identically two independent ways | pass |
-| F-9 | Validator, zero false positives | 0 FP on ground truth | **`offpalette_px` = 0 on every ground-truth frame at tau 8** | pass, thresholds not yet written |
-| P-6 | Generation throughput | >= 500 fps | **4,993-7,033 fps** | pass, 10-14x |
+| F-9 | Validator, zero false positives | 0 FP on ground truth | **`offpalette_px` = 0 on every ground-truth frame at `validator.offpalette_tau` = 8.0** | pass, verdict thresholds not yet written |
+| P-6 | Generation throughput | >= 500 fps | **5,987-6,653 fps** | pass, 12-13x |
 | P-7 | Full 300k epoch | <= 30 min | **5.9 s sequential / 39 s random** | pass, 306-734x |
 | R-4 | Dataset on disk | <= 20 GB | **3.686 GB** | pass |
 | E-3 | ASan clean on the generation run | zero reports | clean, both build types | pass |
+| E-2 | Clean build from scratch | documented in README, verified once | **both build types built and run from an empty directory 2026-08-28**; recipe and four measured gotchas in `README.md`, "Build" | pass |
+
+**F-8 and F-9 are runnable without the dataset.** `python -m mirage.data` and
+`python -m mirage.validator` fall back to a committed 40-frame fixture
+(`mirage/fixtures/`, 4.9 KB packed, real writer output) when `data/shards` is
+empty, so both acceptance tests run in a fresh clone. The three dataset-scale
+checks they cannot honestly make there - F-6, F-7 and the episode-level
+train/val split - are skipped and say so.
 
 **Two small-sample figures were corrected by the full run and should not be
 quoted.** A single 1,200-frame shard read F-6 at 62.4% and F-7 at 40.3% -

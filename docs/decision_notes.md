@@ -210,10 +210,17 @@ kind of project fails.
   elsewhere in the plan.
 - **Wrong if** a later stage needs a field we did not store - which would mean
   regenerating.
-- **Fallback** (1) Regenerate; it takes about ten minutes, which is the real
-  reason this is a low-stakes decision. (2) Add a second notes file alongside the
-  existing one for the new field, keyed by picture index, avoiding the
-  regeneration entirely.
+- **Fallback** (1) Regenerate; **measured at 45-50 seconds**, not the ten minutes
+  first guessed here, which is the real reason this is a low-stakes decision.
+  (2) Add a second notes file alongside the existing one for the new field, keyed
+  by picture index, avoiding the regeneration entirely.
+- **Held up, and grew a ninth field for free.** On 2026-08-28 a ninth piece of
+  information was wanted - which of the two behaviours produced an episode, the
+  scripted reach or the random one - and it went into a **spare bit of an existing
+  field** rather than a new one. The record is still 46 bytes. The cost is that
+  one byte now means two things, so every piece of code that reads it has to be
+  told; miss one, and the "arm touched a block" rate silently reads over 50%
+  instead of 16.63%.
 
 ---
 

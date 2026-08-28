@@ -7,8 +7,8 @@ stored vectors under any threshold set, without re-running a single rollout.
 
 Two modes, and F-9's acceptance test is the sweep of one against the other:
 
-    measure_pixels_only(frame, palette)         phases 2, 3, 4 - no ground truth
-    measure_with_truth(frame, meta, palette)    phase 0 - shard meta available
+    measure_pixels_only(frame, palette, tau)         phases 2, 3, 4 - no truth
+    measure_with_truth(frame, meta, palette, tau)    phase 0 - shard meta there
 
 Two things measured here that the design doc did not anticipate, both of which
 would have made an exact-equality validator report faults on every perfect
@@ -32,9 +32,14 @@ frame (see `_self_check`, and the verification log):
     without it `offpalette_px` reads ~578 px on a perfect frame and F-9 can
     never be met.
 
-Run the check from the repo root, after a generation run:
+Run the check from the repo root:
 
     python -m mirage.validator
+
+It falls back to the committed 40-frame fixture when no generated set exists,
+so F-9's sweep is runnable in a fresh clone; see `mirage.data.self_check_config`.
+The two dataset-scale rates, F-6 and F-7, are skipped there - forty frames
+cannot carry a claim about 300,000.
 """
 
 # stdlib ElementTree, not defusedxml. The only file this parses is
@@ -48,6 +53,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+
+# The record layout's owner. `SCRIPTED_BIT` lives there because `meta_dtype`
+# does; importing it beats restating 0x80 in a second file. No cycle - data
+# imports config and nothing imports this module.
+from mirage.data import SCRIPTED_BIT
 
 # The void: MuJoCo's framebuffer clear colour, visible past the far table edge
 # because the table is finite and there is no skybox. A real, stable,
@@ -136,7 +146,8 @@ class Truth(NamedTuple):
     visible_px: np.ndarray  # (b,) segmentation pixel count per block
     block_xy: np.ndarray  # (b, 2) world position
     qpos: np.ndarray  # (j,) joint angles
-    contact_mask: int
+    contact_mask: int  # block bits only - the scripted flag is masked off
+    is_scripted: bool  # which half of the 50/50 policy mix this episode is
 
 
 def _label(frame: np.ndarray, palette: Palette):
@@ -198,16 +209,21 @@ def _oriented(ys: np.ndarray, xs: np.ndarray) -> tuple[float, float, float]:
     return float(extent[1]), float(extent[0]), float(np.arctan2(major[1], major[0]) % np.pi)
 
 
-def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float = 8.0) -> Measurement:
+def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Measurement:
     """The mode-2 vector for one `(h, w, 3)` uint8 frame.
 
     `tau` is the palette-adherence radius in RGB Euclidean distance.
     `offpalette_px` means "further than tau from every palette entry", which is
     the only definition that survives nearest-palette mapping - afterwards every
     pixel has a nearest entry, so "not in the palette" is otherwise vacuous.
-    The default of 8 sits an order of magnitude above the 0.75 that render
-    rounding costs on ground truth, and far below any real violation; `sweep`
-    is what calibrates it.
+    Required, with no default, and it lives in `validator.offpalette_tau`. A
+    default here would be a second home for the number, and the one in code
+    would win silently while `validator_hash` - which is a hash over the
+    `validator` config section - kept reporting the config's value. Two Q-3
+    coherence-horizon rows taken at different taus would then carry the same
+    hash and claim to be comparable. `sweep` is what calibrates the value; the
+    current 8.0 sits an order of magnitude above the 0.75 that render rounding
+    costs on ground truth, and far below any real violation.
     """
     if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
         raise ValueError(f"frame must be (h, w, 3) uint8, got {frame.shape} {frame.dtype}")
@@ -245,7 +261,7 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float = 8.0) -
 
 
 def measure_with_truth(
-    frame: np.ndarray, meta: np.void, palette: Palette, tau: float = 8.0
+    frame: np.ndarray, meta: np.void, palette: Palette, tau: float
 ) -> tuple[Measurement, Truth]:
     """Mode 1: the same vector, plus the ground truth the shard already carries.
 
@@ -264,7 +280,11 @@ def measure_with_truth(
             [meta[f"block_xy{i}"] for i in range(2 * n_blocks)], dtype=np.float64
         ).reshape(n_blocks, 2),
         qpos=np.array([meta[f"qpos{i}"] for i in range(n_joints)], dtype=np.float64),
-        contact_mask=int(meta["contact_mask"]),
+        # Split, never read raw. The record packs the scripted-episode flag into
+        # this byte's high bit, so `contact_mask != 0` on it is true on every
+        # scripted frame - see `mirage.data.SCRIPTED_BIT`.
+        contact_mask=int(meta["contact_mask"]) & ~int(SCRIPTED_BIT),
+        is_scripted=bool(int(meta["contact_mask"]) & int(SCRIPTED_BIT)),
     )
     return measure_pixels_only(frame, palette, tau), truth
 
@@ -282,7 +302,7 @@ class Sweep(NamedTuple):
     worst_compactness: float  # over visible blocks, for reference not a threshold
 
 
-def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float = 8.0) -> Sweep:
+def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -> Sweep:
     """F-9's acceptance test: the mode-2 thresholds that fire on no clean frame.
 
     A false positive is mode 2 declaring a fault where mode 1 says the frame is
@@ -338,15 +358,17 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float = 
 
 def _self_check() -> None:
     """F-2 over the whole set, F-6/F-7 against config, and F-9's sweep."""
-    from mirage import config, data
+    from mirage import data
 
     root = Path(__file__).resolve().parent.parent
-    cfg = config.load(root / "mirage" / "configs" / "base.json")
+    cfg, shard_dir, fixture = data.self_check_config()
+    if fixture:
+        print(f"no generated shards - running against the committed fixture, {shard_dir}")
     palette = load_palette(root / cfg.sim["scene_xml"])
     print(f"palette: {len(palette.names)} entries {palette.names}, "
           f"{len(palette.links)} links, {len(palette.blocks)} blocks")
 
-    shards = data.load_shards(root / cfg.data["shard_dir"], data_hash=cfg.data_hash)
+    shards = data.load_shards(shard_dir, data_hash=cfg.data_hash)
     index = data.episode_index(shards)
     sampler = data.WindowSampler(shards, index, cfg.data["ctx"])
 
@@ -379,10 +401,11 @@ def _self_check() -> None:
     # threshold that holds on 8,000 frames drawn from 500 episodes is what F-9
     # asks for.
     rng = np.random.default_rng(0)
-    picks = rng.integers(0, len(sampler), size=500)
+    picks = rng.integers(0, len(sampler), size=min(500, len(sampler)))
     frames = np.concatenate([sampler[int(i)].frames for i in picks])
     metas = np.concatenate([sampler[int(i)].meta for i in picks])
-    result = sweep(frames, metas, palette)
+    tau = cfg.validator["offpalette_tau"]
+    result = sweep(frames, metas, palette, tau)
     print(f"F-9 sweep over {result.frames:,} frames at tau {result.tau}:")
     print(f"  worst palette distance {result.max_palette_dist:6.2f} - tau must exceed this")
     print(f"  offpalette_px max      {result.offpalette_px_max:6d} - any threshold above is 0 FP")
@@ -417,7 +440,7 @@ def _self_check() -> None:
     # and no threshold sweep would reveal it.
     diffs = []
     for frame, meta in zip(frames[:2000], metas[:2000]):
-        m, truth = measure_with_truth(frame, meta, palette)
+        m, truth = measure_with_truth(frame, meta, palette, tau)
         for b, entry in enumerate(palette.blocks):
             diffs.append(int(m.px_count[entry]) - int(truth.visible_px[b]))
     diffs = np.array(diffs)
@@ -427,25 +450,31 @@ def _self_check() -> None:
     assert np.abs(diffs).max() <= 4, f"pixel-only count is off truth by {np.abs(diffs).max()} px"
 
     # F-6 and F-7, over the full set, against the thresholds config carries.
-    contact = np.concatenate([np.asarray(s.meta["contact_mask"]) for s in shards])
-    visible = np.stack([
-        np.concatenate([np.asarray(s.meta[f"visible_px{b}"]) for s in shards])
-        for b in range(len(palette.blocks))
-    ])
-    f6 = float((contact != 0).mean())
-    f7 = float((visible == 0).any(axis=0).mean())
-    assert f6 >= cfg.validator["contact_rate_min"], f"F-6: {f6:.2%}"
-    assert f7 >= cfg.validator["occlusion_rate_min"], f"F-7: {f7:.2%}"
-    print(f"F-6 contact {f6:.2%} (floor {cfg.validator['contact_rate_min']:.0%}), "
-          f"F-7 occlusion {f7:.2%} (floor {cfg.validator['occlusion_rate_min']:.0%})")
+    # Skipped on the fixture: these are claims about the *dataset*, not about
+    # this module, and 40 frames from 2 episodes would either fail them or pass
+    # them by luck. Neither reading is worth anything.
+    if fixture:
+        print("F-6 and F-7: skipped - dataset-scale rates, and the fixture is 40 frames")
+    else:
+        contact = np.concatenate([data.contact_bits(s.meta) for s in shards])
+        visible = np.stack([
+            np.concatenate([np.asarray(s.meta[f"visible_px{b}"]) for s in shards])
+            for b in range(len(palette.blocks))
+        ])
+        f6 = float((contact != 0).mean())
+        f7 = float((visible == 0).any(axis=0).mean())
+        assert f6 >= cfg.validator["contact_rate_min"], f"F-6: {f6:.2%}"
+        assert f7 >= cfg.validator["occlusion_rate_min"], f"F-7: {f7:.2%}"
+        print(f"F-6 contact {f6:.2%} (floor {cfg.validator['contact_rate_min']:.0%}), "
+              f"F-7 occlusion {f7:.2%} (floor {cfg.validator['occlusion_rate_min']:.0%})")
 
     # Mode 2 must not need meta. Called with a frame alone, on purpose.
-    only = measure_pixels_only(frames[0], palette)
+    only = measure_pixels_only(frames[0], palette, tau)
     assert only.px_count.sum() == frames[0].shape[0] * frames[0].shape[1]
     assert np.all((only.link_angle >= 0) & (only.link_angle < np.pi))
     print("mode 2 runs on a frame alone; px_count partitions the frame; angles in [0, pi)")
 
-    print("validator self-check ok")
+    print("validator self-check ok" + (" (fixture)" if fixture else ""))
 
 
 if __name__ == "__main__":

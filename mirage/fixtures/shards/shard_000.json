@@ -1,0 +1,14 @@
+{
+  "frames": 40,
+  "height": 64,
+  "width": 64,
+  "channels": 3,
+  "pixel_dtype": "uint8",
+  "meta_record_bytes": 46,
+  "meta_joints": 2,
+  "meta_blocks": 3,
+  "seed": 0,
+  "shard_index": 0,
+  "data_hash": "d897fc24d82346f25a8dc257db749aabb0b17f7eb52c65d2e2652b45b02e2ab4",
+  "git_sha": "8735d7f165873de40ea5b36dba22ff32a0f3ec61"
+}

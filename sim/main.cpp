@@ -294,7 +294,7 @@ int main(int argc, const char** argv) {
                     // dataset and nothing downstream would notice.
                     truth.read(data, &scene, &frame);
 
-                    writer.append(rgb.data(), action, frame,
+                    writer.append(rgb.data(), action, frame, policy.is_scripted(),
                                   static_cast<std::uint32_t>(episode_id),
                                   static_cast<std::uint16_t>(t));
                 }

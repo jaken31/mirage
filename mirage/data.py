@@ -11,9 +11,13 @@ through the structured dtype, once by hand with `struct.unpack` at the offsets
 version of this test worth running, because every way of getting the dtype wrong
 still reads back cleanly and quietly.
 
-Run the check from the repo root, after a generation run:
+Run the check from the repo root:
 
     python -m mirage.data
+
+It uses the generated 300k-frame set when there is one and the committed
+40-frame fixture when there is not, so F-8 is runnable in a fresh clone. See
+`self_check_config`.
 """
 
 import hashlib
@@ -24,6 +28,8 @@ from pathlib import Path
 from typing import Iterable, NamedTuple, Sequence
 
 import numpy as np
+
+from mirage import config
 
 # Row order. `mjr_readPixels` returns rows bottom-up - the OpenGL origin is the
 # bottom-left - and nothing in `sim/` flips them, so the blob is upside-down on
@@ -62,6 +68,35 @@ def meta_dtype(joints: int, blocks: int) -> np.dtype:
     if dt.itemsize != expect:
         raise ValueError(f"meta dtype is {dt.itemsize} bytes, the writer's formula says {expect}")
     return dt
+
+
+# The record's `contact_mask` byte is two fields sharing one byte: bits 0..6 are
+# "block i touches the arm", bit 7 is "this episode is the scripted-reach half".
+# Packed by `ShardWriter::append`; `sim/shard_writer.h` holds the C++ half of
+# this constant, and `sim/truth.cpp` caps a scene at seven blocks so the two
+# cannot collide.
+#
+# Packed into a spare bit rather than added as a u8, which would take the record
+# 46 -> 47 bytes and the meta blobs 13.8 -> 14.1 MB for one boolean.
+#
+# **Every reader must mask.** `meta["contact_mask"] != 0` on the raw byte counts
+# every scripted frame as a contact - that reads F-6 as over 50% instead of
+# 16.6%, and nothing fails.
+SCRIPTED_BIT = np.uint8(0x80)
+
+
+def contact_bits(meta) -> np.ndarray:
+    """Block-contact bits, with the scripted flag masked off. F-6 reads this."""
+    return np.asarray(meta["contact_mask"]) & ~SCRIPTED_BIT
+
+
+def scripted(meta) -> np.ndarray:
+    """True where the frame came from the scripted-reach half of the 50/50 mix.
+
+    Constant across every frame of one episode - the coin is drawn in
+    `Policy::begin_episode` - and `_self_check` asserts exactly that.
+    """
+    return (np.asarray(meta["contact_mask"]) & SCRIPTED_BIT) != 0
 
 
 def meta_struct_format(joints: int, blocks: int) -> str:
@@ -278,13 +313,47 @@ class WindowSampler:
         return self[int(rng.integers(len(self)))]
 
 
-def _self_check() -> None:
-    """F-8, plus the invariants the sampler's correctness rests on."""
-    from mirage import config
+FIXTURE_CONFIG = Path(__file__).resolve().parent / "fixtures" / "fixture.json"
 
+
+def self_check_config() -> tuple["config.Config", Path, bool]:
+    """The config and shard dir the self-checks run against, and which one it is.
+
+    `mirage/configs/base.json` and its generated set when that set exists; the
+    committed 40-frame fixture under `mirage/fixtures/` when it does not.
+    Without the fallback, the two checks that *are* F-8's and F-9's acceptance
+    tests cannot run in a fresh clone, in a linked worktree, or in CI - `data/`
+    is 3.5 GB and correctly gitignored, so nobody who has not first generated
+    300,000 frames can run either one.
+
+    The fixture is real writer output, not synthesised in temp from
+    `meta_dtype` plus random pixels. F-8 is a claim about the bytes
+    `sim/shard_writer.cpp` actually emits, and a synthesised shard would agree
+    with the reader by construction while testing nothing.
+
+    It carries its own `data_hash` over its own config, so editing
+    `scene/arm_blocks.xml` or the `sim` section invalidates it and
+    `load_shards` refuses it by name rather than reading stale frames.
+    Regenerate it the way it was made, from the repo root:
+
+        <build>/Release/mirage_sim.exe mirage/fixtures/fixture.json \
+            --data-hash <config.load(FIXTURE_CONFIG).data_hash> --git-sha <sha>
+    """
     root = Path(__file__).resolve().parent.parent
     cfg = config.load(root / "mirage" / "configs" / "base.json")
     shard_dir = root / cfg.data["shard_dir"]
+    if any(shard_dir.glob("shard_*.json")):
+        return cfg, shard_dir, False
+
+    cfg = config.load(FIXTURE_CONFIG)
+    return cfg, root / cfg.data["shard_dir"], True
+
+
+def _self_check() -> None:
+    """F-8, plus the invariants the sampler's correctness rests on."""
+    cfg, shard_dir, fixture = self_check_config()
+    if fixture:
+        print(f"no generated shards - running against the committed fixture, {shard_dir}")
 
     shards = load_shards(shard_dir, data_hash=cfg.data_hash)
     total = sum(s.frames for s in shards)
@@ -346,6 +415,35 @@ def _self_check() -> None:
     assert not np.array_equal(sampler[0].frames[0], raw0), "flip is a no-op - a symmetric frame?"
     assert np.array_equal(sampler[7].frames, sampler[7].frames), "reads are not repeatable"
     print("orientation: sampler rows are the blob's reversed, and reversed only once")
+
+    # D3's flag. Per-episode by construction, so it must be constant across every
+    # frame of one - checked, because a per-frame bug here still produces a
+    # plausible ~50/50 mix at the dataset level and would fool any share check.
+    flags = []
+    for ep in index:
+        block = shards[ep.shard].meta[ep.start:ep.start + ep.length]
+        seen = np.unique(scripted(block))
+        assert len(seen) == 1, f"episode {ep.episode_id} mixes scripted and random frames"
+        flags.append(bool(seen[0]))
+    share = sum(flags) / len(flags)
+    if fixture:
+        print(f"scripted flag: constant within both fixture episodes, {sum(flags)} of 2 scripted")
+    else:
+        assert 0.4 < share < 0.6, f"scripted share {share:.1%} - the 50/50 coin is not fair"
+        print(f"scripted flag: constant within all {len(index)} episodes, {share:.1%} scripted")
+
+    # `is_val` is a pure function of the episode id, so its distribution is
+    # checkable with no dataset at all - which is what keeps the split covered
+    # on the fixture, where two episodes cannot land 5% either side of 5%.
+    synthetic = sum(is_val(i, 0.05) for i in range(4000)) / 4000
+    assert abs(synthetic - 0.05) < 0.01, f"is_val sends {synthetic:.1%} of 4,000 ids to val"
+    print(f"is_val: {synthetic:.2%} of 4,000 synthetic episode ids land in val")
+
+    if fixture:
+        print(f"split: skipped - the episode-level split needs hundreds of episodes to land "
+              f"within tolerance and the fixture has {len(ids)}")
+        print("data self-check ok (fixture)")
+        return
 
     train = WindowSampler(shards, index, ctx, "train", cfg.data["val_fraction"])
     val = WindowSampler(shards, index, ctx, "val", cfg.data["val_fraction"])

@@ -76,4 +76,58 @@ by generating twice at one seed and comparing the pixel blobs - there is no
 
 ## Build
 
-Not yet implemented. E-2 requires a verified clean-build-from-scratch recipe here.
+**E-2, verified 2026-08-28** by running exactly these commands in a directory
+that had never held this project. Nothing is vendored: MuJoCo 3.12.0, GLFW 3.5.1
+and nlohmann/json 3.12.0 are all fetched by CMake at configure time, pinned by
+SHA256 or tag in `sim/CMakeLists.txt`, so the first configure needs a network.
+
+Needs Visual Studio 2026 with the "Desktop development with C++" workload
+(measured against MSVC 19.50.35728, toolset 14.50.35717), CMake >= 3.20
+(measured on 4.3.1), and git.
+
+```bash
+git clone <url> mirage
+cd mirage
+cmake -S sim -B sim/build -G "Visual Studio 18 2026" -A x64
+cmake --build sim/build --config Release
+```
+
+The sanitizer build is a second, separate build directory:
+
+```bash
+cmake -S sim -B sim/build-asan -G "Visual Studio 18 2026" -A x64 -DMIRAGE_ASAN=ON
+cmake --build sim/build-asan --config Release
+```
+
+Then smoke-test it. This is a real 40-frame generation run - it loads the scene,
+runs both C++ self-checks, creates the GL context, and writes a shard - and it
+regenerates the committed self-check fixture, so it is also the command to reach
+for when `scene/arm_blocks.xml` or the `sim` config section changes:
+
+```bash
+python -c "from mirage.config import load; print(load('mirage/fixtures/fixture.json').data_hash)"
+./sim/build/Release/mirage_sim.exe mirage/fixtures/fixture.json --data-hash <that hex> --git-sha $(git rev-parse HEAD)
+```
+
+It must print `GL_RENDERER: NVIDIA ...`. `GDI Generic` or `Microsoft Basic
+Render Driver` means the software rasterizer, which is a failed build for our
+purposes even though it compiled.
+
+Four things the clean run measured, none of which a machine that has built once
+would show you:
+
+| | |
+|---|---|
+| **Do not build under `%TEMP%`** | MSBuild's FileTracker refuses: `MSB8029` then `FTK1011: could not create the new file tracking log file`. It fails during CMake's compiler probe, so it reads as "no working C++ compiler" rather than as a path problem |
+| **Each build dir re-fetches** | `sim/build` and `sim/build-asan` keep separate `_deps/`, so the second configure downloads MuJoCo and re-clones GLFW again. 14-17 s each, not shared |
+| **The DLLs are copied, not found** | `mujoco.dll` lands beside the binary by a POST_BUILD step, and the ASan build adds `clang_rt.asan_dynamic-x86_64.dll` from the MSVC bin directory. Both confirmed present in their output directories, and both binaries start from a plain shell rather than only from a Developer prompt |
+| **Cost from empty** | Release 16.5 s configure + 11.6 s build; ASan 14.7 s + 9.7 s. Both from nothing, on this machine |
+
+The ASan binary was run over the same 40-frame generation, into a throwaway
+shard directory: no sanitizer report, and its `.pixels` and `.meta` blobs are
+**byte-identical** to the Release build's. Same compiler, machine and driver, so
+this widens F-4's determinism from "same build, twice" to "two build
+configurations" - it does not say anything about a different toolchain.
+
+Run every command from the repo root. Config paths are repo-relative and the
+binary says so rather than guessing.

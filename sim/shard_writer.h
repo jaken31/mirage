@@ -32,6 +32,20 @@ struct ShardProvenance {
     int seed;
 };
 
+// The meta record's contact_mask byte is two fields sharing one byte. Bits 0..6
+// are TruthFrame::contact_mask - block i touches the arm - and bit 7 says the
+// episode is the scripted-reach half rather than the random half.
+//
+// Packed into a spare bit rather than added as a u8, which would take the record
+// 46 -> 47 bytes and every blob 3.69 -> 3.77 GB for one boolean. Three blocks
+// use bits 0..2 and truth.cpp refuses a scene with more than seven, so the high
+// bit cannot collide.
+//
+// Every reader must mask. `contact_mask != 0` on the raw byte reads every
+// scripted frame as a contact and would take F-6 from 16.6% to over 50% without
+// failing anything. mirage/data.py holds the Python half of this constant.
+constexpr std::uint8_t kScriptedBit = 0x80;
+
 // True when written + add is representable as a non-negative int64.
 //
 // E-3 wants a bounds assert at the write site and evidence that it fires on a
@@ -65,8 +79,13 @@ public:
     // read back, not the segmentation one. truth must carry the joint and block
     // counts this writer was constructed with; a mismatch aborts rather than
     // writing a record the reader would silently misparse.
+    // is_scripted is Policy::is_scripted() for the episode this frame belongs
+    // to. It is a separate argument rather than a bit the caller pre-ORs into
+    // truth.contact_mask so that TruthFrame keeps exactly one meaning and the
+    // packing lives with the record layout it belongs to.
     void append(const unsigned char* rgb, int action, const TruthFrame& truth,
-                std::uint32_t episode_id, std::uint16_t step_idx);
+                bool is_scripted, std::uint32_t episode_id,
+                std::uint16_t step_idx);
 
     // Closes both blobs, checks they closed cleanly, then writes the sidecar.
     // Call exactly once, after the last append. Aborting between the close and

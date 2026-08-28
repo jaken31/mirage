@@ -14,6 +14,7 @@
 *.json text eol=lf
 *.sh   text eol=lf
 
-# Generated blobs. Gitignored, but declare intent in case one is ever forced in.
+# Generated blobs. Gitignored except the 40-frame self-check fixture under
+# mirage/fixtures/, which is committed and must stay byte-exact.
 *.pixels binary
 *.meta   binary

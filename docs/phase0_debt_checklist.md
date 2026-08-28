@@ -212,7 +212,7 @@ which is now already done here.
 
 ---
 
-### [ ] D3. The meta record cannot say which policy half produced an episode
+### [x] D3. The meta record cannot say which policy half produced an episode
 
 **Evidence.** The 46-byte record holds `action`, `qpos`, `block_xy`, `visible_px`,
 `contact_mask`, `episode_id`, `step_idx`. There is no scripted-vs-random flag.
@@ -235,6 +235,35 @@ update `meta_dtype`, update the record layout in the architecture doc's shard
 table. **If D1 concludes 20 was fine and no regeneration happens, skip this
 entirely.**
 
+#### LANDED 2026-08-28 - the spare-bit form, and the condition fired twice
+
+Taken because a regeneration became mandatory for an unrelated reason: `data_hash`
+was being computed over the scene XML's CRLF bytes in a stale working tree, so no
+fresh clone could reproduce it, and the fix moved the hash `219ab0af` ->
+`18a76531`. That invalidated the 300k set whatever else happened, which is exactly
+the "only if a regeneration happens anyway" condition, so the flag rode along for
+free. See the CRLF row in the architecture doc's verification log.
+
+**Zero bytes, as the parenthetical hoped.** `contact_mask` bit 7, with bits 0..6
+still the block-contact bits. `sim/truth.cpp` already refused a scene with more
+than seven blocks once the budget dropped 8 -> 7, and `ShardWriter::append` aborts
+if a block bit ever reaches bit 7 anyway. The record stays 46 B and `meta_dtype`
+is unchanged - only the *meaning* of one byte widened, which is why every reader
+had to be found and made to mask.
+
+**The masking is the whole risk, and it is checked.** `contact_mask != 0` on the
+raw byte counts every scripted frame as a contact and reads F-6 as over 50%
+instead of 16.63%, failing nothing. Two named accessors now exist -
+`mirage.data.contact_bits` and `mirage.data.scripted` - and `Truth` splits the
+byte into `contact_mask` and `is_scripted`. That F-6 still reads **16.63%** after
+the regeneration is the evidence they are used.
+
+**Measured.** The flag is **constant across every frame of all 500 episodes** -
+asserted per episode, not in aggregate, because a per-frame bug would still leave
+a plausible mix at the dataset level - and **53.2% of episodes are scripted**. The
+coin is fair and D2's hand-chosen 0.55 histogram cutoff is no longer the only way
+to ask.
+
 ---
 
 ## Tier 2 - Must-tier requirements with no evidence
@@ -243,7 +272,7 @@ These are ship criteria. The project's own rule is that a requirement claim
 without a measurement is written as unverified, not as a requirement - and two of
 them currently have no artifact at all.
 
-### [ ] D4. E-2 (clean build from scratch) has never been verified
+### [x] D4. E-2 (clean build from scratch) has never been verified
 
 **Evidence.** `README.md:48` - "## Build / Not yet implemented. E-2 requires a
 verified clean-build-from-scratch recipe here." E-2 is **Must**, and the
@@ -260,6 +289,24 @@ built it once.
 **Done when.** Clone to a fresh directory, run the documented commands, both build
 types compile and the binary runs. Paste the **exact** commands into README's
 Build section. One entry in `runs.jsonl` (D5).
+
+#### LANDED 2026-08-28 - and it found a live provenance bug
+
+Cloned to a directory that had never held the project, ran the four CMake
+commands, ran both binaries, and generated 40 frames with each. Both build types
+compile `/W4 /WX` clean and run; the ASan build is sanitizer-clean and its blobs
+are byte-identical to the Release build's. README's Build section now carries the
+exact commands, the measured prerequisites (MSVC 19.50.35728, CMake 4.3.1), the
+smoke-test command, and four gotchas a machine that had built once would never
+show - chiefly that **the build cannot live under `%TEMP%`**, where MSBuild's
+FileTracker fails `FTK1011` inside CMake's compiler probe and reports it as a
+missing C++ compiler.
+
+**The clean clone paid for itself immediately.** Asked for its `data_hash`, it
+answered `18a76531` where this worktree answered `219ab0af` - the CRLF/LF fork
+described in D3 above and in the verification log. Nothing but a checkout that had
+never been touched could have surfaced that; every existing tree agreed with
+itself.
 
 ---
 
@@ -501,7 +548,7 @@ Phase 1's plan gets written from the stale template.
 
 ## Tier 4 - Structural, cheap now, annoying later
 
-### [ ] D9. `tau = 8.0` is hardcoded in `validator.py`, not in config
+### [x] D9. `tau = 8.0` is hardcoded in `validator.py`, not in config
 
 **Evidence.** `mirage/validator.py:201`, `:248`, `:285` all carry
 `tau: float = 8.0` as a default parameter. The `validator` section of
@@ -522,9 +569,18 @@ not comparable will claim they are.
 uncalibrated until the Phase 1 recalibration - see Tier 5. ~10 lines now; later,
 every Q-3 row taken before the move is unattributable.
 
+#### LANDED 2026-08-28
+
+`validator.offpalette_tau` is in `base.json` at 8.0, validated as a positive float
+(not a fraction - it is an RGB Euclidean radius with a ceiling of 441.7), and read
+through `Config`. All three defaults are gone; `tau` is a required argument, and
+the docstring now says why a default here would be a second home for the number.
+`validator_hash` moved when the key was added, which is the property the whole
+item was about. The value is unchanged and still uncalibrated.
+
 ---
 
-### [ ] D10. Two of the three Python self-checks cannot run in a clean checkout
+### [x] D10. Two of the three Python self-checks cannot run in a clean checkout
 
 **Evidence - demonstrated in this worktree.** `python -m mirage.data` gives
 `FileNotFoundError: no committed shards in ...\data\shards`. `mirage.validator` is
@@ -545,6 +601,31 @@ write a small shard to a temp directory; this is the Python-side mirror of it.
 a shard in temp from `meta_dtype` plus random pixels. That loses the "real bytes
 from the real writer" property, which is most of what F-8 is testing. Prefer the
 fixture.
+
+#### LANDED 2026-08-28 - the fixture, and it costs 4.9 KB
+
+`mirage/fixtures/` holds `fixture.json` (2 episodes x 20 steps, its own
+`shard_dir`) and one shard of **40 frames** written by the binary from D4's clean
+build. 491,520 bytes raw, **4,881 packed**, which is what git actually stores -
+well under the 250 KB the item budgeted. `.gitignore` un-ignores exactly
+`mirage/fixtures/shards/*.pixels` and `*.meta`; `.gitattributes` already marked
+both extensions `binary`, so they survive the `eol=lf` rule.
+
+`mirage.data.self_check_config()` picks the generated set when one exists and the
+fixture when it does not, and both `_self_check`s say which they are on.
+
+**Three checks are skipped on the fixture, and say so**, because they are claims
+about the *dataset* that 40 frames from 2 episodes can only meet or miss by luck:
+F-6, F-7, and the episode-level train/val split. The split's hash function is
+instead exercised directly over **4,000 synthetic episode ids (4.98% to val)**,
+which needs no data at all - so a clean checkout still covers `is_val`, just not
+through the shards.
+
+**One maintenance cost, stated rather than hidden.** The fixture carries its own
+`data_hash` over its own config, so editing `scene/arm_blocks.xml` or the `sim`
+section invalidates it. `load_shards` then refuses it by name rather than reading
+stale frames, and README's Build section carries the one command that regenerates
+it. It was already exercised once: the CRLF fix moved the fixture hash too.
 
 ---
 
@@ -574,7 +655,7 @@ speculative-fallback failure the architecture doc warns about.
 | Connected components, parallel generation, WGL pbuffer, single-pass render, clang-cl UBSan | Triggers recorded, none fired |
 | `mirage/logging.py` | Phase 1 machinery. Build it when Phase 1 needs it |
 | E-4's 5% reproducibility for `mj_step` | Needs a quiescent-machine protocol, and it gates a *bench* number, not the dataset. Do it when Phase 3/4 timing starts mattering |
-| F-7's knocked-off-table bias | Recorded. Q-6 re-derives from `visible_px` counts at any threshold, and separating the two cases needs a "block is on the table" field. Not worth a regeneration on its own - **but fold it in if D1 regenerates anyway** |
+| F-7's knocked-off-table bias | Recorded, and **still open**. Q-6 re-derives from `visible_px` counts at any threshold, and separating the two cases needs a "block is on the table" field. Two regenerations came and went on 2026-08-28 without it: unlike D3's spare bit, this is new measurement code in `truth.cpp`, not a bit that rides along free. **The trigger stands - fold it into the next regeneration** |
 
 ---
 
@@ -588,27 +669,34 @@ instructions and closes two Must rows:**
    was not in the original scope.
 2. **D5** - create `runs.jsonl`, backfill Phase 0. Closes a Must row and gives
    step 3 somewhere to land.
-3. **D4** - verify the clean build from scratch. Closes the other Must row.
-4. **D9** - tau into config. ~10 lines, and it has to happen before any Q-3 row
-   exists or that row is unattributable.
-5. **D10** - the small fixture, so step 3's fresh clone can actually run F-8 and
-   F-9.
+3. ~~**D4** - verify the clean build from scratch.~~ **DONE** - Must row closed, and the clean clone is what exposed the CRLF `data_hash` fork.
+4. ~~**D9** - tau into config.~~ **DONE.**
+5. ~~**D10** - the small fixture, so step 3's fresh clone can actually run F-8 and
+   F-9.~~ **DONE** - and step 3's fresh clone did more than run them: it found the
+   CRLF `data_hash` fork, which forced the regeneration that D3 was waiting on.
 
 **Then, before Phase 1 trains on the current shards:**
 
-6. **D1 + D2**, and **D3 + F-7's bias** only if those force a regeneration.
+6. ~~**D1 + D2**, and **D3 + F-7's bias** only if those force a regeneration.~~
+   **D1, D2 and D3 all DONE.** D1 and D2 forced the first regeneration on
+   2026-08-28; the CRLF fix forced a second one the same day, which is what D3
+   rode along on. **F-7's bias is the one part not taken** - it needs a "block is
+   on the table" field in `truth.cpp`, which is more C++ than a spare bit, and it
+   was not worth widening an already-large change. It stays in Tier 5 with its
+   trigger intact.
 
-**If Phase 1 is starting imminently, invert this and do 6 first.** Items 1-5 cost
-the same next month. Item 6 is the only one whose price goes up, and it goes up by
-the whole downstream hash tree.
+**Every item on this list is now closed except F-7's bias.** The original ordering
+advice - do item 6 first if Phase 1 is imminent - is spent; nothing left here gets
+more expensive with time.
 
 ---
 
 ## Not debt - recorded so it is not re-litigated
 
 - **No test framework, no fixtures, self-checks per module.** A stated design
-  choice, not an omission. D10 fixes the *inputs* to two self-checks, not the
-  approach.
+  choice, not an omission. D10 fixed the *inputs* to two self-checks, not the
+  approach - `mirage/fixtures/` is one committed shard, not a fixture framework,
+  and the checks are still `_self_check` functions in the modules they test.
 - **`json.tar.xz` at repo root.** Vendored `nlohmann/json`, pinned by a locally
   computed SHA256, which is the deliberate supply-chain choice.
 - **`sim/` being deletable and `mirage/` never importing MuJoCo.** Working as

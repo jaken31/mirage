@@ -5,8 +5,9 @@
 #include <cstring>
 
 namespace {
-    // Bits available in the meta record's contact_mask.
-    constexpr int kContactMaskBits = 8;
+    // Block bits available in the meta record's contact_mask. Seven, not eight:
+    // shard_writer.h reserves the high bit for the scripted-episode flag.
+    constexpr int kContactMaskBits = 7;
 
     // Largest value the meta record's u16 visible_px field holds, and therefore
     // the largest frame this file can count pixels over.
@@ -80,8 +81,8 @@ Truth::Truth(const mjModel* model, const GlContext& gl)
                   "contact for");
     }
     if (block_count() > kContactMaskBits) {
-        mju_error("%d blocks, but contact_mask is one byte - %d bits",
-                  block_count(), kContactMaskBits);
+        mju_error("%d blocks, but contact_mask has %d block bits (the high bit "
+                  "is the scripted-episode flag)", block_count(), kContactMaskBits);
     }
 
     // geom -> block, and by omission geom -> arm. A geom on the world body is

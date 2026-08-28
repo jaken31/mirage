@@ -157,7 +157,8 @@ ShardWriter::~ShardWriter() {
 }
 
 void ShardWriter::append(const unsigned char* rgb, int action, const TruthFrame& truth,
-                         std::uint32_t episode_id, std::uint16_t step_idx) {
+                         bool is_scripted, std::uint32_t episode_id,
+                         std::uint16_t step_idx) {
     if (committed_) {
         mju_error("shard %d: append after commit; the sidecar already claims "
                   "%lld frames", shard_index_, static_cast<long long>(frames_));
@@ -211,7 +212,15 @@ void ShardWriter::append(const unsigned char* rgb, int action, const TruthFrame&
         PutU16(record + at, static_cast<std::uint16_t>(count));
         at += 2;
     }
-    PutU8(record + at, truth.contact_mask);
+    // Checked, not assumed. truth.cpp caps blocks at 7 so this cannot fire
+    // today, but the two fields share a byte and the day a block bit reaches
+    // bit 7 the flag reads as contact on that block and nothing else notices.
+    if ((truth.contact_mask & kScriptedBit) != 0) {
+        mju_error("shard %d: contact_mask is 0x%02X and bit 7 is the "
+                  "scripted-episode flag", shard_index_, truth.contact_mask);
+    }
+    PutU8(record + at, static_cast<std::uint8_t>(
+                           truth.contact_mask | (is_scripted ? kScriptedBit : 0)));
     at += 1;
     PutU32(record + at, episode_id);
     at += 4;
@@ -363,7 +372,9 @@ void shard_writer_self_check() {
                 truth.visible_px[static_cast<std::size_t>(b)] = 100*f + b;
             }
             truth.contact_mask = static_cast<std::uint8_t>(f + 1);
-            writer.append(rgb.data(), 5 + f, truth,
+            // Alternating, so the check below sees the flag both set and clear
+            // and a writer that hardcoded either one would fail.
+            writer.append(rgb.data(), 5 + f, truth, /*is_scripted=*/(f % 2) == 0,
                           static_cast<std::uint32_t>(70000 + f),
                           static_cast<std::uint16_t>(600 + f));
         }
@@ -446,9 +457,12 @@ void shard_writer_self_check() {
             }
             at += 2;
         }
-        if (record[at] != static_cast<unsigned char>(f + 1)) {
-            mju_error("frame %d: contact_mask reads %d, expected %d",
-                      f, record[at], f + 1);
+        const auto want_mask = static_cast<unsigned char>(
+            (f + 1) | ((f % 2) == 0 ? kScriptedBit : 0));
+        if (record[at] != want_mask) {
+            mju_error("frame %d: contact_mask byte reads 0x%02X, expected 0x%02X "
+                      "(blocks %d, scripted %d)",
+                      f, record[at], want_mask, f + 1, static_cast<int>((f % 2) == 0));
         }
         at += 1;
         if (GetU32(record + at) != static_cast<std::uint32_t>(70000 + f)) {
