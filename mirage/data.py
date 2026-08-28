@@ -339,7 +339,7 @@ class WindowSampler:
 FIXTURE_CONFIG = Path(__file__).resolve().parent / "fixtures" / "fixture.json"
 
 
-def self_check_config() -> tuple["config.Config", Path, bool]:
+def self_check_config(config_path: Path | str | None = None) -> tuple["config.Config", Path, bool]:
     """The config and shard dir the self-checks run against, and which one it is.
 
     `mirage/configs/base.json` and its generated set when that set exists; the
@@ -363,6 +363,15 @@ def self_check_config() -> tuple["config.Config", Path, bool]:
             --data-hash <config.load(FIXTURE_CONFIG).data_hash> --git-sha <sha>
     """
     root = Path(__file__).resolve().parent.parent
+
+    # An explicit config is explicit: no fixture fallback, so a missing set
+    # fails by name in load_shards rather than quietly checking 40 other frames
+    # and printing ok. This is how a second resolution gets verified -
+    # `python -m mirage.validator mirage/configs/base96.json`.
+    if config_path is not None:
+        cfg = config.load(config_path)
+        return cfg, root / cfg.data["shard_dir"], False
+
     cfg = config.load(root / "mirage" / "configs" / "base.json")
     shard_dir = root / cfg.data["shard_dir"]
     if any(shard_dir.glob("shard_*.json")):
@@ -372,9 +381,9 @@ def self_check_config() -> tuple["config.Config", Path, bool]:
     return cfg, root / cfg.data["shard_dir"], True
 
 
-def _self_check() -> None:
+def _self_check(config_path: Path | str | None = None) -> None:
     """F-8, plus the invariants the sampler's correctness rests on."""
-    cfg, shard_dir, fixture = self_check_config()
+    cfg, shard_dir, fixture = self_check_config(config_path)
     if fixture:
         print(f"no generated shards - running against the committed fixture, {shard_dir}")
 
@@ -482,4 +491,6 @@ def _self_check() -> None:
 
 
 if __name__ == "__main__":
-    _self_check()
+    import sys
+
+    _self_check(sys.argv[1] if len(sys.argv) > 1 else None)

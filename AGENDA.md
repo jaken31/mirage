@@ -113,13 +113,13 @@ frames" first.
    measured on that run - the 45-50 s figure recorded earlier the same day did not
    reproduce. Regenerate `mirage/fixtures/` too if the `sim` section moves at all -
    the fixture carries its own `data_hash` and `load_shards` will refuse it
-2. `mirage/configs/base96.json` - `sim.height`/`width` 96,
-   `data.shard_dir` `data/shards96`. **8.294 GB**, still under R-4's 20 GB.
-   **Measure the wall clock, do not quote one**: the "~45 s" carried here came
-   from the superseded 6,775 fps and was never a 96x96 run. Extrapolating the
-   measured 64x64 frame cost by pixel count puts it nearer 1.5-2 min, and that is
-   an extrapolation too. F-5 is unaffected (same policy, same scene) but **F-6
-   and F-7 must be re-verified** - both are measured off rendered pixels
+2. ~~`mirage/configs/base96.json`~~ **done 2026-08-28.** `data_hash 35e5b862`,
+   7 shards, **8.294 GB**, 12x12 = 144 tokens, still under R-4's 20 GB.
+   Generation **65.8 s at 4,560 fps** - both earlier guesses were wrong, and the
+   pixel-count extrapolation was the worse of them: 2.25x the pixels cost **9%
+   more wall clock**, so generation is physics-bound, not pixel-bound. F-6 is
+   unchanged at 16.63%, but **F-7 fell 5.35% -> 4.78%**, margin 1.6x the floor
+   against 1.8x. The fork buys edge fidelity and spends occlusion headroom
 3. `mirage/data.py` - `preload`, returning palette indices plus the byte LUT.
    1.16 GB for the train split instead of 3.49, and lossless
 4. `mirage/logging.py` - `log(dict)` to jsonl always, W&B behind a flag

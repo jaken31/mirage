@@ -114,8 +114,14 @@ of 43,200 frames and four of 42,600, because episodes are spread evenly over the
 shards rather than packed to the 50,000 ceiling. The largest 96x96 shard is
 1.19 GB. Do not derive the shard count from `frames_per_shard` - read a sidecar.
 
-Generation is ~45 s at the measured 6,775 fps and lands 8.29 GB on disk, inside
-R-4's 20 GB with the 64x64 set alongside it.
+Generation measured **65.8 s at 4,560 fps** on 2026-08-28 and lands **8.294 GB**
+on disk, inside R-4's 20 GB with the 64x64 set alongside it. Two earlier figures
+for this line were wrong in opposite directions: "~45 s at 6,775 fps" came from a
+superseded throughput number, and extrapolating the measured 64x64 cost by pixel
+count predicted 1.5-2 min. **2.25x the pixels costs 9% more wall clock** - 65.8 s
+against 60.2 s - because generation is dominated by physics stepping and fixed
+per-frame cost, not by pixel throughput. Do not size a resolution change by
+pixel count.
 
 **Working when:** `load_shards("data/shards96", cfg96.data_hash)` returns **7**
 shards summing to 300,000 frames with the same per-shard frame counts as the
@@ -123,6 +129,18 @@ shards summing to 300,000 frames with the same per-shard frame counts as the
 `mirage/validator.py` over the new set still reports at most 7 unique colours per
 frame. F-2 is resolution-independent, and a failure here means the render config
 did not survive the size change.
+
+**Done 2026-08-28**, all of the above, at `data_hash 35e5b8627987a2bb`. Both
+self-checks take an optional config path now, so this is
+`python -m mirage.validator mirage/configs/base96.json` rather than a throwaway
+script; an explicit path skips the fixture fallback on purpose, so a missing set
+fails by name instead of quietly checking 40 other frames.
+
+**One number moved, and it is the one that matters to the fork: F-7 fell from
+5.35% to 4.78%**, margin 1.6x the 3% floor against 1.8x at 64x64. That is the
+resolution working as intended - a bigger frame makes total occlusion rarer - but
+it means the 144-token path buys edge fidelity and spends occlusion headroom.
+F-6 is unchanged at 16.63%, contact being a physics fact rather than a pixel one.
 
 ### 3. `mirage/data.py` - `preload`
 

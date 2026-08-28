@@ -356,12 +356,12 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -
     )
 
 
-def _self_check() -> None:
+def _self_check(config_path: Path | str | None = None) -> None:
     """F-2 over the whole set, F-6/F-7 against config, and F-9's sweep."""
     from mirage import data
 
     root = Path(__file__).resolve().parent.parent
-    cfg, shard_dir, fixture = data.self_check_config()
+    cfg, shard_dir, fixture = data.self_check_config(config_path)
     if fixture:
         print(f"no generated shards - running against the committed fixture, {shard_dir}")
     palette = load_palette(root / cfg.sim["scene_xml"])
@@ -491,4 +491,6 @@ def _self_check() -> None:
 
 
 if __name__ == "__main__":
-    _self_check()
+    import sys
+
+    _self_check(sys.argv[1] if len(sys.argv) > 1 else None)
