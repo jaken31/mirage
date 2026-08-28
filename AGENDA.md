@@ -120,8 +120,11 @@ frames" first.
    more wall clock**, so generation is physics-bound, not pixel-bound. F-6 is
    unchanged at 16.63%, but **F-7 fell 5.35% -> 4.78%**, margin 1.6x the floor
    against 1.8x. The fork buys edge fidelity and spends occlusion headroom
-3. `mirage/data.py` - `preload`, returning palette indices plus the byte LUT.
-   1.16 GB for the train split instead of 3.49, and lossless
+3. ~~`mirage/data.py` - `preload`~~ **done 2026-08-28.** Palette indices plus the
+   byte LUT, lossless and asserted so. **1.16 GB** for the train split instead of
+   3.49 at 64x64, **2.62 instead of 7.85** at 96x96, one 7-entry LUT for both.
+   Takes the palette rgb as an argument - `validator` imports `data`. Building it
+   costs 37.5 s at 64x64 and 87.8 s at 96x96, paid once per run
 4. `mirage/logging.py` - `log(dict)` to jsonl always, W&B behind a flag
 5. `mirage/fsq.py` - quantizer, encoder/decoder, train loop, eval, token cache.
    **Run rung R0 before FSQ is wired in at all**

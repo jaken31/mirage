@@ -40,7 +40,7 @@ Everything flows one direction. Nothing calls backwards.
 | `scene/arm_blocks.xml` | nothing new. **It is frozen** - see the gotcha table | - |
 | `sim/main.cpp` | writing `cfg.height`/`cfg.width` into `model->vis.global.offheight`/`offwidth` before the context exists | the XML, which no longer states the render size |
 | `mirage/configs/base96.json` | the 96x96 arm: `sim.height`/`width` 96, `data.shard_dir` `data/shards96` | anything the 64x64 config owns; they are two datasets with two `data_hash`es |
-| `mirage/data.py` | `preload(shards, index, split, val_fraction)` -> palette-index array plus the byte LUT | anything model-shaped; it still does not interpret pixels |
+| `mirage/data.py` | `preload(shards, index, split, val_fraction, palette_rgb)` -> palette-index array plus the byte LUT | anything model-shaped; it still does not interpret pixels. It does not *load* the palette either - `validator` imports `data`, so the rgb array is passed in |
 | `mirage/logging.py` | `log(dict)` -> one jsonl line always, W&B only behind a flag | deciding what is worth logging |
 | `mirage/fsq.py` | the quantizer, encoder, decoder, train loop, eval, the gate table, the token cache writer | loading shards, and the palette |
 | `mirage/configs/base.json` | after item 6, the calibrated `validator` thresholds | the measurement that produced them |
@@ -178,6 +178,19 @@ Doc page: **NumPy -> fancy indexing, `np.take`**.
 `np.array(shard.pixels[i, ::-1])` byte for byte on a few thousand random frames,
 the train array is 1.16 GB, and the same call at 96x96 returns 2.62 GB with the
 same 7-entry LUT.
+
+**Done 2026-08-28**, all of it, every figure landing exactly as predicted -
+1.16 GB against 3.49 raw at 64x64, 2.62 against 7.85 at 96x96, one LUT of seven
+entries shared by both. `preload` takes the palette rgb as a parameter, not from
+`load_palette`, because `validator` imports this module.
+
+`python -m mirage.data` runs the round-trip check on the **val** split only.
+Materialising 1.16 GB (2.62 at 96x96) on every self-check run would buy no
+coverage the val pass does not already give - it is the same code over 17x the
+frames - and the size is arithmetic. The full build is measured once and lives
+in `runs.jsonl`: **37.5 s at 64x64, 87.8 s at 96x96**, about 90 MB/s both times,
+so it is packing-bound rather than disk-bound. One-time against a ~6 min run,
+but the 96x96 ladder pays it per rung.
 
 ### 4. `mirage/logging.py`
 

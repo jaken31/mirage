@@ -339,6 +339,97 @@ class WindowSampler:
 FIXTURE_CONFIG = Path(__file__).resolve().parent / "fixtures" / "fixture.json"
 
 
+def preload(
+    shards: Sequence[Shard],
+    index: Sequence[Episode],
+    split: str,
+    val_fraction: float,
+    palette_rgb: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """One split's frames as palette indices, plus the LUT that inverts them.
+
+    Returns `(n, h, w)` uint8 indices and a `(p, 3)` uint8 LUT, so that
+    `lut[indices]` is the original RGB, rows already flipped top-down.
+
+    Indices rather than RGB because there are exactly **7** distinct byte
+    triples across all 300,000 frames - a union over the whole set, not a
+    per-frame count - so one byte per pixel is lossless and the train split
+    holds in 1.16 GB instead of 3.49 at 64x64. The page cache cannot be relied
+    on at a 3.5 GB working set: the loader reads 6,804 frames/s cold against
+    109,682 warm, and training needs ~13,000.
+
+    `palette_rgb` is passed in rather than loaded here because
+    `mirage.validator` imports this module, so importing `load_palette` back
+    would be a cycle. Pass `validator.load_palette(cfg.sim["scene_xml"]).rgb`.
+
+    Losslessness is asserted, not assumed. Every distinct triple is mapped to
+    its nearest palette entry by argmin over squared distance - exact RGB
+    equality does not work, because `rgba * 255` does not land on integers, and
+    the architecture doc records the four objects it would call missing on a
+    flawless frame. Two entries claiming one triple would make the LUT
+    non-invertible, so that is checked too.
+    """
+    if split not in ("train", "val"):
+        raise ValueError(f"split is {split!r}, expected 'train' or 'val'")
+
+    want_val = split == "val"
+    episodes = [e for e in index if is_val(e.episode_id, val_fraction) == want_val]
+    n = sum(e.length for e in episodes)
+    h = int(shards[0].sidecar["height"])
+    w = int(shards[0].sidecar["width"])
+
+    out = np.empty((n, h, w), dtype=np.uint8)
+    palette = np.asarray(palette_rgb, dtype=np.float64)
+    # Keys are packed r<<16 | g<<8 | b. Seven distinct values over 1.2e9 pixels,
+    # so the argmin runs once per distinct triple and the per-pixel work is a
+    # searchsorted, not a (pixels, 7) distance matrix that would not fit.
+    known_keys = np.empty(0, dtype=np.uint32)
+    known_idx = np.empty(0, dtype=np.uint8)
+    lut = np.zeros((len(palette), 3), dtype=np.uint8)
+    claimed: dict[int, int] = {}
+    worst = 0.0
+
+    at = 0
+    for ep in episodes:
+        px = shards[ep.shard].pixels[ep.start:ep.start + ep.length, ::-1]
+        block = np.asarray(px, dtype=np.uint8)
+        keys = (block[..., 0].astype(np.uint32) << 16
+                | block[..., 1].astype(np.uint32) << 8
+                | block[..., 2].astype(np.uint32))
+
+        fresh = np.setdiff1d(np.unique(keys), known_keys)
+        if fresh.size:
+            rgb = np.stack([fresh >> 16 & 255, fresh >> 8 & 255, fresh & 255], axis=1)
+            d2 = ((rgb[:, None, :].astype(np.float64) - palette[None, :, :]) ** 2).sum(2)
+            nearest = d2.argmin(1)
+            worst = max(worst, float(np.sqrt(d2.min(1)).max()))
+            for key, pi, triple in zip(fresh.tolist(), nearest.tolist(), rgb):
+                if claimed.setdefault(pi, key) != key:
+                    raise ValueError(
+                        f"palette entry {pi} claimed by two triples: "
+                        f"{claimed[pi]:#08x} and {key:#08x} - the LUT cannot invert"
+                    )
+                lut[pi] = triple
+            known_keys = np.concatenate([known_keys, fresh])
+            known_idx = np.concatenate([known_idx, nearest.astype(np.uint8)])
+            order = np.argsort(known_keys)
+            known_keys, known_idx = known_keys[order], known_idx[order]
+
+        out[at:at + ep.length] = known_idx[np.searchsorted(known_keys, keys)]
+        at += ep.length
+
+    assert at == n, f"wrote {at} frames into room for {n}"
+    if worst >= 1.0:
+        raise ValueError(f"a pixel sits {worst:.3f} from its palette entry, expected < 1.0")
+    if len(claimed) != len(palette):
+        raise ValueError(
+            f"{len(claimed)} of {len(palette)} palette entries appear in the {split} "
+            f"split, so the LUT has undefined rows"
+        )
+    return out, lut
+
+
+
 def self_check_config(config_path: Path | str | None = None) -> tuple["config.Config", Path, bool]:
     """The config and shard dir the self-checks run against, and which one it is.
 
@@ -486,6 +577,40 @@ def _self_check(config_path: Path | str | None = None) -> None:
     share = len(v_ids) / len(ids)
     assert abs(share - cfg.data["val_fraction"]) < 0.02, f"val share {share:.3f}"
     print(f"split: {len(t_ids)} train / {len(v_ids)} val episodes ({share:.1%}), disjoint, nothing dropped")
+
+    # preload, on the val split. The train split is the same code over 17x the
+    # frames, and materialising 1.16 GB (2.62 at 96x96) on every self-check run
+    # would trade a real cost for no extra coverage - the size is arithmetic,
+    # and runs.jsonl carries the measurement of the full build.
+    from mirage.validator import load_palette  # deferred: validator imports this module
+
+    palette = load_palette(Path(cfg.sim["scene_xml"]))
+    val_idx, lut = preload(shards, index, "val", cfg.data["val_fraction"], palette.rgb)
+    h = int(shards[0].sidecar["height"])
+    train_frames = total - len(val_idx)
+    print(f"preload: {len(val_idx):,} val frames as {val_idx.nbytes / 1e6:.1f} MB of "
+          f"indices, {len(lut)}-entry LUT; the train split is {train_frames:,} frames "
+          f"= {train_frames * h * h / 1e9:.2f} GB against {train_frames * h * h * 3 / 1e9:.2f} raw")
+
+    # The whole claim: the LUT inverts, exactly, against an independent read of
+    # the blob. Sampled rather than exhaustive because this is a byte identity -
+    # a mapping error shows up on any frame that contains the mismatched colour.
+    rng = np.random.default_rng(0)
+    checked = 0
+    at = 0
+    want_val = True
+    for ep in index:
+        if is_val(ep.episode_id, cfg.data["val_fraction"]) != want_val:
+            continue
+        for _ in range(min(8, ep.length)):
+            j = int(rng.integers(ep.length))
+            got = lut[val_idx[at + j]]
+            expect = np.array(shards[ep.shard].pixels[ep.start + j, ::-1])
+            assert np.array_equal(got, expect), f"LUT round-trip differs at episode {ep.episode_id}"
+            checked += 1
+        at += ep.length
+    print(f"preload: LUT[indices] is byte-identical to a direct flipped read on "
+          f"{checked:,} random frames, worst palette distance under 1.0")
 
     print("data self-check ok")
 
