@@ -7,6 +7,12 @@ Design rationale is in `world_model_architecture.md` - not repeated here.
 Numbering below matches `AGENDA.md` exactly. If the two ever disagree, AGENDA is
 the order of record and this file is the stale one.
 
+**Phase 0 closed 2026-08-27 - gate met on all three conditions.** This file is
+kept as the record of how it was built and as the template for later phases.
+Statuses below are final, not pending. The gotchas table was updated at phase
+close with what running the code actually turned up; per `phase0_debt_checklist.md`
+D8, that update is the practice, not a one-off.
+
 **Vocabulary, once.** A *GL context* is the handle that lets you issue drawing
 commands; nothing draws without one. *Offscreen* means drawing into a memory
 buffer rather than a visible window. A *segid* is the integer MuJoCo assigns each
@@ -258,16 +264,36 @@ frames.
 
 ## Gotchas, and how you would notice
 
+### Predicted from the documentation, before writing any code
+
+Kept because they were right. Three rows that were here originally have been
+corrected against what actually happened - marked below.
+
 | Gotcha | What breaks | How you notice |
 |---|---|---|
-| The offscreen buffer size defaults to 640x480 | You render into the wrong region, or get a clipped image | Pictures are the wrong size or partly black. Set `offwidth`/`offheight` in the XML `<visual><global>` block |
-| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. `record.cc` handles it |
+| The offscreen buffer size defaults to 640x480 | You render into the wrong region, or get a clipped image | Pictures are the wrong size or partly black. Set `offwidth`/`offheight` in the XML `<visual><global>` block. `GlContext` now checks the two against each other and aborts, so this cannot reach a data run |
+| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. **Settled: nothing in `sim/` flips it and the blob stays bottom-up; the flip lives in `WindowSampler`**, so `Shard.pixels` stays raw and F-8 has something byte-exact to compare |
 | Forgetting `mjr_setBuffer` | You render to the hidden window instead of the buffer | Readback returns garbage or blank |
 | `mjRND_IDCOLOR` without `mjRND_SEGMENT` | The colour-coded pass isn't colour-coded | Counts come out nonsensical |
-| Visualization decorations left on | Contact dots and joint axes add colours | The 24-colour check fails and the segmentation counts are polluted. Turn them off in `mjvOption` |
+| **Corrected.** Visualization decorations left on | Contact dots and joint axes add colours | They are already off - `mjv_defaultOption` leaves every decoration cleared, so call it and change nothing. **Do not zero the flag array to be sure:** that also clears `mjVIS_STATIC` and every worldbody geom stops drawing |
 | A GL context belongs to one thread | Threads cannot share it | If you ever parallelise, use processes. This is why shards are the unit of both determinism and parallelism |
 | `rand()` instead of a seeded generator | Determinism silently gone | The generate-twice-and-compare check fails, and only that check would catch it |
-| Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | Expect to need a small suppression file. This is normal, not a bug in your code |
+| **Corrected - does not apply.** Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | MSVC ships **no leak detection at all**, so there is no suppression file to write. On this toolchain E-3 is ASan only |
+
+### Found by running Phase 0
+
+None of these came from reading documentation. Each is here because it was hit.
+**Five of the six fail silently** - the run completes, the numbers look plausible,
+and nothing reports an error.
+
+| Gotcha | What breaks | How you notice |
+|---|---|---|
+| `mjv_updateScene` before any `mj_forward`/`mj_step` | An entirely black frame | **You do not.** `scene.ngeom` reads a correct 6, so a geom-count check passes. mjData's derived `xpos`/`xmat` are zero until forward dynamics runs - step or force the sim first, then update the scene |
+| `<camera mode="targetbody">` with no `target=` | The camera aims nowhere and renders empty ground | **You do not.** It compiles clean and `cam_targetbodyid` is silently `-1`. Give `target=`, or set orientation with `xyaxes` as `arm_blocks.xml` does |
+| The segmentation pass leaves the framebuffer holding id colours | The shard stores id colours instead of the RGB frame | **You do not.** Id colours look like a plausible flat-shaded image and fail no check downstream. Order is fixed: render RGB, read it back, *then* call `Truth::read` |
+| Slicing an `np.memmap` returns a lazy view | A throughput probe measures nothing | **You do not** - it reports a wonderful number. A first loader probe read 3.4M fps having timed slice arithmetic. Force the copy: `__getitem__` must return `np.array(...)` |
+| `jnt_qposadr` and `jnt_dofadr` diverge for free joints | Reads land on the wrong element | **You do not.** A free joint is 7 wide in `qpos` and 6 in `qvel`, so block1 is 9 vs 8 and block2 16 vs 14. Never compute either address; always read the array |
+| `rgba * 255` does not land on exact byte values | Exact-equality palette matching reports objects missing | Byte-rounded equality calls **4 of 7 entries missing on a flawless frame** - 0.65 rounds up to 166 while 0.90 rounds down to 229, and there is no rule worth modelling. Keep the palette unrounded and match by nearest-entry `argmin` |
 
 `glGetString` is core OpenGL 1.1, so it links directly against `opengl32.dll` on
 Windows with no extension loader. Most modern GL functions do not - but you only
@@ -283,9 +309,13 @@ Both from Python, before any C++ exists, because they can change what you build:
    RGB, 49.6 us RGB+depth, 75.8 us with render, at P2. Two-pass render confirmed
    with a 13x margin, so neither the single-pass palette collapse nor the WGL
    pbuffer is needed. The threshold that would have forced them was ~0.5 ms.
-2. **`mj_step` time alone**, to know the remaining headroom. **Next**, and it
-   needs item 1's XML to step. Render plus readback leaves ~1850 of the 2000 us
-   frame, so this is the only day-1 number that can still break P-6. It is CPU
-   work, so the GPU pstate blocker does not gate it.
+2. **`mj_step` time alone**, to know the remaining headroom. **Done** - 10.5-10.8
+   us median driven, p99 32-60 us, `bench/step_probe.py`. Render plus readback
+   leaves ~1850 of the 2000 us frame, so this was the only day-1 number that could
+   still break P-6; it came in 131-176x under. CPU work, so no GPU clock gate
+   applies to it.
 
-Record the GPU power state next to each. A timing without it is not a number.
+Record the GPU clock state next to each. A timing without it is not a number -
+and gate it on **SM clock plus power draw** for compute, **memory clock == max**
+for bandwidth. Not on `pstate == P0`, which follows the memory domain and reads
+P4 during correct compute-bound work; see `README.md`, "Taking a measurement".

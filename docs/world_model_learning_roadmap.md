@@ -59,7 +59,7 @@ The standard free resource, actively maintained through C++23. Do not read all 2
 **MuJoCo documentation** — https://mujoco.readthedocs.io/
 Three sections only:
 - **Overview and XML reference** — enough to write `arm_blocks.xml`. Focus on `<worldbody>`, joints, geoms, actuators, and the `<visual>` block that controls your flat render.
-- **Programming / Rendering** — `mjr_render`, offscreen buffers, and the EGL context. This is where your C++ harness lives.
+- **Programming / Rendering** — `mjr_render`, offscreen buffers, and the GLFW offscreen context. This is where your C++ harness lives. (The docs discuss EGL; it does not exist in Windows MuJoCo, so read those parts as background.)
 - **`record.cc` sample** — in the MuJoCo GitHub repo under `sample/`, **not** in the pip wheel (checked: `mujoco` 3.12.0 ships headers and two test XMLs only). Does exactly what your harness does: steps physics, renders offscreen, dumps pixels. Read it before writing yours.
 
 **Supplement with:** build with `/W4 /WX /fsanitize=address` from the very first file (MSVC has no UBSan). Sanitizers are the difference between C++ being tolerable and C++ being a nightmare when your instincts are not yet C++ instincts.
@@ -148,7 +148,7 @@ Read gpt-fast for structure, then write your own. Copying it means you skip the 
 ## Communities
 
 - **GPU MODE Discord** (https://discord.gg/gpumode) — the `#triton-puzzles` channel specifically, and generally where the kernel people are
-- **MuJoCo GitHub Discussions** — where the EGL and offscreen-rendering answers actually live
+- **MuJoCo GitHub Discussions** — where the offscreen-rendering answers actually live. Search for GLFW and offscreen, not EGL, which Windows MuJoCo does not have
 - **Karpathy Zero to Hero Discord** — `#nanoGPT` channel
 
 ## Reality check

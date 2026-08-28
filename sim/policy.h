@@ -142,6 +142,13 @@ public:
   // toward.
   mjtNum target_distance(const mjData* data) const;
 
+  // Which half of the 50/50 mix this episode is. Fixed by begin_episode and
+  // constant until the next one. Public because the meta record stores it:
+  // without it, every per-half question about the dataset - does F-6's contact
+  // come from the scripted half? does Q-4 fail on random episodes? - is
+  // guesswork from a histogram.
+  bool is_scripted() const { return is_scripted_; }
+
 private:
   int random_action();
   int scripted_action(const mjData* data);

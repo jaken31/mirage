@@ -3,6 +3,13 @@ data/
 *.pixels
 *.meta
 
+# Exception: the self-check fixture. 40 real frames from the real writer, 491 KB
+# raw and ~5 KB once git packs them. It is the only reason `python -m mirage.data`
+# (F-8) and `python -m mirage.validator` (F-9) can run in a clone that has never
+# generated anything. Keep it narrow - one directory, two extensions.
+!mirage/fixtures/shards/*.pixels
+!mirage/fixtures/shards/*.meta
+
 # Model artifacts and caches. Content-addressed names mean these are always
 # reproducible from a config hash; see docs/world_model_architecture.md.
 *.pt
@@ -30,6 +37,11 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# MuJoCo writes this next to the working directory on every run, whether or
+# not anything failed. It was tracked once, holding one line from a
+# deliberate bad-scene test.
+MUJOCO_LOG.TXT
 
 # Tooling
 wandb/

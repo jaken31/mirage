@@ -77,7 +77,7 @@ Pure random flails and rarely touches anything. The mix is what makes contact le
 | # | Component | Language |
 |---|---|---|
 | 1 | MuJoCo scene XML, flat-configured | XML |
-| 2 | C++ harness: EGL context, step loop, offscreen render, pixel readback | C++ |
+| 2 | C++ harness: GLFW offscreen context, step loop, offscreen render, pixel readback | C++ |
 | 3 | Data policy | C++ |
 | 4 | Shard writer + frame validator | C++ |
 | 5 | FSQ autoencoder | PyTorch |
@@ -125,7 +125,7 @@ At 144 tokens, **overhead exceeds the entire budget.** Graph capture becomes man
 
 | Phase | Duration | Gate |
 |---|---|---|
-| 0 Sim + data | 5 days | 300k frames on disk, deterministic replay, EGL verified |
+| 0 Sim + data | 5 days | 300k frames on disk, deterministic replay, hardware render confirmed by `GL_RENDERER` |
 | 1 Tokenizer | 1 week | reconstruction PSNR >= 30 dB at 64x64 |
 | 2 Dynamics | 2 weeks | coherent 200-step rollout, block persists through occlusion |
 | 3 Playable | 3 days | keyboard drives the arm, baseline fps + CPU/GPU split captured |

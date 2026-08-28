@@ -10,7 +10,8 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
                       "action_hold_steps", "reach_digit_noise_prob", "jacobian_deadband",
                       "reach_done_dist"]),
     "data": frozenset(["shard_dir", "ctx", "val_fraction"]),
-    "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
+    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
+                            "offpalette_tau"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers"]),
     "engine": frozenset(),
@@ -30,7 +31,7 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
 FRACTION_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_digit_noise_prob"]),
     "data": frozenset(["val_fraction"]),
-    "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
+    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min"]),
 }
 
 # Physical thresholds - metres, or metres per radian. Positive but unbounded
@@ -44,6 +45,8 @@ FRACTION_KEYS: dict[str, frozenset[str]] = {
 # one rule instead of two.
 POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_done_dist", "jacobian_deadband"]),
+    # An RGB Euclidean radius, so its ceiling is sqrt(3) * 255 = 441.7 and not 1.
+    "validator": frozenset(["offpalette_tau"]),
 }
 
 
@@ -116,6 +119,25 @@ def _check_values(raw: dict[str, Any]) -> None:
             )
 
 
+def scene_bytes(path: Path | str) -> bytes:
+    """The scene XML as it enters `data_hash`, with line endings normalised.
+
+    The XML's raw bytes are a term in `data_hash`, so a CRLF working tree hashes
+    the same scene differently from an LF one. `.gitattributes` sets `eol=lf`
+    precisely to stop that and **it did not**: measured 2026-08-28, this worktree
+    read `219ab0af` while a fresh clone of the same commit read `18a76531` -
+    byte-identical once CR is stripped. Git applies `eol` only at checkout and
+    never rewrites a working tree that already exists, so the rule silently
+    skipped every file that was on disk before the attribute landed.
+
+    Normalising here does not depend on any checkout honouring an attribute,
+    which is the difference between a convention and a guarantee. The
+    `.gitattributes` rule stays - it keeps the *diffs* sane - but nothing about
+    provenance rests on it now.
+    """
+    return Path(path).read_bytes().replace(b"\r\n", b"\n")
+
+
 def _canon(section: Mapping[str, Any]) -> bytes:
     return json.dumps(section, sort_keys=True, separators=(",", ":")).encode()
 
@@ -132,7 +154,7 @@ def load(path: Path | str) -> Config:
     repo_root = Path(__file__).resolve().parent.parent
     scene = repo_root / raw["sim"]["scene_xml"]
 
-    xml_bytes = scene.read_bytes()
+    xml_bytes = scene_bytes(scene)
 
     # data_hash term order (sim, data, xml) is part of the definition - do not reorder
     data_hash = hashlib.sha256(_canon(raw["sim"]) + _canon(raw["data"]) + xml_bytes).hexdigest()
@@ -194,7 +216,7 @@ def _self_check() -> None:
     # is the only thing that catches it. Not a pinned literal - the scene XML is
     # expected to change during Phase 0, and that must not fail this check.
     scene = Path(__file__).resolve().parent.parent / base_raw["sim"]["scene_xml"]
-    xml_bytes = scene.read_bytes()
+    xml_bytes = scene_bytes(scene)
     expect_data = hashlib.sha256(
         _canon(base_raw["sim"]) + _canon(base_raw["data"]) + xml_bytes).hexdigest()
     expect_tokenizer = hashlib.sha256(
@@ -204,6 +226,14 @@ def _self_check() -> None:
     assert cfg.data_hash == expect_data, "data_hash term order changed"
     assert cfg.tokenizer_hash == expect_tokenizer, "tokenizer_hash term order changed"
     assert cfg.validator_hash == expect_validator, "validator_hash term order changed"
+
+    # The CRLF fork, tested rather than trusted. A CRLF copy of the scene must
+    # hash as its LF twin; without the normalisation this is the assertion that
+    # would have caught the 219ab0af / 18a76531 split on the day it appeared.
+    crlf = Path(tempfile.mkdtemp()) / "crlf.xml"
+    crlf.write_bytes(xml_bytes.replace(b"\n", b"\r\n"))
+    assert crlf.read_bytes() != xml_bytes, "the CRLF copy is identical - no newlines?"
+    assert scene_bytes(crlf) == xml_bytes, "a CRLF scene does not hash as its LF twin"
 
     try:
         cfg.sim["seed"] = 999  # type: ignore[index]
@@ -236,6 +266,7 @@ def _self_check() -> None:
         ("sim", "action_hold_steps", 0, "positive int"),
         ("sim", "reach_digit_noise_prob", 1.0, "[0, 1)"),
         ("sim", "jacobian_deadband", 0.0, "positive float"),
+        ("validator", "offpalette_tau", 0.0, "positive float"),
         ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),

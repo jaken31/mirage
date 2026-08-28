@@ -35,8 +35,15 @@ struct TruthFrame {
     // theirs without regenerating the dataset.
     std::vector<int> visible_px;
 
-    // Bit i set when block i touches the arm. F-6 is the fraction of frames
-    // with any bit set.
+    // Bit i set when block i touches the arm. Seven blocks maximum - the
+    // constructor enforces it - because shard_writer.h reserves bit 7 of the
+    // record's byte. F-6 is the fraction of frames with any *block* bit set.
+    //
+    // This field holds ONLY block bits. The record's byte of the same name also
+    // carries the scripted-episode flag in its high bit, but that is packed by
+    // ShardWriter::append and never appears here - Truth has no idea which
+    // policy half is running, and a field that means two things is how F-6
+    // silently becomes "50% + contact".
     std::uint8_t contact_mask;
 };
 
