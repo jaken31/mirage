@@ -13,11 +13,16 @@ The second inflates F-7 and would drag Q-6 down for a reason that has nothing to
 do with a model's memory: an "occlusion event" that can never end is one no
 model can be asked to recover from.
 
-`phase0_debt_checklist.md`, Tier 5 records the bias and defers the fix, on the
-grounds that separating the two cases needs a "block is on the table" field and
-therefore a regeneration. **This probe is what says whether that field is worth
-one**, and it needs no regeneration: the split is already recoverable from
-`visible_px` and `block_xy` in the shards on disk.
+This probe is what measured that split, found the recorded cause of it wrong -
+no block has ever left the table - and produced the numbers **F-7 was restated
+on**. As of 2026-08-28 the requirement counts recoverable occlusion only, and
+`mirage/validator.py` enforces it against
+`validator.recoverable_occlusion_rate_min`; the split itself lives in
+`mirage.data.seen_later`, which both this probe and the validator call.
+
+What remains here that the validator does not do is the *why*: the per-block
+breakdown, and the camera projection that says a terminal run is a block pushed
+out of view rather than off the table.
 
     python bench/occlusion_probe.py
 """
@@ -74,10 +79,10 @@ xy = np.stack([
 zero = visible == 0
 
 # "Comes back" = this block is visible at some strictly later step of the same
-# episode. A reversed cumulative max over the step axis is exactly that, and it
-# is what separates a real occlusion event from a block that has left.
-later = np.flip(np.maximum.accumulate(np.flip(visible > 0, axis=2), axis=2), axis=2)
-seen_later = np.concatenate([later[:, :, 1:], np.zeros_like(later[:, :, :1])], axis=2)
+# episode. `mirage.data.seen_later` owns that, because F-7's own acceptance check
+# in `mirage/validator.py` computes the same split and two implementations would
+# eventually disagree about which frames are occlusion.
+seen_later = data.seen_later(visible)
 
 recoverable = zero & seen_later      # hidden now, visible again later this episode
 terminal = zero & ~seen_later        # never visible again this episode
@@ -86,13 +91,14 @@ f7_raw = float(zero.any(axis=0).mean())
 f7_recoverable = float(recoverable.any(axis=0).mean())
 f7_terminal_only = float((terminal.any(axis=0) & ~recoverable.any(axis=0)).mean())
 
+floor = cfg.validator["recoverable_occlusion_rate_min"]
 print()
-print(f"F-7 as the requirement counts it   {f7_raw:7.2%}   (floor 3%)")
-print(f"  of which recoverable occlusion   {f7_recoverable:7.2%}   block is visible again later")
-print(f"  frames counted only by a block")
-print(f"  that never returns               {f7_terminal_only:7.2%}   <- the bias")
-print(f"F-7 with the bias removed          {f7_recoverable:7.2%}   "
-      f"{f7_recoverable / 0.03:.1f}x the floor")
+print(f"F-7 as restated - recoverable occlusion  {f7_recoverable:7.2%}   "
+      f"floor {floor:.0%}, {f7_recoverable / floor:.1f}x")
+print(f"the pre-2026-08-28 counter, any 0 px     {f7_raw:7.2%}")
+print(f"  frames it counted only because a")
+print(f"  block never returns                    {f7_terminal_only:7.2%}   "
+      f"<- {f7_terminal_only / f7_raw:.0%} of the old number")
 
 print()
 print("per block, over all frames:")

@@ -99,6 +99,29 @@ def scripted(meta) -> np.ndarray:
     return (np.asarray(meta["contact_mask"]) & SCRIPTED_BIT) != 0
 
 
+def seen_later(visible: np.ndarray) -> np.ndarray:
+    """True where this block is visible again at some *strictly later* step.
+
+    Operates on the last axis, which must be one episode's steps in order -
+    `(steps,)`, `(blocks, steps)`, `(blocks, episodes, steps)` all work. Never
+    run it across an episode boundary: a block hidden at the end of one episode
+    would be "seen again" at the start of the next, which is a reset, not a
+    reappearance.
+
+    This is the whole of F-7's recoverable/terminal split. A frame with
+    `visible_px == 0` is *occlusion* if the block comes back and a block that is
+    simply gone if it does not, and the requirement counts only the first -
+    measured 2026-08-28, `bench/occlusion_probe.py`: 14.48 of F-7's 19.83 points
+    were blocks that never returned, so 73% of the old number was not occlusion.
+
+    A reversed cumulative maximum, then shifted one step so "later" excludes the
+    current frame. Without the shift a block visible *now* counts as visible
+    later and every occlusion run reads one frame short.
+    """
+    later = np.flip(np.maximum.accumulate(np.flip(visible > 0, axis=-1), axis=-1), axis=-1)
+    return np.concatenate([later[..., 1:], np.zeros_like(later[..., :1])], axis=-1)
+
+
 def meta_struct_format(joints: int, blocks: int) -> str:
     """The same record as a `struct` format string, for the F-8 cross-check.
 

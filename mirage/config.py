@@ -10,7 +10,8 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
                       "action_hold_steps", "reach_digit_noise_prob", "jacobian_deadband",
                       "reach_done_dist"]),
     "data": frozenset(["shard_dir", "ctx", "val_fraction"]),
-    "validator": frozenset(["contact_rate_min", "occlusion_rate_min", "offpalette_tau"]),
+    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
+                            "offpalette_tau"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers"]),
     "engine": frozenset(),
@@ -30,7 +31,7 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
 FRACTION_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_digit_noise_prob"]),
     "data": frozenset(["val_fraction"]),
-    "validator": frozenset(["contact_rate_min", "occlusion_rate_min"]),
+    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min"]),
 }
 
 # Physical thresholds - metres, or metres per radian. Positive but unbounded

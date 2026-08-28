@@ -16,11 +16,21 @@ Tiers: **M** = must (v1 does not ship without it), **S** = should, **C** = could
 | F-4 | M | Deterministic given a seed | Same seed and action sequence give bit-identical frames |
 | F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Over >= 2,000 episodes at the configured length: every one of the 9 actions holds **>= 5% of frames**, and **max bin / min bin <= 2.5**. Both reported by `policy_dry_run` |
 | F-6 | M | Arm-block contact events exceed 5% of frames | Contact counter over a full run |
-| F-7 | M | Block fully occluded by arm in >= 3% of frames | Occlusion counter via visible-pixel test |
+| F-7 | M | Block fully occluded in >= 3% of frames, **counting only occlusion the block recovers from** | Visible-pixel counter, excluding any run where the block never becomes visible again in that episode. `validator.recoverable_occlusion_rate_min` |
 | F-8 | M | Shard writer emits packed frames and actions | Round-trip via numpy memmap matches the C++ buffer byte for byte |
 | F-9 | M | Frame validator reports block count, arm pose plausibility, palette adherence | Zero false positives on ground-truth frames |
 
 F-2 and F-7 are new and both load-bearing. F-2 protects the token budget. F-7 is what makes Q-6 measurable.
+
+**F-7 was restated 2026-08-28**, after `bench/occlusion_probe.py` measured what its
+counter was actually counting. It had been "any frame where a block reads zero
+pixels", and **73% of that was blocks that never came back** - 14.48 points of
+19.83. A block that is gone for the rest of the episode is not occluded, and
+scoring Q-6's object permanence on an occlusion event that can never end asks a
+model to recover something that never reappears. The restated requirement counts
+recoverable occlusion only: **5.35%**, which still clears the 3% floor at 1.8x
+rather than the 6.6x the old number implied. The floor itself is unchanged - this
+changed what is counted, not the bar.
 
 ### Models
 
@@ -118,5 +128,6 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | P-1 | 30 fps is tight on the 144-token path | DiagD becomes required. If still short, report the curve and accept 20 fps rather than cutting a ladder rung |
 | Q-6 | Object permanence may simply not emerge at 15M params | Stays S. Report the measurement either way, including a negative result |
 | R-3 | 20M may be too small for Q-4 | Raise to 25M only if profiling shows headroom. Never above 40M |
+| **F-7** | **Was restated 2026-08-28 to exclude blocks that never return**, after measurement showed 73% of the old count was exactly that. Residual risk: the margin is now 1.8x, not 6.6x, so a scene edit that reduces genuine occlusion has far less room than the old number suggested. The recorded *cause* of the bias was also wrong - it said blocks were knocked off the table, and none ever has | Re-run `bench/occlusion_probe.py` after any scene change; it reports the split, the per-block breakdown, and whether a block has left the table or merely the camera. If the rate falls under 3%, widen the camera or move a block rather than relaxing the floor - F-7 exists to give Q-6 events to score |
 | **Q-4** | **Was measured 2026-08-28 to sit above its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene or `action_hold_steps` changes, and a Q-4 row quoting only the model's number is unfalsifiable | Report both numbers or the row does not count. `bench/hold_probe.py` produces the ground-truth term |
 | P-6 | Two risks now. A software rasterizer instead of the GPU, ~50x slower; and `mjr_readPixels` fixed per-call cost under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms collapse to the single-pass render, near ~30 ms hand-roll a WGL pbuffer context |

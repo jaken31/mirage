@@ -457,16 +457,29 @@ def _self_check() -> None:
         print("F-6 and F-7: skipped - dataset-scale rates, and the fixture is 40 frames")
     else:
         contact = np.concatenate([data.contact_bits(s.meta) for s in shards])
-        visible = np.stack([
-            np.concatenate([np.asarray(s.meta[f"visible_px{b}"]) for s in shards])
-            for b in range(len(palette.blocks))
-        ])
         f6 = float((contact != 0).mean())
-        f7 = float((visible == 0).any(axis=0).mean())
+
+        # F-7 counts a frame only when a block is hidden *and comes back*. A
+        # block that reads 0 px for the rest of the episode is gone, not
+        # occluded, and counting it inflated this from 5.35% to 19.83% - 73% of
+        # the old number - while making Q-6 score object permanence on events
+        # that can never end. Per episode, never across the concatenation: a
+        # block hidden at one episode's end would otherwise be "seen again" at
+        # the next episode's start, which is a reset.
+        occluded = 0
+        for ep in index:
+            block = shards[ep.shard].meta[ep.start:ep.start + ep.length]
+            vis = np.stack([np.asarray(block[f"visible_px{b}"])
+                            for b in range(len(palette.blocks))])
+            occluded += int(((vis == 0) & data.seen_later(vis)).any(axis=0).sum())
+        f7 = occluded / sum(s.frames for s in shards)
+
+        floor = cfg.validator["recoverable_occlusion_rate_min"]
         assert f6 >= cfg.validator["contact_rate_min"], f"F-6: {f6:.2%}"
-        assert f7 >= cfg.validator["occlusion_rate_min"], f"F-7: {f7:.2%}"
+        assert f7 >= floor, f"F-7: {f7:.2%}"
         print(f"F-6 contact {f6:.2%} (floor {cfg.validator['contact_rate_min']:.0%}), "
-              f"F-7 occlusion {f7:.2%} (floor {cfg.validator['occlusion_rate_min']:.0%})")
+              f"F-7 recoverable occlusion {f7:.2%} (floor {floor:.0%}) - "
+              f"blocks that never return are excluded, see bench/occlusion_probe.py")
 
     # Mode 2 must not need meta. Called with a frame alone, on purpose.
     only = measure_pixels_only(frames[0], palette, tau)

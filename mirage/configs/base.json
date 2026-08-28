@@ -19,7 +19,7 @@
     },
     "validator": {
         "contact_rate_min": 0.05,
-        "occlusion_rate_min": 0.03,
+        "recoverable_occlusion_rate_min": 0.03,
         "offpalette_tau": 8.0
     },
     "tokenizer": {

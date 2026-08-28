@@ -130,7 +130,7 @@ All figures over the **full 300k set** unless marked otherwise.
 | F-4 | Determinism given a seed | bit-identical | **two full runs, byte-identical `.pixels` and `.meta`, all 7 shards** | pass |
 | F-5 | Action coverage / balance | min share >= 5%, max/min <= 2.5 | **7.17%**, ratio **2.15** | pass |
 | F-6 | Arm-block contact | > 5% of frames | **16.63%** | pass, 3.3x |
-| F-7 | Full block occlusion | >= 3% of frames | **19.83%** as the counter defines it, of which **5.35%** is recoverable occlusion and **14.48%** is a block that never returns | pass; quote **1.8x**, not 6.6x |
+| F-7 | Full block occlusion, **recoverable only** | >= 3% of frames | **5.35%** | pass, 1.8x |
 | F-8 | Shard round-trip byte-exact | numpy matches C++ | 448 records decode identically two independent ways | pass |
 | F-9 | Validator, zero false positives | 0 FP on ground truth | **`offpalette_px` = 0 on every ground-truth frame at `validator.offpalette_tau` = 8.0** | pass, verdict thresholds not yet written |
 | P-6 | Generation throughput | >= 500 fps | **5,987-6,653 fps** | pass, 12-13x |
@@ -146,13 +146,16 @@ empty, so both acceptance tests run in a fresh clone. The three dataset-scale
 checks they cannot honestly make there - F-6, F-7 and the episode-level
 train/val split - are skipped and say so.
 
-**F-7's headline number is 73% blocks that are gone.** `bench/occlusion_probe.py`
-splits `visible_px == 0` into occlusion the block recovers from and a block that
-never returns: 5.35% and 14.48% of the 19.83%. The honest occlusion rate clears
-the floor at 1.8x rather than 6.6x. The recorded cause was wrong - **no block has
-ever left the table**, 0 frames of 900,000, on a table whose half-extent is 1.2 m
-against an arm that reaches 0.33 m. The cause is the camera: 12.66% of frames
-have a block outside the frustum. Nothing needs regenerating to separate them.
+**F-7 was restated on 2026-08-28 and its number fell 19.83% -> 5.35%.** The old
+counter took any frame where a block read zero pixels; `bench/occlusion_probe.py`
+measured that **73% of that was blocks that never came back** - gone, not
+occluded, and an occlusion event that can never end is one Q-6 cannot ask a model
+to recover from. The requirement now counts recoverable occlusion only and still
+passes, at 1.8x the floor rather than the 6.6x the old number implied. The
+recorded *cause* of the bias was also wrong: **no block has ever left the table**,
+0 frames of 900,000, on a table whose half-extent is 1.2 m against an arm that
+reaches 0.33 m. The cause is the camera - 12.66% of frames have a block outside
+the frustum. Neither the restatement nor the split needed a regeneration.
 
 **Two small-sample figures were corrected by the full run and should not be
 quoted.** A single 1,200-frame shard read F-6 at 62.4% and F-7 at 40.3% -
@@ -431,7 +434,7 @@ call - wait for the trigger.
 | **`px_count` ruled out as a per-frame threshold** | The smallest `px_count` on a block that ground truth calls *visible* is **1 px with margin 0**, because F-7 makes partial occlusion common. The viable verdict today is `offpalette_px` alone at tau 8, which has **11x headroom** over render rounding |
 | **`sim.action_hold_steps = 20` is a guess** | Estimated from `inertia / damping` (~15 steps) and rounded up. **Q-4's 90% depends on it**: for about one settling time after each sign flip the joint is still moving the old way. Replace with a sweep - log commanded sign against `sign(delta theta)` and find where agreement crosses 90% |
 | **E-4's 5% not demonstrated for `mj_step`** | The series had not plateaued after 6 runs. Needs a quiescent-machine protocol |
-| **F-7 carries one known bias** | A block knocked off the table reads 0 px forever and counts as occluded. The full-set 16.18% cannot separate that from a genuine occlusion |
+| ~~**F-7 carries one known bias**~~ | **Closed 2026-08-28.** Measured, the cause refuted - no block has ever left the table - and the requirement restated to count recoverable occlusion only, 5.35%. `bench/occlusion_probe.py` |
 | **F-5 compliance cost is partly unmeasured** | The deadband + noise settings cost arrival 44% -> 35.7%. Whether that cost any *contact* is reasoned about but not measured |
 | **Phase 1 structural plan not written** | Draftable now - only the shard format gated it, and that format is read as well as written. Phases 2 and 4 are **not** draftable: Phase 2's numbers wait on the tokenizer PSNR, Phase 4's whole plan derives from the Phase 3 profile |
 

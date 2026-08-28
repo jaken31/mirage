@@ -685,12 +685,21 @@ permanence on occlusion events that actually end, at any time, over the shards
 that already exist. That is the cheapest thing that works, and it is available
 today rather than after a regeneration.
 
-**One question this raises and does not answer.** F-7's acceptance test is
-"occlusion counter via visible-pixel test", and read literally the counter is
-correct at 19.83%. Whether the requirement should be restated to exclude terminal
-runs - the way Q-4 was restated once measurement showed its bar sat above its own
-ceiling - is a call about an **M**-tier requirement, and it is not made here. F-7
-passes either way. The numbers are recorded so the decision can be made on them.
+**F-7 was restated on these numbers, 2026-08-28.** It now counts recoverable
+occlusion only - **5.35%**, against an unchanged 3% floor, so the requirement
+passes at 1.8x rather than the 6.6x the old 19.83% implied. Precedent is Q-4,
+restated the same week once measurement showed its bar sat above its own ceiling.
+
+Three things the restatement touched. The config key is renamed
+`occlusion_rate_min` -> `recoverable_occlusion_rate_min`, which is what moves
+`validator_hash` (`e15f209e` -> `48882ee2`): the threshold value did not change,
+the *quantity it applies to* did, and a hash that did not move would have let two
+incomparable F-7 rows claim to be comparable - the same failure D9 exists to
+prevent. `data_hash` is untouched, so **no regeneration**. And the split itself
+now lives in `mirage.data.seen_later`, called by both the validator's acceptance
+check and this probe, because two implementations would eventually disagree about
+which frames are occlusion. The validator and the probe were written separately
+and agree on 5.35% to the digit, which is the cross-check worth having.
 
 ---
 
