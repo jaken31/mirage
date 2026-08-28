@@ -9,169 +9,178 @@ gates, risks, with the study plan woven in) and `decision_notes.md` (every
 decision with its trigger and fallbacks). Both are derived from the two docs
 above - when a decision changes, change it there first.
 
-Phase 0 is budgeted at 5 days. Its gate: 300k frames on disk, deterministic
-replay, hardware render confirmed by the renderer name.
+**Phase 0 is complete.** Gate met 2026-08-27 and re-met twice on 2026-08-28 -
+once for the `gear 6 / damping 1.5` scene change, once after a `data_hash` fix -
+all three conditions every time. The set on disk is 300,000 frames at
+**`data_hash 18a76531`**. Write-up in `phase0_report.md`; every number traces to
+the verification log at the end of `world_model_architecture.md`.
 
-**Gate met 2026-08-27, all three conditions.** 300,000 frames over 7 shards,
-3.7 GB, written in 44.3 s at 6,775 fps. Replay: two full runs at seed 0 produced
-**bit-identical** `.pixels` and `.meta` for all 7 shards. Renderer reads
-`NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. Measured over the whole set -
-F-5 min share 7.15% and ratio 2.27, F-6 20.69%, F-7 16.18%, F-2 7 colours,
-episodes 0..499 each with exactly 600 steps.
+**Do not quote a figure from before 2026-08-28.** Three hashes exist and only the
+last describes the data: `0259947e` was the original physics, `219ab0af` the
+scene change, `18a76531` the same scene with line endings normalised out of the
+hash. `phase0_report.md` opens with the list.
 
-**All seven Phase 0 items are done as of 2026-08-27.** What is not done is
-threshold calibration: `mirage/validator.py` prints the set that gives zero
-false positives on ground truth, and the documented build order recalibrates it
-against Phase 1 tokenizer reconstructions before anything is written into
-config. Phase 1's structural plan is the next thing to write - only the shard
-format gated it, and that format is now read as well as written.
+The Phase 0 debt checklist is **closed, 12 of 12**. Three of its items change how
+Phase 1 starts:
+
+- **`validator.offpalette_tau` is already in config**, so item 6 below is a
+  calibration, not a plumbing job. Changing a validator threshold now moves
+  `validator_hash`, which is the whole reason it was moved out of code.
+- **The meta record's `contact_mask` is two fields.** Bits 0..6 are block
+  contact, bit 7 is scripted-vs-random. `mirage.data.contact_bits` and
+  `.scripted` exist; read the raw byte and F-6 reads over 50%.
+- **`python -m mirage.data` and `python -m mirage.validator` run without a
+  dataset**, falling back to a committed 40-frame fixture. A fresh clone or a new
+  worktree can check F-8 and F-9 before generating anything.
+
+Nothing else from Phase 0 is pending except the F-9 threshold calibration, which
+is Phase 1 item 6 by design.
 
 ---
 
-## Day 1 measurements - four numbers, each gating a decision
+## Phase 1: the tokenizer. Budgeted at 1 week
 
-| Measure | Decides | State |
+**Structural plan: `phase1_structural_plan.md`.** What each file owns, the build
+order with named APIs, done-when per file, and the gotchas.
+
+> **Every Phase 1 number below was measured on a dataset that no longer exists.**
+> The six pre-work measurements ran against `data_hash 0259947e` - the original
+> physics, `action_hold_steps 20` - before the scene was rescaled to `gear 6 /
+> damping 1.5`. They predate `runs.jsonl`, so they carry no provenance row
+> either. The scene geometry, palette and camera are unchanged, so they will be
+> *close*; the arm's pose distribution is not unchanged, and that is exactly what
+> patch statistics measure.
+>
+> **Affected, re-measure before acting on any of them:** the k-means-512 floor
+> **26.39 dB**, the 1,024 figure **27.60 dB**, **150 of 512** centroids live,
+> flat receptive fields **19.96%**, the Q-2 ceiling **94.4%**, and the
+> **99.86% / 37%** edge-error split.
+>
+> **Not affected, these survive the regeneration:** 300,000 frames, 16,200 val
+> frames, 8.294 GB at 96x96, the 1.16 / 3.49 GB preload sizes, 4,096 pixels, and
+> the **47,814** squared-error cost of a wrong pixel - that one is a property of
+> the palette, not of the trajectories.
+>
+> Gate row 2 is self-correcting, since it recomputes the floor on the same val
+> frames. **Row 1 is not**: `+3.6 dB` was derived as `30.0 - 26.39`, so if the
+> floor moves, row 2's bar moves with it or the two rows stop describing the same
+> requirement.
+
+### The gate - one command, eight measurements
+
+`python -m mirage.fsq --eval` prints the table and exits nonzero if any pass/fail
+row misses.
+
+| # | Measure | Bar | Req |
+|---|---|---|---|
+| 1 | Held-out PSNR, uint8, over the 16,200 val frames | **>= 30.0 dB** | Q-1 |
+| 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +3.6 dB**, i.e. `30.0 - floor`; re-derive once the floor is re-measured | is the conv context earning its keep |
+| 3 | Token entropy / `log2(codebook)`, all 300,000 frames | **>= 70%** | Q-2 |
+| 4 | Token cache rows == `shard.frames`, every shard | **exact** | the Phase 2 handoff |
+| 5 | Re-encode from one checkpoint twice | **bit-identical** | E-1 |
+| 6 | F-9 sweep against reconstructions | **zero false positives, set recorded** | F-9 |
+| 7 | Edge-pixel PSNR vs flat-pixel PSNR | reported | **this is the 64/144 fork** |
+| 8 | Train-val PSNR gap; live codes at mass > 1e-4 | reported | overfit and collapse canaries |
+
+Rows 1-6 are pass/fail. Rows 1 and 2 can disagree, and that is informative: row 1
+passing while row 2 fails means the val split got easier, not that the model got
+better.
+
+### Build order
+
+Riskiest first, which here means "the thing that could invalidate 300,000
+frames" first.
+
+1. `sim/main.cpp` - set `model->vis.global.offwidth`/`offheight` from config
+   between `mj_loadXML` and the context. Three lines. **Then regenerate 64x64 and
+   prove every blob is byte-identical to what is on disk** - that comparison is
+   the proof the XML stayed frozen, and it is the only reason this goes first.
+   A full 64x64 regeneration is **45-50 s**, measured 2026-08-28, so the proof is
+   cheap. Regenerate `mirage/fixtures/` too if the `sim` section moves at all -
+   the fixture carries its own `data_hash` and `load_shards` will refuse it
+2. `mirage/configs/base96.json` - `sim.height`/`width` 96,
+   `data.shard_dir` `data/shards96`. **8.294 GB**, still under R-4's 20 GB.
+   **Measure the wall clock, do not quote one**: the "~45 s" carried here came
+   from the superseded 6,775 fps and was never a 96x96 run. Extrapolating the
+   measured 64x64 frame cost by pixel count puts it nearer 1.5-2 min, and that is
+   an extrapolation too. F-5 is unaffected (same policy, same scene) but **F-6
+   and F-7 must be re-verified** - both are measured off rendered pixels
+3. `mirage/data.py` - `preload`, returning palette indices plus the byte LUT.
+   1.16 GB for the train split instead of 3.49, and lossless
+4. `mirage/logging.py` - `log(dict)` to jsonl always, W&B behind a flag
+5. `mirage/fsq.py` - quantizer, encoder/decoder, train loop, eval, token cache.
+   **Run rung R0 before FSQ is wired in at all**
+6. F-9 recalibration against reconstructions, then the verdict thresholds finally
+   go into `configs/base.json`. `offpalette_tau` is already there at 8.0, chosen
+   against *ground-truth* frames where the worst palette distance is 0.75; decoder
+   artifacts will push that up, and the sweep is what says how far
+
+### The ladder - four runs, each answering one question
+
+Training is ~6 min at 15 epochs, so the sweep is an afternoon, not a week.
+
+| Rung | Config | Answers |
 |---|---|---|
-| Bandwidth + fp16 matmul, clocked up | whether the fork table's compute floors are real | **done** - 27.6 TFLOP/s fp16, and **308.3 GB/s streaming read**. **The assumed 448 GB/s was wrong**: this part peaks at 384 (12001 MHz x 2 x 16 B), so every compute floor moved. Fork table recalculated |
-| Per-call `mjr_readPixels` latency, in isolation | one-pass vs two-pass render, and GLFW vs hand-rolled WGL | **done** - 25.4 us RGB, 49.6 us RGB+depth, 75.8 us with render, at P2. **Two-pass render confirmed, 13x margin.** Neither the single-pass collapse nor the WGL pbuffer is needed |
-| `mj_step` time alone | remaining P-6 headroom | **done** - 10.5-10.8 us median driven, 131-176x under the ~1850 us allowance. P-6 is not at risk from physics |
-| Frames/sec end to end | whether parallel generation is needed at all | **done** - `mjv_updateScene` is 1.1 us; the full frame (step + 2-pass render + readback) is **178.5 us, 5,602 fps, 11.2x over P-6**. `bench/frame_probe.py`. **Parallel generation is not needed** - the trigger does not fire |
+| R0 | continuous bottleneck, no FSQ, no attention | the architecture's ceiling. **If R0 misses 30 dB, no levels table will help** - fix the encoder |
+| R1 | FSQ `[8,8,8]`, no attention | what quantization costs; comparable to the 26.39 dB floor |
+| R2 | R1 + self-attention on the 8x8 grid | what joint coding buys |
+| R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder |
 
-Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
-
----
-
-## Phase 0 build order
-
-1. `mirage/config.py` - sectioned JSON, hash tree, `Shapes` - **done**
-2. `sim/gl_context.*` - GLFW context plus `GL_RENDERER` assert - **done 2026-08-26**.
-   Prints `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2` at 64x64; the renderer
-   deny-list, the `currentBuffer` check, the viewport-vs-XML check and
-   `mjr_getError` are all fatal at startup. No pbuffer was needed
-3. `sim/policy.*` - per-episode 50/50 random vs scripted reach - **done 2026-08-27**.
-   Two seeded streams (`seed_seq`, not `base + i`), `begin_episode`/`step`, and a
-   transpose-Jacobian reach. `policy_dry_run` is the check: F-4 aborts on
-   divergence, F-5 prints a verdict. Verified at F-5's own 2,000-episode sample
-   size - min share 7.15%, ratio 2.06, both inside threshold. Two config changes
-   came out of it: **episodes are 600 steps x 500, not 200 x 1500** (at 200 the arm
-   cannot cross to a block inside 0.4 s of sim time), and the histogram knobs are
-   `jacobian_deadband` + `reach_digit_noise_prob`, not whole-action noise
-4. `sim/truth.*` - segmentation pixel counts, contact mask, poses - **done 2026-08-27**.
-   `Truth::read` fills one reusable `TruthFrame`; `truth_dry_run` is the check.
-   Three fatal checks - some block visible at rest, a block moved out of frame
-   reads exactly 0, restoring it returns the same count - plus printed F-6/F-7
-   rates. Two things to carry into item 6: **the segmentation pass leaves the
-   framebuffer holding id colours, so the RGB readback has to happen before
-   `read()`**, and the dry run's rates are biased high in both directions - a
-   block knocked off the table reads 0 forever - so they say the measurement
-   responds, not that the scene passes
-5. `sim/shard_writer.*` - blobs first, sidecar JSON last (it is the commit marker)
-   - **done 2026-08-27**, and `main.cpp` is finished with it. The binary now takes
-   a config, not a scene: `mirage_sim <config.json> --data-hash <hex> --git-sha
-   <hex>`, run from the repo root. Both flags are required - **`data_hash` is
-   passed in, never recomputed in C++**, because a second canonical-JSON hash
-   would have to match Python's float formatting byte for byte. `nlohmann/json`
-   v3.12.0 is pinned by a locally computed SHA256. Shards rotate **on episode
-   boundaries only** (Policy is seeded per shard, so rotating mid-episode would
-   reseed mid-episode), and episodes are spread evenly rather than packed.
-   `shard_writer_self_check` covers the layout and the overflow predicate;
-   measured on a 6-episode run: **6,760 fps**, and two runs at one seed are
-   **bit-identical**
-6. `mirage/data.py` - memmap reader, episode-aware sampler - **done 2026-08-27**.
-   `load_shards` globs the sidecars, so an uncommitted shard is skipped by
-   construction; `WindowSampler` is map-style, so window *i* is the same window
-   in a DataLoader, a shuffle and a resumed run. `python -m mirage.data` is the
-   check and it is F-8's acceptance test: every meta field decodes twice, once
-   through the structured dtype and once through an independent `struct.unpack`,
-   because **every way of getting the dtype wrong still reads back cleanly**.
-   `bench/loader_probe.py` settles P-7 - **306x sequential, 734x random**, so
-   no workers, prefetch or caching layer. Two things to carry into item 7:
-   **the blob is bottom-up and the flip lives in the sampler, not in
-   `Shard.pixels`** - the validator must read frames through the sampler or
-   flip them itself, or `link_angle` comes out mirrored - and **the split is by
-   episode, hashed**, so a per-frame split anywhere downstream reintroduces the
-   leak this removed
-7. `mirage/validator.py` - measurement vector, both modes, threshold sweep -
-   **done 2026-08-27**. `python -m mirage.validator` is the check. **F-2 holds
-   over all 300,000 frames at 7 colours**, and mode 2's `px_count` equals the
-   segmentation `visible_px` **exactly on 100% of 6,000 block readings**, which
-   validates the pixel-only path against ground truth directly rather than by
-   threshold. Three things came out of it. **The palette needed a seventh entry
-   the XML cannot name** - 14.1% of every frame is the black void past the table
-   edge, and without it `offpalette_px` reads ~578 px on a perfect frame.
-   **`rgba * 255` does not land exactly** and not by a modellable rule, so
-   nearest-palette is load-bearing, not a nicety: byte-rounded exact equality
-   calls 4 of 7 entries missing on a flawless frame. And **`px_count` is not
-   usable as a per-frame threshold** - a block ground truth calls visible
-   reaches 1 px with margin 0, because F-7 makes partial occlusion common, so
-   the viable verdict today is `offpalette_px` alone at tau 8, which has 11x
-   headroom over render rounding. Do not write thresholds into config until the
-   Phase 1 recalibration
-
-Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed
-by `sim/main.cpp` printing `202002`, and both `sim/build/` and `sim/build-asan/`
-build and run. The sanitizer build type already exists, as a build type and not
-the default. `/fp:fast` never.
-
-**Structural plan for these seven: `phase0_structural_plan.md`.** What each file
-owns, the calls it needs and the doc page for them, what "working" looks like,
-and the gotchas.
-
-**Standing practice: draft the structural plan for a phase when you reach it, not
-before.** One file per phase, same shape as the Phase 0 one - ownership table,
-build order with named APIs, done-when per file, gotchas. Phase 1's is the next
-one to write, and it can be drafted now because only the shard format gates it.
-Phases 2 and 4 cannot: Phase 2's numbers wait on the tokenizer PSNR, and Phase 4's
-whole plan derives from the Phase 3 profile. Drafting those early is guessing.
+Then R1-R3 again at 96x96, which is what turns the fork into a measurement.
 
 ---
 
-## Budget extra iterations for these two
+## Phase 1's two risks, and the lever for each
 
-F-6 (arm-block contact > 5% of frames) and F-7 (full occlusion >= 3%) are the
-checks most likely to fail on the first scene. Both are fixed by editing the XML -
-arm reach versus block placement - not by changing code.
+**Q-1 is the real risk, and it is not close to free.** *(All figures in this
+section are the `0259947e` ones - see the box above.)* A k-means codebook of 512
+entries over real 8x8 patches reaches **26.39 dB** against the 30 dB bar; 1,024
+entries reach only 27.60. So a tokenizer that looks at one patch in isolation
+cannot pass, and the whole 3.6 dB has to come from the 22x22 receptive field, the
+attention layer, and a shared decoder - codes describing the frame jointly rather
+than independently. In physical terms, since a wrong pixel costs 47,814 squared
+error on this palette: the floor gets ~38 of 4,096 pixels wrong and the bar is
+~17. **Halve the error count.**
 
-`truth_dry_run` prints both already, but it drives actuator 0 at full torque, a
-cruder sweep than the policy produces. **Its numbers are evidence, not the
-verdict.** Run 2026-08-27: **F-6 50.00%**, 10x the floor, so the playbook below
-is unlikely to be needed. F-7 reads **58.07%** after `block0` moved to y=-0.06 -
-at +0.06 it was hidden at rest and F-7 scored 79.73% off one static pose. F-7
-still cannot tell a genuine occlusion from a block knocked off the table.
+**Q-2 is at risk for the opposite reason to the obvious one.** The data does not
+force low entropy - only 19.96% of interior cells have a fully flat receptive
+field, so the provable ceiling is 94.4% of uniform. What is at risk is that the
+scene does not *need* 512 codes: k-means keeps only **150 of 512** centroids
+alive. If Q-2 misses, shrink the vocabulary, do not add an entropy loss - an
+auxiliary loss undoes the reason FSQ was chosen over VQ.
 
-**Settled over the full 300k set** (numpy pass over all 7 meta blobs):
-**F-6 20.69%** against its 5% floor and **F-7 16.18%** against 3%. Both pass with
-room, and the playbook below is not needed. A 2-episode sample taken first read
-62.4% and 40.3% - **3x high, in both cases**, which is what a 1,200-frame window
-of a 300,000-frame run is worth. Quote the full-set numbers, not those. Open question it settles -
-F-5 compliance cost arrival 44% -> 35.7%, and whether that cost any contact is
-reasoned about but unmeasured (`docs/world_model_architecture.md`, "F-5's
-threshold is the knee of a measured curve").
+### The Q-2 shrink ladder, in this order
 
-### If F-6 misses, in this order
+`[8,8,8]`=512 -> `[8,6,5]`=240 -> `[5,5,5]`=125 -> `[4,4,4]`=64.
 
-1. **Move the blocks in `scene/arm_blocks.xml`.** They sit at radius 0.20-0.21
-   against a 0.33 total reach. Pulling them into the mid-sweep band raises
-   contact for the random half as well, and costs F-5 nothing. This is K4 in
-   `docs/decision_notes.md` - contact frequency is tuned by moving objects.
-2. **Tighten `sim.reach_done_dist` to ~0.025 m**, the block half-size. At 0.04
-   the reach re-targets while the fingertip is still 1.5 cm of air away from a
-   head-on block face, so the arm turns away before touching. Arrival will read
-   lower; it is a diagnostic.
-3. **Spend F-5's margin.** Ratio 2.06 against the 2.5 ceiling, min share 7.15%
-   against 5%. `reach_digit_noise_prob` 0.15 -> ~0.10 buys reach quality back,
-   and the 14-configuration frontier already has that point measured.
+Token count never changes, so inference cost is untouched and the output head
+gets smaller. **Each step needs a paired LR check**: the straight-through
+gradient at zero is 0.858 / 1.001 / 0.668 across those tables, so a levels change
+silently rescales the bottleneck learning rate by up to 1.5x and a single-LR
+comparison reports a levels result that is partly an LR result.
 
-**Do not raise `reach_done_dist`.** It improves the printed arrival rate and
-produces no extra contact - the one change here that makes a diagnostic lie.
+### If Q-1 misses, the diagnosis is probably already made
+
+**99.86% of the k-means floor's error sits in the 37% of patches that are not a
+single flat colour.** Edge placement is the one failure mode 96x96 fixes and the
+one thing levels tuning does not, so the arch doc's fork rule points at 96x96
+before Phase 1 has run a single step. That is why the 96x96 arm is in the ladder:
+it costs one config file, ~45 s of generation and one training run, and it
+replaces a prediction about Phase 4's difficulty with a number.
+
+Consequence if the 144-token path is taken: DiagD graduates from reserve to
+required, F-16 promotes to **M**, and CUDA graphs stop being the headline win and
+become table stakes. The fork table in `world_model_architecture.md` has the
+arithmetic.
 
 ---
 
 ## Deferred - do not start
 
-Phases 2 through 4. Phase 4's plan derives from the Phase 3 profile, which does not
-exist yet.
+Phases 2 through 4. Phase 2's numbers wait on the Phase 1 PSNR; Phase 4's whole
+plan derives from the Phase 3 profile, which does not exist yet. Draft a phase's
+structural plan when you reach it, not before.
 
 Connected-component labelling, parallel generation, `--replay` mode, and the
-single-pass render each have an explicit trigger recorded in the architecture doc.
-None of them is a judgement call - wait for the trigger.
+single-pass render each have an explicit trigger recorded in the architecture
+doc. None of them is a judgement call - wait for the trigger.
