@@ -643,6 +643,57 @@ every run regardless.
 
 ---
 
+### [x] D12. F-7 counts blocks that never come back, and the recorded cause was wrong
+
+Raised by Tier 5's F-7 row, which had carried a deferred fix and a stated cause
+since it was written. Both were checkable against the shards already on disk, and
+nobody had checked either. `bench/occlusion_probe.py`, over all 300,000 frames.
+
+**The premise is refuted.** The row said the bias was "a block knocked off the
+table reads zero forever". **No block has ever left the table**: 0 frames out of
+900,000 block-frames, worst reach 0.446 m in x and 0.476 m in y against a table
+whose half-extent is **1.2 m**. The arm's reach is ~0.33 m, so it cannot push a
+block within 0.7 m of an edge. The proposed `is_on_table` field would have
+separated **nothing**, and it would have cost a regeneration to learn that.
+
+**The bias itself is real, and bigger than the framing suggested.**
+
+| | share of all frames |
+|---|---|
+| F-7 as the requirement counts it | **19.83%** |
+| ...recoverable occlusion - the block is visible again later in the episode | **5.35%** |
+| ...frames counted only by a block that never returns | **14.48%** |
+
+**73% of F-7's headline number is blocks that are gone**, and the honest
+occlusion rate is **5.35%** - still over the 3% floor, but **1.8x it, not 6.6x**.
+Anyone reading 19.83% as headroom is reading it wrong.
+
+**The real cause is the camera.** Projecting each block into the 45-degree
+frustum - validated against the renderer, which agrees on **99.9988%** of frames
+where a block rendered at least one pixel - **12.66%** of frames have a block
+outside the view entirely. Only **3.56%** are terminal *with the block still in
+frame*, which is a block parked behind the arm or behind another block. Blocks
+reach within **0.196 m** of a camera sitting at y = -0.5, so the projection needs
+the cube's circumradius as a margin or its own centre leaves the frustum while a
+corner is still rendering; that margin is derived from the scene's half-size, not
+tuned until the check passed.
+
+**Done, and it needed no field and no regeneration.** The split falls out of
+`visible_px` alone: a reversed cumulative maximum over the step axis says whether
+a block is ever visible again in the same episode. Q-6 can therefore score object
+permanence on occlusion events that actually end, at any time, over the shards
+that already exist. That is the cheapest thing that works, and it is available
+today rather than after a regeneration.
+
+**One question this raises and does not answer.** F-7's acceptance test is
+"occlusion counter via visible-pixel test", and read literally the counter is
+correct at 19.83%. Whether the requirement should be restated to exclude terminal
+runs - the way Q-4 was restated once measurement showed its bar sat above its own
+ceiling - is a call about an **M**-tier requirement, and it is not made here. F-7
+passes either way. The numbers are recorded so the decision can be made on them.
+
+---
+
 ## Tier 5 - Explicitly do NOT do these
 
 Each already has a recorded trigger, and none has fired. Doing them now is the
@@ -655,7 +706,7 @@ speculative-fallback failure the architecture doc warns about.
 | Connected components, parallel generation, WGL pbuffer, single-pass render, clang-cl UBSan | Triggers recorded, none fired |
 | `mirage/logging.py` | Phase 1 machinery. Build it when Phase 1 needs it |
 | E-4's 5% reproducibility for `mj_step` | Needs a quiescent-machine protocol, and it gates a *bench* number, not the dataset. Do it when Phase 3/4 timing starts mattering |
-| F-7's knocked-off-table bias | Recorded, and **still open**. Q-6 re-derives from `visible_px` counts at any threshold, and separating the two cases needs a "block is on the table" field. Two regenerations came and went on 2026-08-28 without it: unlike D3's spare bit, this is new measurement code in `truth.cpp`, not a bit that rides along free. **The trigger stands - fold it into the next regeneration** |
+| F-7's knocked-off-table bias | **CLOSED 2026-08-28 by measurement, and the premise was wrong** - `bench/occlusion_probe.py`. No block has ever left the table: **0 frames of 900,000**, worst reach 0.446 m against a 1.2 m half-extent. The bias is real and large - **14.48% of the 19.83%** is a block that never returns - but the cause is the **camera**, not the table, so the proposed "block is on the table" field would have caught nothing. **No field is needed at all**: `visible_px` alone separates the two, which is what the probe does with no regeneration. See D12 |
 
 ---
 
@@ -685,9 +736,10 @@ instructions and closes two Must rows:**
    was not worth widening an already-large change. It stays in Tier 5 with its
    trigger intact.
 
-**Every item on this list is now closed except F-7's bias.** The original ordering
-advice - do item 6 first if Phase 1 is imminent - is spent; nothing left here gets
-more expensive with time.
+**Every item on this list is now closed.** The original ordering advice - do item
+6 first if Phase 1 is imminent - is spent; nothing left here gets more expensive
+with time. F-7's bias, the last one standing, turned out to need no regeneration
+at all once it was measured rather than assumed - see D12.
 
 ---
 

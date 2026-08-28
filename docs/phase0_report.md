@@ -130,7 +130,7 @@ All figures over the **full 300k set** unless marked otherwise.
 | F-4 | Determinism given a seed | bit-identical | **two full runs, byte-identical `.pixels` and `.meta`, all 7 shards** | pass |
 | F-5 | Action coverage / balance | min share >= 5%, max/min <= 2.5 | **7.17%**, ratio **2.15** | pass |
 | F-6 | Arm-block contact | > 5% of frames | **16.63%** | pass, 3.3x |
-| F-7 | Full block occlusion | >= 3% of frames | **19.83%** | pass, 6.6x |
+| F-7 | Full block occlusion | >= 3% of frames | **19.83%** as the counter defines it, of which **5.35%** is recoverable occlusion and **14.48%** is a block that never returns | pass; quote **1.8x**, not 6.6x |
 | F-8 | Shard round-trip byte-exact | numpy matches C++ | 448 records decode identically two independent ways | pass |
 | F-9 | Validator, zero false positives | 0 FP on ground truth | **`offpalette_px` = 0 on every ground-truth frame at `validator.offpalette_tau` = 8.0** | pass, verdict thresholds not yet written |
 | P-6 | Generation throughput | >= 500 fps | **5,987-6,653 fps** | pass, 12-13x |
@@ -145,6 +145,14 @@ All figures over the **full 300k set** unless marked otherwise.
 empty, so both acceptance tests run in a fresh clone. The three dataset-scale
 checks they cannot honestly make there - F-6, F-7 and the episode-level
 train/val split - are skipped and say so.
+
+**F-7's headline number is 73% blocks that are gone.** `bench/occlusion_probe.py`
+splits `visible_px == 0` into occlusion the block recovers from and a block that
+never returns: 5.35% and 14.48% of the 19.83%. The honest occlusion rate clears
+the floor at 1.8x rather than 6.6x. The recorded cause was wrong - **no block has
+ever left the table**, 0 frames of 900,000, on a table whose half-extent is 1.2 m
+against an arm that reaches 0.33 m. The cause is the camera: 12.66% of frames
+have a block outside the frustum. Nothing needs regenerating to separate them.
 
 **Two small-sample figures were corrected by the full run and should not be
 quoted.** A single 1,200-frame shard read F-6 at 62.4% and F-7 at 40.3% -
