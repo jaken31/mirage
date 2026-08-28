@@ -405,7 +405,7 @@ Three layers, only the last two of which were in question:
 
 | Layer | What | Status |
 |---|---|---|
-| 1 | Human-authored run log: config hash, change, number, conclusion | **E-5, Must.** A lab notebook, one line per run. No tool produces it. |
+| 1 | Human-authored run log: config hash, change, number, conclusion | **E-5, Must.** A lab notebook, one line per run. No tool produces it. Lives at `runs.jsonl`; one JSON object per line, keys `date`, `run`, `hash`, `requirement`, `change`, `number`, `conclusion`. `hash` is null for a run that reads no config - the `bench/` probes do not. `number` is an object rather than prose so F-17's jsonl-to-markdown script can read it. Backfilled 2026-08-28 from the dated, numbered rows of the verification log below. |
 | 2 | Machine metrics stream (loss, lr, grad norm, VRAM) | jsonl, always |
 | 3 | Live curves, image history, cross-run comparison | W&B, when flagged |
 

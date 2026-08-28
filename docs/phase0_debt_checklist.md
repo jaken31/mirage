@@ -147,7 +147,7 @@ Build section. One entry in `runs.jsonl` (D5).
 
 ---
 
-### [ ] D5. E-5 (append-only run log) has no file - `runs.jsonl` does not exist
+### [x] D5. E-5 (append-only run log) has no file - `runs.jsonl` does not exist
 
 **Evidence.** `test -f runs.jsonl` returns missing. The architecture doc's repo
 layout lists it at root, and `.gitignore` goes out of its way to protect it:
@@ -168,6 +168,26 @@ conclusion.
 **Do not conflate with `mirage/logging.py`.** That is the Phase 1 `log(dict)`
 helper (jsonl always, W&B behind a flag) and is machinery. E-5 is hand-authored by
 a person. Build `logging.py` when Phase 1 needs it, not now.
+
+**LANDED.** `runs.jsonl` exists with **18 entries**, chronological from 2026-08-21
+to 2026-08-27, covering 19 requirement IDs. Schema: `date`, `run`, `hash`,
+`requirement`, `change`, `number`, `conclusion` - the middle four are E-5's, and
+`date` and `requirement` were added for chronology and ship-criteria tracing.
+`number` is an object, not prose, so F-17's jsonl-to-markdown script can read it.
+`hash` is `null` on the eleven runs that read no config: the `bench/` probes do not
+take one, and the 6-episode shard-writer run's hash was never recorded.
+
+**Backfilled beyond this item's stated scope**, which named the gate run plus the
+four day-1 probes - five entries. E-5 says *one entry per run*, and a notebook
+showing 5 of 18 known runs misrepresents the record. The boundary drawn instead:
+**every verification-log row that carries both a date and a number.** Excluded on
+purpose - rows that are arithmetic rather than runs (the budget recomputation, the
+closed-form compression ratio), rows sourced from docs rather than execution (W&B
+behaviour, published ASan overheads), and `action_hold_steps = 20`, which has no
+run because nobody measured it. That one is D1.
+
+The architecture doc's observability table now names this schema, so the two do not
+drift.
 
 ---
 
