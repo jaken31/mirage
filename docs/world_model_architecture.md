@@ -596,18 +596,30 @@ verification log. Note the table above already recorded `clocks.max.memory` as
 
 The finding that matters is not the bandwidth number:
 
-1. **E-4 ("rerun matches within 5%") is unachievable without pinning the power
-   state.** A GPU drifting between P4 and P0 varies by more than an order of
-   magnitude, not 5%.
+1. **E-4 ("rerun matches within 5%") is unachievable without pinning the clock
+   state.** A GPU drifting between idle and boost clocks varies by more than an
+   order of magnitude, not 5%. This is a statement about *clocks*; the pstate
+   label is not the way to check it - see the correction under item 3.
 2. **P-4 (p99/p50 <= 1.3) can be blown by a single boost transition mid-run**,
    independent of any kernel. On a laptop with dynamic boost this is the most
    likely cause of a failed P-4, and it would look exactly like a kernel problem.
 3. **Therefore the bench harness must record `pstate`, `clocks.current.sm`,
    `clocks.current.memory`, `power.draw`, and `temperature.gpu` on every timing
-   row, and refuse to run when `pstate != P0` or clocks sit below a configured
+   row, and refuse to run when the relevant clock domain sits below a configured
    fraction of max.** A timing without its clock state is not reproducible, so by
    E-4 it is not a valid number. This is cheap - one `nvidia-smi` query per run,
    outside the timed region per the observability rules.
+
+   **Corrected 2026-08-23: this item originally said "refuse to run when
+   `pstate != P0`", and that gate is refuted.** The reported pstate follows the
+   **memory** clock domain, so a correct compute-bound run reads P4 while the SMs
+   hold 2662 MHz of 3090 at 99 W of a 100 W cap. P0 appears only under
+   memory-bound load, and no single load clocks both domains - so the original
+   rule would have rejected every valid compute number this machine can produce.
+   Gate **compute** on SM clock (>= 80% of `clocks.max.sm`) plus `power.draw`
+   (>= 80% of `enforced.power.limit`), and **bandwidth** on
+   `clocks.current.memory == clocks.max.memory`. `bench/gpu_probe.py` runs both
+   phases; the refutation is the `pstate == P0` row in the verification log.
 4. **Preconditions for any Phase 3/4 measurement, documented in the README:** mains
    power, Windows/NVIDIA performance profile, `nvidia-smi --lock-gpu-clocks` and
    `--lock-memory-clocks` for the run (needs admin), desktop GPU consumers closed.
@@ -624,8 +636,10 @@ Phase 0's EGL path has a home" was wrong. WSL2 has a home for CUDA, not for
 rendering: `dxgkrnl` fails adapter enumeration (`Ioctl failed: -22`), no `/dev/dri`
 node appears, and Mesa reports `Falling back to surfaceless swrast without DRM`.
 Two restarts, `wsl --update --pre-release`, and every platform and driver override
-were tried. Everything now runs natively on Windows. The C++ toolchain there - MSVC
-or MinGW - is unverified and is the remaining Phase 0 prerequisite.
+were tried. Everything now runs natively on Windows. **The C++ toolchain question
+is closed**: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed by
+`sim/main.cpp` printing `202002`, with `sim/build/` and `sim/build-asan/` both
+building and running. MinGW was never needed.
 
 ## Feasibility cross-check, and what the project argues
 

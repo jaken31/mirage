@@ -27,21 +27,52 @@ decision changes, change it there first.
 | OS | **Native Windows** | Windows 11, Python 3.14.2 |
 | CUDA | 12.8+ (Blackwell) | 13.0 |
 | PyTorch | cu128+ | 2.9.1+cu130 |
-| GL backend | **GLFW**, offscreen. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and an anti-choice | unverified - `mjr_readPixels` per-call latency is the day-1 blocker |
-| MuJoCo | 3.x, C API | wheel resolves for this Python; not yet exercised |
-| Compiler | C++20 | unverified - MSVC or MinGW, remaining Phase 0 prerequisite |
+| GL backend | **GLFW**, offscreen. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and an anti-choice | **verified 2026-08-26** - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
+| MuJoCo | 3.x, C API | **3.12.0, exercised** - 300,000 frames generated through it |
+| Compiler | C++20 | **MSVC, verified** - CMake generator `Visual Studio 18 2026`, `sim/main.cpp` prints `202002`. Both `sim/build/` and `sim/build-asan/` compile and run |
 
 **WSL2 is out, and this is settled.** Its GPU graphics path is broken on this
 machine - no `/dev/dri` node, Mesa falls back to a CPU rasterizer. Evidence in
 `CLAUDE.md`, produced by `bench/egl_probe.py`. Do not re-litigate it.
 
-**Before taking any timing measurement**, confirm the GPU is at P0. It idles at P4
-under ~6 W, where every number is meaningless and E-4's 5% reproducibility bar is
-unreachable:
+## Taking a measurement
+
+**Do not gate on `pstate == P0`.** That rule was refuted 2026-08-23. The reported
+pstate follows the **memory** clock domain, so a correct compute-bound run reads
+P4 while the SMs hold 2662 MHz of 3090 at 99 W of a 100 W cap - fully clocked up.
+P0 appears only under memory-bound load. The old rule would have rejected every
+valid compute number this machine can produce.
+
+No single load clocks both domains, so gate them separately and record the gate
+next to the number:
+
+| Measuring | Gate on | Invalid when |
+|---|---|---|
+| Compute (TFLOP/s) | `clocks.current.sm` >= 80% of `clocks.max.sm`, and `power.draw` >= 80% of `enforced.power.limit` | SMs at idle clocks, or draw far under the enforced limit |
+| Bandwidth (GB/s) | `clocks.current.memory` == `clocks.max.memory` | anything below max |
+
+`bench/gpu_probe.py` runs both phases and prints the gate beside each figure.
+
+**Sample the thermal counters, not the throttle flags.** The instantaneous flags
+read `Not Active` through a 45 W cap. The evidence lives in the counters:
 
 ```bash
-nvidia-smi --query-gpu=pstate,clocks.current.sm,clocks.current.memory,power.draw --format=csv
+nvidia-smi -q -d PERFORMANCE
 ```
+
+A chassis cooling fix moved the enforced power limit 55 -> 100 W and fp16 matmul
+**3.0 -> 27.6 TFLOP/s - 9x from cooling alone**, with no throttle flag ever set.
+
+**Preconditions for any Phase 3/4 timing run:** mains power, the Windows and
+NVIDIA performance profiles selected, `nvidia-smi --lock-gpu-clocks` and
+`--lock-memory-clocks` held for the run (needs admin), and desktop GPU consumers
+closed - browsers, Teams, Discord, and the NVIDIA and Overwolf overlays all hold
+GPU contexts under WDDM.
+
+**Determinism caveat (F-4).** Bit-exact replay holds for a **fixed driver and
+build**. `/fp:fast` stays off; enabling it forfeits the guarantee. F-4 is tested
+by generating twice at one seed and comparing the pixel blobs - there is no
+`--replay` mode.
 
 ## Build
 

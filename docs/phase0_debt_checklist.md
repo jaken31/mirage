@@ -173,7 +173,7 @@ a person. Build `logging.py` when Phase 1 needs it, not now.
 
 ## Tier 3 - Documentation that now actively misleads
 
-### [ ] D6. README tells the reader to gate benchmarks on `pstate == P0`. That was refuted
+### [x] D6. README tells the reader to gate benchmarks on `pstate == P0`. That was refuted
 
 **Evidence.** `README.md:38-43` - "**Before taking any timing measurement**,
 confirm the GPU is at P0." Against the architecture doc and `CLAUDE.md`: "**Do not
@@ -189,9 +189,21 @@ compute number the machine can produce.
 power draw**, bandwidth on **memory clock == max** - pointing at
 `bench/gpu_probe.py`, which already does both.
 
+**LANDED.** README now carries a two-row gate table, the thermal-counter rule, the
+Phase 3/4 preconditions, and the F-4 determinism caveat - the last two because the
+architecture doc asserts the README states them and it did not.
+
+**Scope grew, and it had to.** The same refuted rule survived in the *authoritative*
+doc: `world_model_architecture.md` item 3 of the benchmark-validity section still
+instructed the bench harness to "refuse to run when `pstate != P0`", contradicting
+its own verification log two hundred lines below. Fixing only the derived README
+would have left the source wrong, which is the exact failure D8 describes. Both are
+now corrected, in the doc's own `**Corrected <date>:**` convention. A stale
+"MSVC or MinGW - is unverified" line in the same section went with it.
+
 ---
 
-### [ ] D7. README's environment table calls three verified things "unverified"
+### [x] D7. README's environment table calls three verified things "unverified"
 
 **Evidence.**
 
@@ -204,6 +216,9 @@ power draw**, bandwidth on **memory clock == max** - pointing at
 **Done when.** Table reflects the verification log. **Bundle with D6 and D11 in a
 single README pass** - they are the same file and the same sitting.
 
+**LANDED.** All three rows now carry their evidence. MuJoCo pinned at the installed
+**3.12.0** rather than the vaguer "3.x, exercised".
+
 ---
 
 ### [ ] D8. Nine docs, overlapping, with nothing keeping the derived ones in sync
@@ -214,7 +229,10 @@ requirements docs, but nothing enforces it. `CLAUDE.md` names this exact failure
 "expect the stale copies to outnumber the decision that caused them."
 
 **Why it is debt.** D6 and D7 *are* this failure, already happening, in the most
-visible file in the repo.
+visible file in the repo. **Confirmed worse than first written:** the D6 pass found
+the refuted `pstate == P0` rule surviving in `world_model_architecture.md` itself,
+two hundred lines above the verification-log row that refutes it. The drift is not
+only derived-file drift - the authoritative doc contradicts itself.
 
 **Done when.** Pick one and stop:
 - a `> Derived from: X, Y` header line on each derived file, plus one line in
@@ -275,7 +293,7 @@ fixture.
 
 ---
 
-### [ ] D11. `MUJOCO_LOG.TXT` is a committed error log
+### [x] D11. `MUJOCO_LOG.TXT` is a committed error log
 
 **Evidence.** Tracked at repo root. Contents are one line from a deliberate
 negative test on 2026-08-26: `Failed to load model from 'scene/nope.xml'`.
@@ -283,6 +301,9 @@ negative test on 2026-08-26: `Failed to load model from 'scene/nope.xml'`.
 **Done when.** `git rm --cached MUJOCO_LOG.TXT` and add it to `.gitignore` -
 MuJoCo writes it unconditionally next to the working directory, so it will come
 back. One line, do it in the README pass.
+
+**LANDED.** Untracked and ignored. The file stays on disk; MuJoCo rewrites it on
+every run regardless.
 
 ---
 
@@ -307,8 +328,9 @@ speculative-fallback failure the architecture doc warns about.
 **One sitting, roughly half a day, flat cost - but it clears the actively wrong
 instructions and closes two Must rows:**
 
-1. **D6 + D7 + D11** - a single README and cleanup pass. Removes guidance that
-   makes a reader reject valid measurements.
+1. ~~**D6 + D7 + D11** - a single README and cleanup pass.~~ **DONE** - and it
+   also corrected the same refuted rule in `world_model_architecture.md`, which
+   was not in the original scope.
 2. **D5** - create `runs.jsonl`, backfill Phase 0. Closes a Must row and gives
    step 3 somewhere to land.
 3. **D4** - verify the clean build from scratch. Closes the other Must row.

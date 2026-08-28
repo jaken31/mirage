@@ -31,6 +31,11 @@ __pycache__/
 .venv/
 venv/
 
+# MuJoCo writes this next to the working directory on every run, whether or
+# not anything failed. It was tracked once, holding one line from a
+# deliberate bad-scene test.
+MUJOCO_LOG.TXT
+
 # Tooling
 wandb/
 .vscode/
