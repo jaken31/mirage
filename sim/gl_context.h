@@ -10,7 +10,8 @@ struct GLFWwindow;
 
 // Owns the offscreen render target: a hidden GLFW window holding the GL
 // context, the mjrContext built against it, and the viewport that was checked
-// against the scene's offwidth/offheight at construction.
+// against the model's offwidth/offheight at construction - which main.cpp writes
+// from config before constructing this, so it is the configured render size.
 //
 // Construct exactly one, in main, before anything renders. It does not own the
 // model, the scene, or the camera.

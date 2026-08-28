@@ -80,10 +80,14 @@ shipped with the pinned MuJoCo 3.12.0.
 config leaves the XML byte-identical, and both resolutions become a config-only
 change.
 
-Neither existing check loses its teeth. `gl_context.cpp` still compares
-`mjr_maxViewport` against `model->vis.global.offwidth`, which is now the config
-value; `main.cpp` still cross-checks the viewport against `cfg.width` and
-`cfg.height`.
+**One existing check does lose its teeth, found by making the change.**
+`gl_context.cpp` compares `mjr_maxViewport` against `model->vis.global.offwidth`
+and `main.cpp` cross-checks the viewport against `cfg.width` - and those are now
+the same number, so what used to be a third independent corner is one fact
+checked twice. Both are kept, because they cost nothing and they still catch a
+driver that hands back a viewport other than the one asked for, but the comment
+in `main.cpp` now says plainly that it is a duplicate. Do not read the pair as
+corroboration.
 
 Doc page: **API reference -> `mjModel`, `mjVisual`**. Nothing new to learn.
 
@@ -91,6 +95,11 @@ Doc page: **API reference -> `mjModel`, `mjVisual`**. Nothing new to learn.
 every `.pixels` and `.meta` blob is **byte-identical** to what is on disk now,
 and `load_shards(dir, cfg.data_hash)` accepts them. That comparison is the whole
 reason this item goes first: it is the proof the XML stayed frozen.
+
+**Done 2026-08-28.** All 14 blobs byte-identical, `git_sha` the only sidecar
+field that moved, the fixture reproduced under the ASan build too. The full
+regeneration measured **60.2 s at 4,980 fps** - budget from that, not from the
+45-50 s recorded earlier the same day.
 
 ### 2. `mirage/configs/base96.json` - the second dataset
 

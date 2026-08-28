@@ -107,12 +107,11 @@ better.
 Riskiest first, which here means "the thing that could invalidate 300,000
 frames" first.
 
-1. `sim/main.cpp` - set `model->vis.global.offwidth`/`offheight` from config
-   between `mj_loadXML` and the context. Three lines. **Then regenerate 64x64 and
-   prove every blob is byte-identical to what is on disk** - that comparison is
-   the proof the XML stayed frozen, and it is the only reason this goes first.
-   A full 64x64 regeneration is **45-50 s**, measured 2026-08-28, so the proof is
-   cheap. Regenerate `mirage/fixtures/` too if the `sim` section moves at all -
+1. ~~`sim/main.cpp` - `offwidth`/`offheight` from config~~ **done 2026-08-28.**
+   All 300,000 frames regenerated, all 14 blobs byte-identical, `git_sha` the only
+   sidecar field that moved. A full 64x64 regeneration is **60.2 s at 4,980 fps**,
+   measured on that run - the 45-50 s figure recorded earlier the same day did not
+   reproduce. Regenerate `mirage/fixtures/` too if the `sim` section moves at all -
    the fixture carries its own `data_hash` and `load_shards` will refuse it
 2. `mirage/configs/base96.json` - `sim.height`/`width` 96,
    `data.shard_dir` `data/shards96`. **8.294 GB**, still under R-4's 20 GB.

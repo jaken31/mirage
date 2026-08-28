@@ -193,6 +193,22 @@ int main(int argc, const char** argv) {
         mju_error("Failed to load model from '%s': %s", cfg.scene_xml.c_str(),
                   error_buffer);
     }
+
+    // The render size comes from config, not from the XML, and it has to be
+    // written before GlContext exists because mjr_makeContext reads these two
+    // fields to size the offscreen framebuffer. They are plain mutable ints on
+    // mjModel (mjmodel.h, struct mjVisual_, the global sub-struct).
+    //
+    // Editing <global offwidth/offheight> in the XML instead would work and
+    // would also be wrong: data_hash is sha256(canon(sim) + canon(data) +
+    // xml_bytes), so changing the file to enable a 96x96 dataset would change
+    // the 64x64 dataset's hash and orphan 300,000 frames that are still
+    // correct. This way the XML stays byte-identical and resolution becomes a
+    // config-only change. The literal offwidth="64" left in the XML is now
+    // decorative - it is overwritten here on every run.
+    model->vis.global.offwidth = cfg.width;
+    model->vis.global.offheight = cfg.height;
+
     policy_self_check(model);
     // Needs no model and no context - it writes a throwaway shard to the temp
     // directory - so it runs beside policy_self_check rather than inside the
@@ -210,10 +226,14 @@ int main(int argc, const char** argv) {
     {
         GlContext context(model);
         const mjrRect viewport = context.viewport();
-        // The config says how big a frame is and the XML says how big the
-        // offscreen buffer is. GlContext already checked the buffer against the
-        // XML; this is the third corner, and without it the sidecar could
-        // describe frames of a size nothing ever rendered.
+        // This used to be a third corner: config said how big a frame is, the
+        // XML said how big the offscreen buffer is, and GlContext checked the
+        // buffer against the XML. Now that offwidth/offheight are written from
+        // config above, GlContext's check and this one compare the same two
+        // numbers, so this is a duplicate rather than an independent corner.
+        // Kept because it costs nothing and it is the assertion that fails if
+        // anything is ever inserted between that assignment and this block -
+        // but do not read it as corroboration. It is one fact, checked twice.
         if (viewport.width != cfg.width || viewport.height != cfg.height) {
             mju_error("config asks for %d x %d frames, the scene renders %d x %d",
                       cfg.width, cfg.height, viewport.width, viewport.height);

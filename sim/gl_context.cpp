@@ -60,13 +60,15 @@ GlContext::GlContext(const mjModel* model) {
                   con_.currentBuffer);
     }
 
-    // A scene whose <global offwidth/offheight> never took effect leaves the
-    // offscreen buffer at its 640x480 default, and every frame becomes a crop
-    // of the upper-left corner.
+    // An offwidth/offheight that never took effect leaves the offscreen buffer
+    // at its 640x480 default, and every frame becomes a crop of the upper-left
+    // corner. Since 2026-08-28 those two fields are written from config in
+    // main.cpp rather than read from <global> in the XML, so this now checks
+    // that the driver honoured the requested size, not that the XML parsed.
     viewport_ = mjr_maxViewport(&con_);
     if (viewport_.width != model->vis.global.offwidth ||
         viewport_.height != model->vis.global.offheight) {
-        mju_error("offscreen buffer is %d x %d, scene asked for %d x %d",
+        mju_error("offscreen buffer is %d x %d, config asked for %d x %d",
                   viewport_.width, viewport_.height,
                   model->vis.global.offwidth, model->vis.global.offheight);
     }
