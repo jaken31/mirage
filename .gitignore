@@ -34,3 +34,7 @@ venv/
 # Tooling
 wandb/
 .vscode/
+
+# Claude Code worktrees. EnterWorktree creates linked checkouts here; an
+# unignored worktree dir commits an entire second copy of the tree.
+.claude/worktrees/

@@ -14,8 +14,9 @@ simulator, and control the learned model in real time at 30 fps.
 | [docs/world_model_learning_roadmap.md](docs/world_model_learning_roadmap.md) | Study plan, sequenced against the phases |
 | [docs/timeline.md](docs/timeline.md) | **Plain English.** Schedule, gates, branch points, risks, study woven in. For non-engineering readers |
 | [docs/decision_notes.md](docs/decision_notes.md) | **Plain English.** Every decision with its reason, its wrong-if signal, and 1-2 fallbacks |
+| [docs/phase0_report.md](docs/phase0_report.md) | **Derived.** Phase 0 completion report: output, architecture, measured results, open items |
 
-The last two are derived from the architecture and requirements docs. When a
+The last three are derived from the architecture and requirements docs. When a
 decision changes, change it there first.
 
 ## Environment
