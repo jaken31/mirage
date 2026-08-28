@@ -17,7 +17,7 @@ replay, hardware render confirmed by the renderer name.
 **bit-identical** `.pixels` and `.meta` for all 7 shards. Renderer reads
 `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. Measured over the whole set -
 F-5 min share 7.15% and ratio 2.27, F-6 20.69%, F-7 16.18%, F-2 7 colours,
-episodes 0..499 each with exactly 600 steps. Items 6 and 7 remain.
+episodes 0..499 each with exactly 600 steps. Item 7 remains.
 
 ---
 
@@ -70,7 +70,20 @@ Measure per-call, not end-to-end fps. End-to-end hides which term dominates.
    `shard_writer_self_check` covers the layout and the overflow predicate;
    measured on a 6-episode run: **6,760 fps**, and two runs at one seed are
    **bit-identical**
-6. `mirage/data.py` - memmap reader, episode-aware sampler
+6. `mirage/data.py` - memmap reader, episode-aware sampler - **done 2026-08-27**.
+   `load_shards` globs the sidecars, so an uncommitted shard is skipped by
+   construction; `WindowSampler` is map-style, so window *i* is the same window
+   in a DataLoader, a shuffle and a resumed run. `python -m mirage.data` is the
+   check and it is F-8's acceptance test: every meta field decodes twice, once
+   through the structured dtype and once through an independent `struct.unpack`,
+   because **every way of getting the dtype wrong still reads back cleanly**.
+   `bench/loader_probe.py` settles P-7 - **306x sequential, 734x random**, so
+   no workers, prefetch or caching layer. Two things to carry into item 7:
+   **the blob is bottom-up and the flip lives in the sampler, not in
+   `Shard.pixels`** - the validator must read frames through the sampler or
+   flip them itself, or `link_angle` comes out mirrored - and **the split is by
+   episode, hashed**, so a per-frame split anywhere downstream reintroduces the
+   leak this removed
 7. `mirage/validator.py` - measurement vector, both modes, threshold sweep
 
 Toolchain verified: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed
