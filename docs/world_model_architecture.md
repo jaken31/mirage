@@ -819,11 +819,25 @@ fixed-overhead-bound rather than compute-bound. It sharpens the thesis: not "a s
 model can be fast," but "fixed overhead is what makes a small model no faster than a
 big one, and here is how to remove it." Precisely what the ladder attacks.
 
-- **At 64 tokens, P-1 is nearly free and P-5 is the binding requirement.** The naive
-  path is ~400-495 us against a 520 us budget, so the Phase 3 baseline lands near
-  30 fps *before* any optimization; the ladder's job is P-5's 3x speedup, not
-  reaching playability. At 144 tokens this inverts - naive is 228% of budget, so P-1
-  becomes hard and DiagD is mandatory.
+- **At 64 tokens, P-1 needs graph capture and nothing beyond it; P-5 is the binding
+  requirement after that.** **Corrected 2026-08-28 - this bullet still carried the
+  pre-recalculation numbers and, worse, the conclusion they supported.** It read
+  "~400-495 us against a 520 us budget, so the Phase 3 baseline lands near 30 fps
+  *before* any optimization." Against the measured 308.3 GB/s the naive path is
+  **~535 us against a 520.8 us budget, 103%**, so **the Phase 3 baseline does not
+  reach 30 fps unoptimized** - that is what the fork table's "CUDA graphs are now
+  required on both paths" means in Phase 3 terms. After graphs the 64 path sits at
+  ~185 us, 36% of budget, and that is where the headroom for P-5's 3x comes from.
+  At 144 tokens naive is **251%** of budget and still 100% *after* graphs, which is
+  why DiagD is the only thing between that path and the wall.
+
+  Kept as a worked example of the drift this doc is meant to prevent: the
+  2026-08-23 re-measurement updated the fork table and `world_model_ingredients.md`
+  where 448 GB/s appeared literally, but missed every place the old figure had
+  already been *propagated into a consequence* - this bullet, plus two sites in the
+  derived docs. A number is easy to grep for; a conclusion that silently inverted
+  is not. **When a verification-log row refutes a prior value, search for the
+  consequences by concept, not by digit.**
 - **Prediction to validate the instrumentation:** F-17's first measurement at 64
   tokens should show roughly 80% CPU dispatch, 20% GPU busy. A very different split
   means suspect the measurement before the model.
