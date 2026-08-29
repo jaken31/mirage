@@ -35,6 +35,48 @@ decision changes, change it there first.
 machine - no `/dev/dri` node, Mesa falls back to a CPU rasterizer. Evidence in
 `CLAUDE.md`, produced by `bench/egl_probe.py`. Do not re-litigate it.
 
+### Python packages
+
+`requirements.txt` pins the exact stack every number in `runs.jsonl` was measured
+on. torch is the CUDA 13.0 build and is not on PyPI, so it installs first and
+separately:
+
+```bash
+pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+```
+
+```bash
+pip install -r requirements.txt
+```
+
+Then confirm the GPU is actually reachable. A CPU-only torch installs quietly and
+turns every timing in this repo into a meaningless number:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+It must print `2.9.1+cu130 True`. The pins are `==` rather than `>=` on purpose:
+the `nn.Upsample` use-after-free that killed two 60-epoch runs is specific to
+this python/torch pair, and a reproduction attempt elsewhere is worth nothing
+without them.
+
+## Checks
+
+Every module owns a `_self_check()` and stays runnable alone -
+`python -m mirage.data`, `python -m mirage.validator`, and so on. To run all five:
+
+```bash
+python check.py
+```
+
+It exits nonzero if any fails, and orders them cheapest first, so a break in
+`config` surfaces in seconds rather than after `data` has swept 300,000 frames.
+`config`, `logging` and `fsq` need no dataset at all; `validator` and `data` fall
+back to the committed 40-frame fixture in `mirage/fixtures/` when `data/shards`
+is empty. This is a runner, not a test framework, and it does not reverse the
+per-module choice recorded in `docs/phase0_debt_checklist.md`.
+
 ## Taking a measurement
 
 **Do not gate on `pstate == P0`.** That rule was refuted 2026-08-23. The reported

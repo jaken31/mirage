@@ -403,6 +403,42 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     numerical doubt from the one number the whole phase turns on. Add autocast
     only if a measured step time asks for it.
 
+    **It asked on 2026-08-29, and the answer is still no - for a reason that is
+    about comparability, not about speed.** bf16 autocast was measured on this
+    card at both resolutions, same model, same batch 128:
+
+    | | fp32 | bf16 | 60-epoch rung |
+    |---|---|---|---|
+    | 64x64 R1 | 37.7 ms/step | 25.8 | 1.39 h -> 0.95 |
+    | 64x64 R2 | 40.2 ms/step | 28.6 | 1.48 h -> 1.06 |
+    | 96x96 R1 | 75.8 ms/step | 60.4 | 2.80 h -> 2.23 |
+    | 96x96 R2 | 85.1 ms/step | 68.3 | 3.14 h -> 2.52 |
+
+    So 1.4-1.5x at 64x64 and only **1.25x at 96x96** - bf16 accelerates the
+    tensor-core matmuls and not the `nn.Upsample` / `GroupNorm` / `SiLU` chain,
+    which is bandwidth-bound, and the bigger image shifts the mix toward the part
+    it cannot help. TF32 alone is 1.07x and `cudnn.benchmark` is worth nothing
+    here, the shapes being fixed. **Not adopted**, because R1 and R2 at 60 epochs
+    differ by **0.087 dB** and are the comparison item 5 rests on; changing the
+    arithmetic underneath makes every later rung incomparable to both. Whoever
+    starts the 96x96 arm should decide it there, where a rung costs 3 h, and pay
+    for it by re-running one baseline rather than by assuming bf16 is neutral.
+
+    **What is *not* free to assume: this loop is not bit-reproducible.** Two
+    1-epoch r1 runs at seed 0, same machine, nothing else changed, read **25.66625
+    and 25.66792 dB** - 0.00167 dB apart, from nondeterministic cuDNN backward
+    reductions (`torch.use_deterministic_algorithms` is not set, and setting it
+    would cost throughput for a property nothing here needs). That is the first
+    measurement of a quantity `AGENDA.md` correctly flags as never taken. It is a
+    **1-epoch** figure and a lower bound on the 60-epoch spread, so it does not
+    by itself license calling 0.087 dB significant - but it does put the noise
+    two orders of magnitude below it rather than nowhere.
+
+    The measured data path, for the same reason: `_batch` is **0.47 ms of a 40 ms
+    step, 1.2%**. A pinned staging buffer takes it to 0.20 ms and buys nothing.
+    `non_blocking=True` in `_batch` is a documented no-op on pageable memory.
+    Do not spend time there.
+
     Every hyperparameter default is a *starting point, not a measurement* - the
     plan says so explicitly and they are expected to move.
     """
@@ -464,14 +500,46 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     if resume is not None:
         ck = torch.load(ROOT / "runs" / resume / "model.pt", map_location=dev,
                         weights_only=False)
-        for k in ("levels", "attention", "quantize", "batch", "lr", "epochs", "seed"):
-            assert ck["knobs"][k] == knobs[k],                 f"resume {resume}: {k} is {ck['knobs'][k]}, this call asks for {knobs[k]}"
+        # Every knob that changes the computation being resumed. `lr_floor`,
+        # `warmup` and `weight_decay` were missing from this list until
+        # 2026-08-29, and all three are load-bearing: the first two are read by
+        # `lr_at` on every step and the third by AdamW, so resuming with a
+        # different one silently changed the schedule mid-run while the flag's
+        # own help text promised "every knob must match". Not reachable from the
+        # CLI, which exposes none of the three - but `train()` is called directly
+        # by anything driving a ladder from Python, which is how R1 and R2 ran.
+        #
+        # `rung`, `device` and the derived entries (`params`, `steps_per_epoch`,
+        # the frame counts) are deliberately still unchecked: resuming onto a
+        # second machine is a case this has to keep allowing, and those differ
+        # without changing the computation.
+        for k in ("levels", "attention", "quantize", "batch", "lr", "lr_floor",
+                  "warmup", "weight_decay", "epochs", "seed"):
+            assert k in ck["knobs"], (
+                f"resume {resume}: its checkpoint carries no {k!r}, so it predates "
+                f"this check and cannot be shown to match - retrain, do not resume"
+            )
+            assert ck["knobs"][k] == knobs[k], (
+                f"resume {resume}: {k} is {ck['knobs'][k]}, this call asks for {knobs[k]}"
+            )
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         rng.bit_generator.state = ck["np_rng"]
-        torch.set_rng_state(ck["torch_rng"])
+        # `.cpu()` is load-bearing, not defensive. `torch.load(map_location=dev)`
+        # above moves **every** tensor in the checkpoint to the GPU, the two RNG
+        # states included, and `set_rng_state` takes a CPU ByteTensor only - so
+        # both calls raised `TypeError: RNG state must be a torch.ByteTensor` and
+        # `--resume` could not survive its own first line on CUDA.
+        #
+        # Found 2026-08-29, by writing the first test that ever called it. The
+        # path was added after the `nn.Upsample` crash to make a mid-flight death
+        # cost one epoch instead of ninety minutes, was never exercised, and
+        # would have failed at the moment it was finally needed - the R1 60-epoch
+        # rerun started from scratch at epoch 0 rather than resuming the run that
+        # had just died at epoch 6.
+        torch.set_rng_state(ck["torch_rng"].cpu())
         if ck["cuda_rng"] is not None and dev.type == "cuda":
-            torch.cuda.set_rng_state(ck["cuda_rng"])
+            torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
         train_eval = ck["train_eval"]
         start_epoch = ck["epoch"] + 1
         print(f"  resumed {resume} at epoch {start_epoch}/{epochs}")

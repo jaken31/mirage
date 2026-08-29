@@ -192,6 +192,25 @@ Then the 96x96 arm, which is what turns the fork into a measurement. Row 7 now
 prices it on converged tokenizers: flat regions are solved at **43 dB**, and
 **96.00% of all squared error is still edge geometry**.
 
+**Budget it as ~3 hours a rung, not "one training run".** Measured 2026-08-29 on
+this card, batch 128: a 60-epoch rung costs **2.80 h at R1 and 3.14 h at R2**,
+against 1.39 and 1.48 at 64x64. The fork's other two costs were already known and
+are the small ones - one config file and ~66 s of generation - so the line above
+that reads "one config file, ~45 s of generation and one training run" was
+carrying the expensive term unpriced. Add **87.8 s of preload per rung** and
+**2.62 GB of RAM** for the train split, against 1.16 at 64x64; caching the
+preloaded array to disk is the recorded answer if that bites, and this is the arm
+where it would.
+
+**bf16 autocast is the lever if 3 h a rung is too slow, and it is worth less here
+than at 64x64**: 1.25x at 96x96 against 1.4-1.5x at 64x64, because it accelerates
+the tensor-core matmuls and not the `nn.Upsample` / `GroupNorm` / `SiLU` chain,
+which is bandwidth-bound. **It is deliberately not enabled** - R1 and R2 at 60
+epochs differ by 0.087 dB and changing the arithmetic underneath makes every
+later rung incomparable to both. If this arm takes it, re-run one baseline in
+bf16 and quote that; do not assume bf16 is neutral. Numbers in `runs.jsonl`,
+"the training step profiled".
+
 ---
 
 ## Phase 1's two risks, and the lever for each
@@ -210,13 +229,26 @@ bar is ~17. **Cut the error count by a third.**
 **This warning is retired by measurement.** At convergence R1 clears the floor by
 **+2.825 dB** and R2 by **+2.912**, against the +1.73 needed - so neither is
 ambiguous and row 2 does not have to separate anything. Two cautions survive it.
-**Run-to-run noise is still unmeasured**: no seed has ever been repeated, so any
-sentence calling a margin "inside the noise" is asserting something nobody has
-checked. It stopped mattering only because the margins got large - a +1.18 dB
-margin is safe under any plausible noise, where the -0.031 dB miss it replaced
-was not. And **row 2 is now row 1 minus a constant**, since the eval charges
-against the recorded 28.27 dB rather than refitting, so the two rows can no
-longer disagree at all.
+~~**Run-to-run noise is still unmeasured**: no seed has ever been repeated, so
+any sentence calling a margin "inside the noise" is asserting something nobody
+has checked.~~ **A seed was finally repeated on 2026-08-29.** Two 1-epoch r1 runs
+at seed 0, same machine, nothing else changed, read **25.66625** and **25.66792
+dB** - **0.00167 dB apart**, from nondeterministic cuDNN backward reductions
+(`torch.use_deterministic_algorithms` is not set, and setting it would cost
+throughput for a property nothing here needs). **Read this carefully, because it
+proves less than it looks like it proves.** It is a **1-epoch** figure and so a
+*lower bound* on the 60-epoch spread, where 60x more steps of divergence
+compound - it does **not** license calling R2's +0.087 dB over R1 significant.
+What it does is put the noise two orders of magnitude below that margin rather
+than nowhere, which is a different sentence from the one this paragraph could
+write before. **It is not an E-1 or a gate row 5 failure**: both are claims about
+the simulator and about encoding from a fixed checkpoint, neither of which runs a
+backward pass, and both still hold. As an E-4 measurement it passes, 0.0065%
+against the 5% bar. It stopped mattering for the gate anyway because the margins
+got large - a +1.18 dB margin is safe under any plausible noise, where the
+-0.031 dB miss it replaced was not. And **row 2 is now row 1 minus a constant**,
+since the eval charges against the recorded 28.27 dB rather than refitting, so
+the two rows can no longer disagree at all.
 
 **Q-2's risk lost its evidence on 2026-08-28, and is now a live question rather
 than a prediction.** The data does not force low entropy - only 20.28% of interior

@@ -1,0 +1,47 @@
+# The exact stack every number in runs.jsonl was measured on.
+# Windows 11 (10.0.26200), Python 3.14.2 AMD64, RTX 5060 Laptop, CUDA 13.0.
+#
+# Pinned to == rather than >=, which is unusual for a research repo and
+# deliberate here: the `nn.Upsample` use-after-free that killed two 60-epoch
+# runs mid-flight is specific to this combination - see runs.jsonl, "the
+# nn.Upsample mid-frame crash, reproduced on an idle card and diagnosed", which
+# records python 3.14.2 and torch 2.9.1+cu130 as part of the fault. A bug report
+# or a reproduction attempt on another machine is worth nothing without them.
+#
+# torch is the CUDA 13.0 build and is NOT on PyPI. Install it first, separately:
+#
+#   pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+#   pip install -r requirements.txt
+#
+# Then confirm the GPU is actually reachable. A CPU-only torch installs quietly
+# and turns every timing in this repo into a meaningless number:
+#
+#   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+#
+# must print `2.9.1+cu130 True`.
+
+numpy==2.4.4
+
+# mirage/validator.py parses the palette out of scene/arm_blocks.xml, and bench/
+# drives the simulator directly. The C++ build in sim/ does NOT use this wheel -
+# CMake fetches its own MuJoCo at configure time, see sim/CMakeLists.txt.
+mujoco==3.12.0
+
+# bench/gpu_probe.py and bench/egl_probe.py only, to read GL_RENDERER and reject
+# the software rasterizers. Nothing under mirage/ imports it.
+pyopengl==3.1.10
+
+# mirage/logging.py's self-check imports pandas at function scope, to prove the
+# jsonl is readable by the thing that will read it. Not a runtime dependency:
+# training and evaluation never import it.
+pandas==3.0.2
+
+# bench/preview.py only.
+matplotlib==3.10.8
+pillow==12.0.0
+
+# OPTIONAL, and deliberately unpinned because it has never been installed here.
+# mirage/logging.py mirrors to Weights & Biases when `wandb_project` is passed.
+# That path is UNVERIFIED and must not be quoted as working until someone runs
+# it. Uncomment to be the person who does.
+# wandb

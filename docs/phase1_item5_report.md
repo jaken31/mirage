@@ -199,11 +199,38 @@ whether 3.14 is implicated.
 
 **Mitigation shipped, not a fix,** because this is not the project's bug:
 `fsq.py` now writes a resumable checkpoint every epoch carrying epoch, optimizer
-state and the numpy/torch/cuda RNG states, and takes `--resume RUN_ID`. **A crash
-now costs one epoch instead of ninety minutes.** RNG state is *saved* rather than
-the epoch *reseeded* deliberately - reseeding would move the data order and make
-a resumed rung incomparable to rungs already measured, which matters when the
-comparison it exists for is 0.06 dB wide.
+state and the numpy/torch/cuda RNG states, and takes `--resume RUN_ID`. ~~**A
+crash now costs one epoch instead of ninety minutes.**~~ RNG state is *saved*
+rather than the epoch *reseeded* deliberately - reseeding would move the data
+order and make a resumed rung incomparable to rungs already measured, which
+matters when the comparison it exists for is 0.06 dB wide.
+
+> **The struck sentence was false when written, and stayed false for the rest of
+> that session.** `--resume` could not survive its own first line on CUDA.
+> `train()` loads the checkpoint with `torch.load(map_location=dev)`, which moves
+> **every** tensor in it to the GPU - the two RNG states included - and
+> `torch.set_rng_state` accepts a CPU `ByteTensor` only, so the restore raised
+> `TypeError: RNG state must be a torch.ByteTensor`. **Found 2026-08-29 by
+> writing the first test that ever called it**, during the repo-wide audit;
+> fixed with `.cpu()` on both restores.
+>
+> The tell was in this file the whole time and nobody read it as one: the R1
+> 60-epoch rerun `20260829-005439-r1` **starts at epoch 0**. It did not resume
+> `20260829-004116-r1`, which had died at epoch 6 an hour earlier. The machinery
+> built to absorb that crash sat unused while the crash it was built for was
+> being absorbed by hand, and this write-up recorded the mitigation as working
+> because it had been *written*, not because it had been *run*. That is the
+> `CLAUDE.md` failure mode - a claim with no measurement next to it - reproduced
+> inside the report whose own subject is that failure mode.
+>
+> Fixed alongside it: the guard checked **7 of the 10** knobs that change the
+> computation. `lr_floor`, `warmup` and `weight_decay` were unchecked, though the
+> first two are read by `lr_at` on every step and the third by AdamW, so a resume
+> with a different one silently changed the schedule while the flag's help
+> promised "every knob must match". Six test cases now cover both fixes,
+> including one that resumes a real checkpoint and requires the remaining epoch
+> to actually train - **25.66792 dB to 26.51939**. See `runs.jsonl`, "--resume
+> was broken on CUDA and had never once been executed".
 
 ---
 

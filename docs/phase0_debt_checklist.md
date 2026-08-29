@@ -758,8 +758,20 @@ at all once it was measured rather than assumed - see D12.
   choice, not an omission. D10 fixed the *inputs* to two self-checks, not the
   approach - `mirage/fixtures/` is one committed shard, not a fixture framework,
   and the checks are still `_self_check` functions in the modules they test.
-- **`json.tar.xz` at repo root.** Vendored `nlohmann/json`, pinned by a locally
-  computed SHA256, which is the deliberate supply-chain choice.
+- ~~**`json.tar.xz` at repo root.** Vendored `nlohmann/json`, pinned by a locally
+  computed SHA256, which is the deliberate supply-chain choice.~~ **REFUTED, and
+  the file deleted, 2026-08-29.** Nothing vendored it. `sim/CMakeLists.txt:47`
+  declares the dependency by **URL**, and CMake never reads a local file - the
+  supply-chain guarantee is the `URL_HASH` line directly under it, which the root
+  copy stopped contributing to the moment it had been hashed. Proof the build
+  ignored it: CMake's own download sits at
+  `sim/build/_deps/nlohmann_json-subbuild/.../src/json.tar.xz`, written **two
+  minutes after** the root copy's mtime, byte-identical at 114,576 bytes, both
+  sha256 `42f6e95c...` - the pinned value. The root copy was the input to
+  `curl -sL <url> | sha256sum` and an orphan from the moment that returned.
+  **Worth keeping this row rather than deleting it: the claim sat in the "do not
+  re-litigate" list on a rationale nobody had executed**, which is the failure
+  mode `CLAUDE.md` opens with, one list away from where it was being warned about.
 - **`sim/` being deletable and `mirage/` never importing MuJoCo.** Working as
   designed - that is what makes "delete the simulator" literal.
 - **Empty `engine: {}` in config.** It feeds `engine_hash` and is filled in Phase
