@@ -134,22 +134,27 @@ These are chosen, not measured. They move only by decision.
 | `NUM-LOAD-COLD` | **6,804 frames/s** | `WindowSampler(ctx=0)` from a cold page cache - **the reason `preload` exists** | r30 | current |
 | `NUM-LOAD-WARM` | **109,682 frames/s** | The same read warm. Training needs ~13,000, so the cold path misses by 2x and the warm path cannot be relied on at a 3.5 GB working set | r30 | current |
 
-## Validator thresholds - the F-9 inputs item 6 recalibrates
+## Validator thresholds - recalibrated by item 6 against decoder output
 
-> **These four are the ones about to move.** Build order item 6 re-runs the F-9
-> sweep against *reconstructions* rather than ground truth, and an FSQ decoder
-> emits continuous colour where the renderer emitted seven exact triples. So
-> `NUM-VAL-TAU` is expected to rise and `NUM-VAL-FALSEPOS` is expected to stop
-> reading zero. **When it lands: update these rows, add the old values to the
-> supersession table, and change `configs/base.json` - in that order.** Every doc
-> that cites the ids then follows for free.
+> **Landed 2026-08-29, r42.** `NUM-VAL-TAU` rose as predicted. The other half of
+> the prediction was wrong in an instructive way: `NUM-VAL-FALSEPOS` did **not**
+> stop reading zero, because it is defined over *ground-truth* frames and those
+> are unaffected by a wider radius - at 0.75 they clear any tau in play. What is
+> non-zero is a **different quantity on different pixels**, so it got its own id
+> (`NUM-VAL-RECONFP`) rather than overwriting this one. Two regimes now coexist
+> on purpose: renders must have zero off-palette pixels, decoder output may have
+> up to `NUM-VAL-PXMAX`, and conflating them is exactly how a threshold ends up
+> measuring the wrong population.
 
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
-| `NUM-VAL-TAU` | **8.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash` | r18, r23 | current, **item 6 recalibrates** |
+| `NUM-VAL-TAU` | **32.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash`. **An interior optimum, not a compromise**: at a threshold pinned to the clean maximum, blended-futures detection runs 23% at tau 8 and 87% here, while gaussian-noise detection collapses to 0.3% by tau 64 once the ball is wider than the perturbation | r18, r23, r42 | current, **recalibrated on decoder output** |
 | `NUM-VAL-WORSTDIST` | **0.75 RGB units** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero. **Digit collision: `NUM-TOK-LEAK` is also 0.75 and is dB of PSNR, not colour distance.** It has already caused one misreading - see `mathematics_notes.md` section 1 | r18, r29 | current |
-| `NUM-VAL-HEADROOM` | **11x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. The slack item 6 is about to spend on decoder artifacts | r18 | derived |
-| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition | r23 | current, **on ground truth only** |
+| `NUM-VAL-HEADROOM` | **43x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. Slack over *renders* only - against `NUM-VAL-RECONDIST` the same tau has no slack at all, which is the whole finding | r42 | derived |
+| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
+| `NUM-VAL-PXMAX` | **350 px** | `validator.offpalette_px_max` - the most off-palette pixels a *reconstruction* may carry before the frame is a fault. 1.11x `NUM-VAL-RECONFP`, and the margin is deliberately thin: 512 px would drop blur detection from 100% to 1.1% | r42 | current |
+| `NUM-VAL-RECONDIST` | **154.9 RGB units** | Worst distance any *decoded* pixel sits from its palette entry, over all `NUM-DATA-VALFRAMES` held-out frames - **207x `NUM-VAL-WORSTDIST`**. Reaching zero off-palette pixels would need tau ~160, a ball 6.5 million times the calibrated volume, which is why the verdict changed shape instead | r42 | current |
+| `NUM-VAL-RECONFP` | **314 px** | Off-palette pixels on the worst *clean* reconstruction at `NUM-VAL-TAU`, R2 rung; R1 reads 298. **100% of clean reconstructions carry some**, at every tau below 96, so the ground-truth `> 0` verdict is unusable on decoder output | r42 | current |
 
 ## Tokenizer - the floor it must beat
 
@@ -211,6 +216,8 @@ the failure `check.py` looks for.
 | `NUM-HW-FP16` | 3.0 -> **27.6 TFLOP/s** | A chassis cooling fix moved the enforced power limit 55 -> 100 W. The throttle *flags* read `Not Active` the whole time it was capped; the evidence was in the counters. r4 |
 | `NUM-TOK-LIVE512` | 150 -> **486 of 512** | An initialisation artifact. This was the entire evidence base for the Q-2 collapse risk, and it is gone. r27, r33 |
 | `NUM-TOK-FLAT` | 19.96% -> **20.28%** | Re-measured after the regeneration. Confirms rather than refutes. r27 |
+| `NUM-VAL-TAU` | 8.0 -> **32.0** | 8.0 was calibrated on renders, whose worst pixel sits at `NUM-VAL-WORSTDIST`. Q-3 measures decoder output, whose worst sits at `NUM-VAL-RECONDIST`. Chosen by detection rate at zero false positives, not by clearing the worst distance - clearing it needs ~160 and gives up the palette constraint entirely. r42 |
+| `NUM-VAL-HEADROOM` | 11x -> **43x** | Arithmetic on the row above, and a reminder that the slack is over renders only. r42 |
 | `NUM-TOK-Q2CEIL` | 94.4% -> **94.25%** | Same re-measurement. r27 |
 
 ## Not in this register, on purpose

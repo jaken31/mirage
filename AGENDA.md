@@ -23,9 +23,13 @@ with the same list.
 The Phase 0 debt checklist is **closed, 12 of 12**. Three of its items change how
 Phase 1 starts:
 
-- **`validator.offpalette_tau` is already in config**, so item 6 below is a
-  calibration, not a plumbing job. Changing a validator threshold now moves
-  `validator_hash`, which is the whole reason it was moved out of code.
+- **The validator's palette thresholds are calibrated and in config** - item 6,
+  landed 2026-08-29. `NUM-VAL-TAU` and `NUM-VAL-PXMAX` now describe *decoder
+  output*, which is a different regime from renders, not a noisier one:
+  `NUM-VAL-RECONDIST` against `NUM-VAL-WORSTDIST`. Changing either moves
+  `validator_hash`, which is the whole reason they were moved out of code -
+  **so calibrate once.** Retuning mid-phase fragments Q-3 into incomparable
+  buckets, and the margin over `NUM-VAL-RECONFP` is deliberately thin.
 - **The meta record's `contact_mask` is two fields.** Bits 0..6 are block
   contact, bit 7 is scripted-vs-random. `mirage.data.contact_bits` and
   `.scripted` exist; read the raw byte and F-6 reads over 50%.
@@ -33,8 +37,8 @@ Phase 1 starts:
   dataset**, falling back to a committed 40-frame fixture. A fresh clone or a new
   worktree can check F-8 and F-9 before generating anything.
 
-Nothing else from Phase 0 is pending except the F-9 threshold calibration, which
-is Phase 1 item 6 by design.
+Nothing from Phase 0 is pending. The F-9 threshold calibration, the last item,
+landed as Phase 1 item 6 on 2026-08-29 - `runs.jsonl` r42.
 
 ---
 
@@ -106,12 +110,11 @@ row misses.
 | 3 | Token entropy / `log2(codebook)`, all frames (`NUM-DATA-FRAMES`) | **>= 70%** (`NUM-BAR-Q2`) | **Q-2** - "token entropy vs uniform over 512 codes". The codebook must not collapse onto a handful of entries, or the 512-code budget is a fiction and Phase 2 inherits a smaller vocabulary than it was promised |
 | 4 | Token cache rows == `shard.frames`, every shard | **exact** | Not a numbered requirement - the Phase 2 handoff indexes tokens by frame, so an off-by-one here is silent and corrupts everything downstream |
 | 5 | Re-encode from one checkpoint twice | **bit-identical** | **E-1** - "deterministic sim given a seed", defined as *same as F-4*: same seed and action sequence give bit-identical frames. Encoding is inference, so no backward pass and no cuDNN nondeterminism |
-| 6 | F-9 sweep against reconstructions | **zero false positives, set recorded** | **F-9** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives on ground-truth frames*. Item 6 recalibrates it for decoder output |
+| 6 | F-9 sweep against reconstructions, at `NUM-VAL-TAU` | **<= `NUM-VAL-PXMAX`** | **F-9** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives*. Item 6 recalibrated it for decoder output, where "zero off-palette pixels" is unreachable - see `NUM-VAL-RECONFP`. The ground-truth half of the sweep runs alongside as an alignment assert |
 | 7 | Edge-pixel PSNR vs flat-pixel PSNR | reported | Not a requirement - **this is the 64/144 fork**, and the numbers are `NUM-TOK-EDGE-R1` and `NUM-TOK-EDGE-R2` |
 | 8 | Train-val PSNR gap; live codes at mass > 1e-4 | reported | Not a requirement - overfit and collapse canaries |
 
-Rows 1-5 are pass/fail; row 6 is deferred to build order item 6, which is what
-calibrates it. **The eval charges row 2 against the recorded `NUM-TOK-FLOOR512`
+Rows 1-6 are pass/fail. **The eval charges row 2 against the recorded `NUM-TOK-FLOOR512`
 rather than refitting k-means**, which is a change from the original design and
 worth knowing why: the val split is fixed by `data.is_val` over a `data_hash` the
 loader already refuses to mismatch, so a refit at seed 0 returns the same value
@@ -159,10 +162,18 @@ frames" first.
    two runs mid-flight - diagnosed, not this project's bug, see the verification
    log. **`--resume` was itself broken on CUDA and had never once been executed**
    until it was fixed and tested on 2026-08-29 - `runs.jsonl` row 41
-6. F-9 recalibration against reconstructions, then the verdict thresholds finally
-   go into `configs/base.json`. `offpalette_tau` is already there at 8.0, chosen
-   against *ground-truth* frames where the worst palette distance is 0.75; decoder
-   artifacts will push that up, and the sweep is what says how far
+6. ~~F-9 recalibration against reconstructions~~ **done 2026-08-29**, r42.
+   `NUM-VAL-TAU` and a new `NUM-VAL-PXMAX` are in `configs/base.json`;
+   `validator_hash` moved and `data_hash` did not. **The obvious recipe was
+   wrong**: raising tau past `NUM-VAL-RECONDIST` needs ~160, a ball 6.5 million
+   times the calibrated volume, so the verdict changed shape - `> N` off-palette
+   pixels rather than `> 0`, because every clean reconstruction has some. tau was
+   picked by detection rate at zero false positives and is an **interior**
+   optimum. Three of the four thresholds this item expected to write were refuted
+   and left out on purpose; the verification log has the table. **Still open:**
+   `configs/base96.json` carries an area-scaled `offpalette_px_max` that is
+   **unverified** - there is no 96x96 tokenizer yet, and the first one must
+   re-run this
 
 ### The ladder - four runs, each answering one question
 
