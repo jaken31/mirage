@@ -43,12 +43,20 @@ is Phase 1 item 6 by design.
 **Structural plan: `phase1_structural_plan.md`.** What each file owns, the build
 order with named APIs, done-when per file, and the gotchas.
 
-**Items 1-4 are done**, and so is **item 5's first slice** - stages 5a, 5b, 5c
-and rung R0, which cleared Q-1 at **31.228 dB** held out. Outcomes and the
-numbers they moved are in `phase1_progress_report.md` (items 1-4) and
-`phase1_item5_report.md` (item 5's first slice, plus the **live handoff for
-stages 5d and 5e** - the one in the older report is spent). Both are narratives
+**Items 1-5 are done. Item 5's gate is met** - all five pass/fail rows pass, on
+two checkpoints either of which could ship: R1 `20260829-005439-r1` at
+**31.095 dB / 74.1%** and R2 `20260828-230015-r2` at **31.182 dB / 77.6%**,
+against bars of 30.0 dB and 70%. Outcomes are in `phase1_progress_report.md`
+(items 1-4) and `phase1_item5_report.md` (item 5, complete). Both are narratives
 over `runs.jsonl` and the verification log, which stay authoritative.
+
+> **The lesson item 5 cost the most to learn: 15 epochs is not convergence, and
+> the 15-epoch numbers were ranking runs read as gate verdicts.** Every rung
+> failed Q-1 at 15 epochs and every rung passes at 60, with **no change to the
+> architecture** - only `--epochs`. The cosine anneals to `lr_floor` by the final
+> step, so a short run is frozen at its end *by construction* and its last-epoch
+> gain says nothing about convergence. The structural plan already said to quote
+> the 60-epoch run; it needed following, not correcting.
 
 > **The six pre-work numbers were re-measured on 2026-08-28, and the k-means
 > floor was refuted - by its own methodology, not by the regeneration.**
@@ -106,7 +114,7 @@ row misses.
 | # | Measure | Bar | Req |
 |---|---|---|---|
 | 1 | Held-out PSNR, uint8, over the 16,200 val frames | **>= 30.0 dB** | Q-1 |
-| 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +1.73 dB**, i.e. `30.0 - 28.27`, the **held-out** floor - k-means++ fit on the 473 train episodes and scored on the 27 val ones, measured 2026-08-28. The old `+0.98` came from `29.02`, which was fit *and* scored on a sample straddling the split; `bench/patch_probe.py` now prints both, and the 0.75 dB between them is that leak. Report the floor the eval computes beside it | is the conv context earning its keep |
+| 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +1.73 dB**, i.e. `30.0 - 28.27`, the **held-out** floor - k-means++ fit on the 473 train episodes and scored on the 27 val ones, measured 2026-08-28. The old `+0.98` came from `29.02`, which was fit *and* scored on a sample straddling the split; `bench/patch_probe.py` prints both, and the 0.75 dB between them is that leak | is the conv context earning its keep |
 | 3 | Token entropy / `log2(codebook)`, all 300,000 frames | **>= 70%** | Q-2 |
 | 4 | Token cache rows == `shard.frames`, every shard | **exact** | the Phase 2 handoff |
 | 5 | Re-encode from one checkpoint twice | **bit-identical** | E-1 |
@@ -114,9 +122,15 @@ row misses.
 | 7 | Edge-pixel PSNR vs flat-pixel PSNR | reported | **this is the 64/144 fork** |
 | 8 | Train-val PSNR gap; live codes at mass > 1e-4 | reported | overfit and collapse canaries |
 
-Rows 1-6 are pass/fail. Rows 1 and 2 can disagree, and that is informative: row 1
-passing while row 2 fails means the val split got easier, not that the model got
-better.
+Rows 1-5 are pass/fail; row 6 is deferred to build order item 6, which is what
+calibrates it. **The eval charges row 2 against the recorded 28.27 dB rather than
+refitting k-means**, which is a change from the original design and worth knowing
+why: the val split is fixed by `data.is_val` over a `data_hash` the loader
+already refuses to mismatch, so a refit at seed 0 returns 28.27 every time - a
+constant dressed as a measurement. The disagreement the refit was meant to
+surface (row 1 passing while row 2 fails, meaning the val split got easier) can
+only happen if the data moves, and a moved `data_hash` fails louder and earlier.
+`bench/patch_probe.py` stays the one place k-means lives.
 
 ### Build order
 
@@ -146,8 +160,13 @@ frames" first.
    W&B only when `wandb_project` is passed. **The W&B mirror is UNVERIFIED** -
    wandb is not installed here, which is the condition the rest was verified
    against. Do not quote it as working until someone runs it
-5. `mirage/fsq.py` - quantizer, encoder/decoder, train loop, eval, token cache.
-   **Run rung R0 before FSQ is wired in at all**
+5. ~~`mirage/fsq.py` and `mirage/fsq_eval.py`~~ **done 2026-08-29.** Quantizer,
+   encoder/decoder, train loop, PSNR, token cache and the eight-row gate table,
+   split at the plan's 500-line trigger. **The gate passes**; two 60-epoch
+   checkpoints clear every pass/fail row. `--resume` and a resumable per-epoch
+   checkpoint were added after a native-layer `nn.Upsample` use-after-free killed
+   two runs mid-flight - diagnosed, not this project's bug, see the verification
+   log
 6. F-9 recalibration against reconstructions, then the verdict thresholds finally
    go into `configs/base.json`. `offpalette_tau` is already there at 8.0, chosen
    against *ground-truth* frames where the worst palette distance is 0.75; decoder
@@ -155,19 +174,23 @@ frames" first.
 
 ### The ladder - four runs, each answering one question
 
-**Training is 21.9 min at 15 epochs, measured, not the ~6 min this file
-predicted** - 1,313.3 s for R0, 39.5 ms/step aggregate, on a run the GPU sample
-confirms was compute-bound. Budget ~22 min per rung, so R1 and R2 at both
-resolutions is 1.5 to 2 hours, not 36 minutes.
+**Budget a gate rung at 60 epochs, not 15.** A 15-epoch rung is ~22 min and is a
+*ranking* run only - the plan says so, `epochs, the winner | 60 | the run whose
+PSNR is quoted`, and item 5 lost a day to reading 15-epoch numbers as gate
+verdicts. A 60-epoch rung is ~88 min at the clean 87.6 s/epoch, and **every wall
+clock measured since is void**: thermal throttling took one run to 99.2 s/epoch
+and Modern Standby put a 7.5-hour hole in another.
 
-| Rung | Config | Answers |
+| Rung | Config | Answered |
 |---|---|---|
-| ~~R0~~ | continuous bottleneck, no FSQ, no attention | **done 2026-08-28: 31.228 dB held out**, clearing Q-1 by +1.228 and the floor by +2.958. The encoder is not the suspect. Read it as a loose upper bound - its bottleneck is 192 fp32 numbers, R1's is 64 tokens x 9 bits |
-| R1 | FSQ `[8,8,8]`, no attention | what quantization costs; comparable to the **28.27 dB** held-out floor |
-| R2 | R1 + self-attention on the 8x8 grid | what joint coding buys |
-| R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder |
+| ~~R0~~ | continuous bottleneck, no FSQ, no attention | **31.228 dB at 15 epochs.** A loose upper bound - its bottleneck is 192 fp32 numbers against R1's 64 tokens x 9 bits. **At 60 epochs it is UNMEASURED**, deliberately: the gate does not need it, and it is an input to the 64-vs-96 fork rather than to item 5 |
+| ~~R1~~ | FSQ `[8,8,8]`, no attention | **29.905 dB at 15, 31.095 dB at 60.** Quantization is *not* the wall - at convergence R1 alone passes every gate row. The "quantization costs 1.322 dB" figure was R0 minus R1 with both under-trained |
+| ~~R2~~ | R1 + self-attention on the 8x8 grid | **29.969 dB at 15, 31.182 dB at 60.** Joint coding buys **+0.087 dB for +263,680 parameters** - about a sixth of the plan's own "tied" threshold, so a measured non-lever for quality. It buys **+3.5 pp of token entropy**, by decorrelating the three FSQ digits, which no document predicted |
+| R3 | **not needed for the gate** | The levels ladder is specifically ruled out: **zero of 512 codes have zero count** in any rung, so nothing collapsed and the shrink ladder addresses a failure mode that never happened. If quality is pushed further it is capacity or resolution, and **R0 at 60 is the run that says which** |
 
-Then R1-R3 again at 96x96, which is what turns the fork into a measurement.
+Then the 96x96 arm, which is what turns the fork into a measurement. Row 7 now
+prices it on converged tokenizers: flat regions are solved at **43 dB**, and
+**96.00% of all squared error is still edge geometry**.
 
 ---
 
@@ -184,10 +207,16 @@ a shared decoder have to buy. In physical terms, since a wrong pixel costs 47,81
 squared error on this palette: the floor gets ~25 of 4,096 pixels wrong and the
 bar is ~17. **Cut the error count by a third.**
 
-The corollary is a warning, not a comfort. A margin of 1.73 dB is not far outside
-the noise of a training run, so **R1 landing near 29 dB is ambiguous on its own** -
-it could be the tokenizer working or the floor being easy to reach. Row 2 is what
-separates them, and it is the row that matters more than row 1.
+**This warning is retired by measurement.** At convergence R1 clears the floor by
+**+2.825 dB** and R2 by **+2.912**, against the +1.73 needed - so neither is
+ambiguous and row 2 does not have to separate anything. Two cautions survive it.
+**Run-to-run noise is still unmeasured**: no seed has ever been repeated, so any
+sentence calling a margin "inside the noise" is asserting something nobody has
+checked. It stopped mattering only because the margins got large - a +1.18 dB
+margin is safe under any plausible noise, where the -0.031 dB miss it replaced
+was not. And **row 2 is now row 1 minus a constant**, since the eval charges
+against the recorded 28.27 dB rather than refitting, so the two rows can no
+longer disagree at all.
 
 **Q-2's risk lost its evidence on 2026-08-28, and is now a live question rather
 than a prediction.** The data does not force low entropy - only 20.28% of interior

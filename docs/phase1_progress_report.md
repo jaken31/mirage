@@ -43,6 +43,14 @@ main-only content git had already auto-merged outside the conflict markers.
 
 ## The one finding that changes the plan
 
+> **PARTLY SUPERSEDED the same day, and kept unedited below.** The finding itself
+> holds - the initialisation was the cause, not the regeneration. What did not
+> hold is the conclusion that **29.02 dB** is the honest floor: that number was
+> fit *and* scored on a sample straddling the train/val split. Held out it is
+> **28.27 dB**, so gate row 2's bar is **+1.73 dB**, not +0.98, and "1,024 codes
+> clear Q-1" is dead - held out, 1,024 reaches 29.39 dB and misses. Quote
+> `docs/phase1_item5_report.md` and `runs.jsonl` row 33, not this section.
+
 **The k-means floor was wrong, and not because of the regeneration everyone
 suspected.** The six pre-work numbers were flagged as measured against a dataset
 that no longer exists. Re-running them says the dataset was never the problem:

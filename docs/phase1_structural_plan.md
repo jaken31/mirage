@@ -42,7 +42,8 @@ Everything flows one direction. Nothing calls backwards.
 | `mirage/configs/base96.json` | the 96x96 arm: `sim.height`/`width` 96, `data.shard_dir` `data/shards96` | anything the 64x64 config owns; they are two datasets with two `data_hash`es |
 | `mirage/data.py` | `preload(shards, index, split, val_fraction, palette_rgb)` -> palette-index array plus the byte LUT | anything model-shaped; it still does not interpret pixels. It does not *load* the palette either - `validator` imports `data`, so the rgb array is passed in |
 | `mirage/logging.py` | `log(dict)` -> one jsonl line always, W&B only behind a flag | deciding what is worth logging |
-| `mirage/fsq.py` | the quantizer, encoder, decoder, train loop, eval, the gate table, the token cache writer | loading shards, and the palette |
+| `mirage/fsq.py` | the quantizer, encoder, decoder, train loop, PSNR | loading shards, and the palette |
+| `mirage/fsq_eval.py` | the token cache writer and the gate table - everything that runs against a finished checkpoint | training anything. Split out when `fsq.py` passed 500 lines, which is the trigger this file names below |
 | `mirage/configs/base.json` | after item 6, the calibrated `validator` thresholds | the measurement that produced them |
 
 `preload` belongs in `data.py`, not `fsq.py`, because Phase 2 will want the same
@@ -261,8 +262,17 @@ Three choices that are not stylistic:
   independently is measured: a k-means codebook of 512 entries over real 8x8
   patches, fit on the train episodes and scored on the val ones, reaches
   **28.27 dB** against Q-1's 30 dB bar. The **1.73 dB** gap is what context has
-  to buy - and because that margin is not far outside a training run's noise,
-  the attention layer's value shows up in gate row 2, not row 1.
+  to buy. **The prediction that followed - that the attention layer's value
+  shows up in gate row 2 and not row 1 - was refuted on 2026-08-29, twice
+  over.** It could not show up in row 2 either, because the eval charges row 2
+  against the recorded floor rather than refitting, making it row 1 minus a
+  constant. And attention buys only **+0.087 dB at convergence** for +263,680
+  parameters, about a sixth of this file's own "within ~0.5 dB means tied"
+  threshold. Where it does show up is **row 3**: +3.5 pp of token entropy, by
+  decorrelating the three FSQ digits. The reasoning about *why* it was worth
+  trying stands; the predicted place to look for the effect did not. The
+  "training run's noise" clause is also still **unmeasured** - no seed has been
+  repeated.
 - **`GroupNorm` + `SiLU`, no residual blocks.** Residual blocks are the first
   capacity lever if rung R2 falls short, not a starting assumption.
 
