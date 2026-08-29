@@ -170,7 +170,9 @@ These are chosen, not measured. They move only by decision.
 
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
-| `NUM-TOK-FLOOR512` | **28.27 dB** | k-means++ 512 codes, **fit on train episodes, scored on val** | r33 | current |
+| `NUM-TOK-FLOOR512` | **28.27 dB** | k-means++ 512 codes, **fit on train episodes, scored on val**, at 64x64 | r33 | current |
+| `NUM-TOK-FLOOR512-96` | **29.97 dB** | The same, at 96x96, same 179,200-patch budget. **Higher, not lower**: an 8x8 patch covers 2.25x less scene, so `NUM-D96-FLATPATCH` of patches are one flat colour and a per-patch codebook finds them easier. Makes gate row 2's bar **+0.03 dB** at 96x96, i.e. nearly vacuous | r43 | current |
+| `NUM-D96-FLATPATCH` | **73.09%** | Share of 8x8 patches that are a single flat colour at 96x96, against **63.47%** at 64x64. **One cause, two opposite consequences**: it raises `NUM-TOK-FLOOR512-96` and it is why `NUM-TOK-ENT-R1-96` falls below `NUM-BAR-Q2` | r43 | current |
 | `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first Q-2 shrink step | r33 | current |
 | `NUM-TOK-FLOOR1024` | **29.39 dB** | Same, 1024 codes - **still misses `NUM-BAR-Q1`** | r33 | current |
 | `NUM-TOK-LIVE512` | **486 of 512** | Centroids alive on held-out patches | r33 | current |
@@ -192,6 +194,10 @@ These are chosen, not measured. They move only by decision.
 | `NUM-TOK-ATTN` | **+0.087 dB** | What attention buys in quality at convergence - a measured non-lever | r39 | current |
 | `NUM-TOK-ATTNPARAM` | **263,680** | What it costs in parameters | r39 | current |
 | `NUM-TOK-ATTNENT` | **+3.5 pp** | What it buys in entropy, by decorrelating the FSQ digits | r37, r39 | current |
+| `NUM-TOK-R1-96` | **32.501 dB** | R1 at **96x96**, same architecture, same knobs, 60 epochs. **`NUM-TOK-FORK` over `NUM-TOK-R1-60`** | r44 | current |
+| `NUM-TOK-ENT-R1-96` | **55.4%** (4.982 of 9 bits) | R1 token entropy at 96x96 - **misses `NUM-BAR-Q2` by 14.6 pp**, where the same architecture at 64x64 clears it. This is the fork's cost, and it is a requirement failure rather than a price | r44 | current |
+| `NUM-TOK-FORK` | **+1.406 dB** | What 96x96 buys in held-out PSNR, for 2.25x the tokens (144 against 64). Both rungs converged, same seed, same knobs | r44 | derived |
+| `NUM-TOK-SKEW-96` | **2.922 bits** of the 4.018 short | Marginal skew at 96x96 against **1.440** at 64x64 - the entropy loss is skew, not collapse. **0 of 512 codes are unused** and 422 carry mass > 1e-4, so the shrink ladder addresses skew rather than dead codes | r44 | current |
 | `NUM-TOK-PARAMS-R1` | **744,966** | R1 parameter count | r32 | current |
 | `NUM-TOK-PARAMS-R2` | **1,008,646** | R2 parameter count | r32 | current |
 | `NUM-TOK-EPOCH64` | **87.6 s** | One clean 64x64 epoch, 2,217 steps at batch 128 | r32 | current |

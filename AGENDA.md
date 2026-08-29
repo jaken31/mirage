@@ -243,6 +243,19 @@ void**: thermal throttling took one run to 99.2 s/epoch and Modern Standby put a
 | ~~R2~~ | R1 + self-attention on the 8x8 grid | `NUM-TOK-R2-60` at 60 epochs (row 35 for 15). Joint coding buys `NUM-TOK-ATTN` for `NUM-TOK-ATTNPARAM` extra parameters - about a sixth of the plan's own "tied" threshold, so a **measured non-lever for quality**. It buys `NUM-TOK-ATTNENT` of token entropy by decorrelating the three FSQ digits, which no document predicted |
 | R3 | **not needed for the gate** | The levels ladder is specifically ruled out: **zero of 512 codes have zero count** in any rung, so nothing collapsed and the shrink ladder addresses a failure mode that never happened. If quality is pushed further it is capacity or resolution, and **R0 at 60 is the run that says which** |
 
+> **The 96x96 arm ran on 2026-08-29 and the fork's price is not the one this
+> section predicts.** R1 at 96x96 reaches `NUM-TOK-R1-96`, which is
+> `NUM-TOK-FORK` over the 64x64 rung - and it **fails gate row 3**:
+> `NUM-TOK-ENT-R1-96` against `NUM-BAR-Q2`, where the identical architecture at
+> 64x64 clears it. **The fork buys Q-1 and breaks Q-2**, and no document
+> predicted that. One mechanism drives both signs - `NUM-D96-FLATPATCH` of
+> patches are one flat colour at 96x96, which raises `NUM-TOK-FLOOR512-96` and
+> concentrates the token distribution at the same time. It is **skew, not
+> collapse** (`NUM-TOK-SKEW-96`; zero codes unused), so the Q-2 shrink ladder
+> below is the right instrument and is triggered for the first time. Everything
+> after this paragraph was written before that run - read it as the plan the
+> measurement replaced, not as current guidance. Full account: `runs.jsonl` r44.
+
 Then the 96x96 arm, which is what turns the fork into a measurement. Row 7 now
 prices it on converged tokenizers: flat regions are solved (`NUM-TOK-EDGE-R1`,
 `NUM-TOK-EDGE-R2` carry the edge/flat pair) and **96% of all squared error is
@@ -329,7 +342,12 @@ FSQ was chosen over VQ.
 ### The Q-2 shrink ladder, in this order
 
 `[8,8,8]`=512 -> `[8,6,5]`=240 -> `[5,5,5]`=125 -> `[4,4,4]`=64. **Take a step only
-when row 3 actually misses**, not pre-emptively - the measurement that used to
+when row 3 actually misses**, not pre-emptively - **and at 96x96 it now does**,
+which is the first time this condition has fired. The arithmetic does not
+obviously reach: `NUM-TOK-ENT-R1-96`'s 4.982 bits over `log2(240)` is 63% and
+over `log2(125)` is 71.5%, and **both assume the joint bits survive the shrink**,
+which is exactly the thing nobody has measured. At 64x64 row 3 passes and the
+ladder stays untouched - the measurement that used to
 argue for shrinking was an initialisation artifact. Note the cost, too: the
 held-out floor at 240 codes is `NUM-TOK-FLOOR240` against `NUM-TOK-FLOOR512` at
 512, so shrinking the vocabulary spends over a dB of Q-1's headroom to buy Q-2
