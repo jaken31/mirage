@@ -51,6 +51,11 @@ venv/
 # deliberate bad-scene test.
 MUJOCO_LOG.TXT
 
+# Backgrounded training stdout: logs/<rung>_<epochs>_<seed>.log. Same class as
+# runs/ - written by a tool, one line per epoch, and the numbers that matter are
+# already in runs/<run_id>/metrics.jsonl and runs.jsonl.
+logs/
+
 # Tooling
 wandb/
 .vscode/

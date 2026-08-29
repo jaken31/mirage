@@ -289,9 +289,16 @@ for k in DICT_KS:
 
 # ------------------------------------------------ Q-2's ceiling, from the data
 rf_frames = sample_frames(RF_FRAMES)
-grid = 64 // PATCH
+# Taken from the frames, not from a literal 64. This section used to hardcode
+# the image size, which is right at 64x64 and silently mis-measures at 96x96 -
+# it would sweep the interior of an 8x8 grid out of a 12x12 one and report a
+# ceiling for a frame that is not the one loaded.
+size = rf_frames.shape[1]
+assert rf_frames.shape[1] == rf_frames.shape[2], \
+    f"frames are {rf_frames.shape[1]}x{rf_frames.shape[2]} - this sweep assumes square"
+grid = size // PATCH
 pad = (RF - PATCH) // 2
-interior = [r for r in range(grid) if PATCH * r - pad >= 0 and PATCH * r - pad + RF <= 64]
+interior = [r for r in range(grid) if PATCH * r - pad >= 0 and PATCH * r - pad + RF <= size]
 flat_cells = void_cells = total_cells = 0
 for r in interior:
     for c in interior:
@@ -304,7 +311,8 @@ for r in interior:
 
 flat_rf = flat_cells / total_cells
 # The collapse constrains interior cells only, but Q-2 scores the entropy over
-# all 64 tokens of a frame, so the constrained mass dilutes by 36/64.
+# every token of a frame, so the constrained mass dilutes by the interior's
+# share of the grid - 36 of 64 cells at 64x64, and a different fraction at 96.
 collapsed = flat_rf * len(interior) ** 2 / grid ** 2
 print(f"\n{len(interior) ** 2} interior cells of {grid ** 2}, {RF}x{RF} receptive "
       f"field, {len(rf_frames):,} frames")
