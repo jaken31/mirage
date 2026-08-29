@@ -57,34 +57,43 @@ over `runs.jsonl` and the verification log, which stay authoritative.
 > The regeneration was the suspect and it was the wrong one. Every init-free
 > statistic reproduced: the exact-patch dictionary within 0.03 dB, the patch
 > entropy within 0.03 bits, the flat-receptive-field share within 0.4 pp, the
-> edge-error split within 0.1 pp. What moved was k-means, because **the original
-> run never recorded its initialisation and that choice is worth 2.6 dB.**
-> Random seeding reproduces the old numbers; k-means++ beats them:
+> edge-error split within 0.1 pp. What moved was k-means, and it moved **twice**.
+> First, **the original run never recorded its initialisation and that choice is
+> worth 2.6 dB** - random seeding reproduces the old numbers, k-means++ beats
+> them. Then the k-means++ rerun turned out to be scoring its codebook on a
+> sample that **straddled the train/val split**, worth another 0.75 dB.
 >
-> | | superseded | random init, now | **k-means++, now** |
-> |---|---|---|---|
-> | k-means, 240 | 25.67 dB | 25.47 | **27.53** |
-> | **k-means, 512 - the floor** | 26.39 dB | 26.59 | **29.02** |
-> | k-means, 1024 | 27.60 dB | 27.65 | **30.51** |
-> | live of 512 | 150 | 172 | **512** |
+> | | superseded | random init | k-means++, whole set | **k-means++, held out** |
+> |---|---|---|---|---|
+> | k-means, 240 | 25.67 dB | 25.47 | 27.53 | **27.09** |
+> | **k-means, 512 - the floor** | 26.39 dB | 26.59 | 29.02 | **28.27** |
+> | k-means, 1024 | 27.60 dB | 27.65 | 30.51 | **29.39** |
+> | live of 512 | 150 | 172 | 512 | **486** |
 >
-> The floor is the *best* patch-independent tokenizer, so 29.02 dB is the honest
-> one - and it is still a lower bound, since 25 Lloyd iterations may not have
-> converged. Three consequences, and they are not small:
+> **The held-out column is the one to quote.** It is fit on the 473 train
+> episodes and scored on the 27 val ones, which is the treatment a tokenizer
+> gets. The whole-set column stays because the 0.75 dB between the two *is* the
+> leak, and dropping it would leave "why did 29.02 become 28.27" unanswerable -
+> split leak or the advantage of scoring a codebook on its own patches, with no
+> way to tell them apart. Both remain lower bounds: 25 Lloyd iterations may not
+> have converged. Three consequences, and they are not small:
 >
-> - **Gate row 2's bar is `+0.98 dB`, not `+3.6`.** The conv context, the
->   attention layer and the shared decoder have to buy about a quarter of what
->   this file was written around.
-> - **A patch-independent tokenizer nearly passes Q-1, and at 1,024 codes it
->   does.** 30.51 dB clears the bar. The refutation now holds only at 512 codes
->   and only by 0.98 dB.
-> - **The Q-2 collapse evidence is gone.** All 512 centroids stay live. The
->   shrink ladder keeps its mechanism but loses its reason to be pre-emptive.
+> - **Gate row 2's bar is `+1.73 dB`, i.e. `30.0 - 28.27`** - not the `+3.6` this
+>   file was written around, and not the `+0.98` that briefly replaced it. The
+>   conv context, the attention layer and the shared decoder have to buy about
+>   half of the original figure.
+> - **"1,024 codes clear Q-1 outright" is dead.** Held out, 1,024 reaches
+>   **29.39 dB** and misses the bar. Read the useful way, that **removes the main
+>   reason to regret the fixed 512-code budget** the Phase 2 handoff imposes.
+> - **The Q-2 collapse evidence is gone.** 486 of 512 centroids stay live on
+>   held-out patches, against the 150 that started the worry. The shrink ladder
+>   keeps its mechanism but loses its reason to be pre-emptive.
 >
 > **Confirmed, unchanged:** flat receptive fields 20.28% (was 19.96%), still
 > zero void; the Q-2 ceiling 94.3% (was 94.4%); the edge-error split 99.95% of
-> error in 36.53% non-flat patches (was 99.86% / 37%) - so **the 96x96 fork's
-> evidence is untouched**. Also unchanged, being properties of the palette or
+> error in 36.53% non-flat patches (was 99.86% / 37%), and **99.98% on the val
+> split under the train-fit codebook** - so **the 96x96 fork's evidence survives
+> both refutations untouched**. Also unchanged, being properties of the palette or
 > the config rather than the trajectories: 300,000 frames, 16,200 val frames,
 > 8.294 GB at 96x96, the 1.16 / 3.49 GB preload sizes, 4,096 pixels, and the
 > **47,814** squared-error cost of a wrong pixel.
@@ -146,12 +155,15 @@ frames" first.
 
 ### The ladder - four runs, each answering one question
 
-Training is ~6 min at 15 epochs, so the sweep is an afternoon, not a week.
+**Training is 21.9 min at 15 epochs, measured, not the ~6 min this file
+predicted** - 1,313.3 s for R0, 39.5 ms/step aggregate, on a run the GPU sample
+confirms was compute-bound. Budget ~22 min per rung, so R1 and R2 at both
+resolutions is 1.5 to 2 hours, not 36 minutes.
 
 | Rung | Config | Answers |
 |---|---|---|
-| R0 | continuous bottleneck, no FSQ, no attention | the architecture's ceiling. **If R0 misses 30 dB, no levels table will help** - fix the encoder |
-| R1 | FSQ `[8,8,8]`, no attention | what quantization costs; comparable to the **29.02 dB** floor |
+| ~~R0~~ | continuous bottleneck, no FSQ, no attention | **done 2026-08-28: 31.228 dB held out**, clearing Q-1 by +1.228 and the floor by +2.958. The encoder is not the suspect. Read it as a loose upper bound - its bottleneck is 192 fp32 numbers, R1's is 64 tokens x 9 bits |
+| R1 | FSQ `[8,8,8]`, no attention | what quantization costs; comparable to the **28.27 dB** held-out floor |
 | R2 | R1 + self-attention on the 8x8 grid | what joint coding buys |
 | R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder |
 
@@ -161,26 +173,30 @@ Then R1-R3 again at 96x96, which is what turns the fork into a measurement.
 
 ## Phase 1's two risks, and the lever for each
 
-**Q-1 is a real risk, but a much narrower one than this file used to say.** A
-k-means codebook of 512 entries over real 8x8 patches reaches **29.02 dB** against
-the 30 dB bar; 1,024 entries reach **30.51** and clear it. So a tokenizer that
-looks at one patch in isolation cannot pass *at the vocabulary the plan uses*, and
-it misses by **0.98 dB** - that is what the 22x22 receptive field, the attention
-layer and a shared decoder have to buy. In physical terms, since a wrong pixel
-costs 47,814 squared error on this palette: the floor gets ~21 of 4,096 pixels
-wrong and the bar is ~17. **Cut the error count by a fifth, not by half.**
+**Q-1 is a real risk, and narrower than this file was written around but wider
+than the 2026-08-28 morning's figure said.** A k-means codebook of 512 entries
+over real 8x8 patches, fit on the train episodes and scored on the val ones,
+reaches **28.27 dB** against the 30 dB bar. At 1,024 entries it reaches
+**29.39** and still misses. So a tokenizer that looks at one patch in isolation
+cannot pass *at any vocabulary measured*, and at the one the plan uses it misses
+by **1.73 dB** - that is what the 22x22 receptive field, the attention layer and
+a shared decoder have to buy. In physical terms, since a wrong pixel costs 47,814
+squared error on this palette: the floor gets ~25 of 4,096 pixels wrong and the
+bar is ~17. **Cut the error count by a third.**
 
-The corollary is a warning, not a comfort. A margin of 0.98 dB is inside the noise
-of a training run, so **R1 landing near 29 dB says nothing** - it could be the
-tokenizer working or the floor being easy to reach. Row 2 is what separates them,
-and it is now the row that matters more than row 1.
+The corollary is a warning, not a comfort. A margin of 1.73 dB is not far outside
+the noise of a training run, so **R1 landing near 29 dB is ambiguous on its own** -
+it could be the tokenizer working or the floor being easy to reach. Row 2 is what
+separates them, and it is the row that matters more than row 1.
 
 **Q-2's risk lost its evidence on 2026-08-28, and is now a live question rather
 than a prediction.** The data does not force low entropy - only 20.28% of interior
 cells have a fully flat receptive field, so the provable ceiling is 94.3% of
 uniform, comfortably above the 70% bar. The reason to expect a collapse anyway was
-that k-means kept only 150 of 512 centroids alive; **under k-means++ all 512 stay
-live**, so that reason is gone. Nothing says Q-2 will pass either - the exact-patch
+that k-means kept only 150 of 512 centroids alive; **under k-means++ 486 of 512
+stay live on held-out patches**, so that reason is gone. Q-2 is a statement about
+a trained tokenizer's code usage rather than about k-means, so those 26 unused
+centroids do not revive it. Nothing says Q-2 will pass either - the exact-patch
 distribution still carries just 4.40 bits of the 9 available. If Q-2 misses, shrink
 the vocabulary, do not add an entropy loss - an auxiliary loss undoes the reason
 FSQ was chosen over VQ.
@@ -190,8 +206,8 @@ FSQ was chosen over VQ.
 `[8,8,8]`=512 -> `[8,6,5]`=240 -> `[5,5,5]`=125 -> `[4,4,4]`=64. **Take a step only
 when row 3 actually misses**, not pre-emptively - the measurement that used to
 argue for shrinking was an initialisation artifact. Note the cost, too: the
-k-means floor at 240 is 27.53 dB against 29.02 at 512, so shrinking the vocabulary
-spends about 1.5 dB of Q-1's headroom to buy Q-2 margin it may not need.
+held-out k-means floor at 240 is 27.09 dB against 28.27 at 512, so shrinking the
+vocabulary spends about 1.2 dB of Q-1's headroom to buy Q-2 margin it may not need.
 
 Token count never changes, so inference cost is untouched and the output head
 gets smaller. **Each step needs a paired LR check**: the straight-through

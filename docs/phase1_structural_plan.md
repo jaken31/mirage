@@ -189,7 +189,7 @@ Materialising 1.16 GB (2.62 at 96x96) on every self-check run would buy no
 coverage the val pass does not already give - it is the same code over 17x the
 frames - and the size is arithmetic. The full build is measured once and lives
 in `runs.jsonl`: **37.5 s at 64x64, 87.8 s at 96x96**, about 90 MB/s both times,
-so it is packing-bound rather than disk-bound. One-time against a ~6 min run,
+so it is packing-bound rather than disk-bound. One-time against a 22 min run,
 but the 96x96 ladder pays it per rung.
 
 ### 4. `mirage/logging.py`
@@ -246,7 +246,8 @@ maintain, and adding an auxiliary loss here undoes the reason it was picked.
 
 **5b. Encoder and decoder.** Stride 8 forces three stride-2 stages. Channels
 3 -> 64 -> 128 -> 256, then a 1x1 conv to `len(levels)` = 3. Decoder mirrors it.
-About 1.5M parameters, so R-1 is a non-issue at any batch size worth using.
+**744,966 parameters measured** (1,008,646 with attention), not the ~1.5M this
+line predicted, so R-1 is a non-issue at any batch size worth using.
 
 Three choices that are not stylistic:
 
@@ -258,8 +259,9 @@ Three choices that are not stylistic:
   matrix is 64x64 and costs nothing. It is also the only mechanism by which the
   64 codes describe the frame *jointly* rather than independently, and
   independently is measured: a k-means codebook of 512 entries over real 8x8
-  patches reaches **29.02 dB** against Q-1's 30 dB bar. The **0.98 dB** gap is what
-  context has to buy - and because that margin is inside a training run's noise,
+  patches, fit on the train episodes and scored on the val ones, reaches
+  **28.27 dB** against Q-1's 30 dB bar. The **1.73 dB** gap is what context has
+  to buy - and because that margin is not far outside a training run's noise,
   the attention layer's value shows up in gate row 2, not row 1.
 - **`GroupNorm` + `SiLU`, no residual blocks.** Residual blocks are the first
   capacity lever if rung R2 falls short, not a starting assumption.
@@ -284,7 +286,7 @@ reconstructions punishes precisely the blur that PSNR rewards, and the two
 numbers cannot both be gamed. Report them together or neither means much.
 
 **fp32, not bf16.** `ingredients.md`'s bf16 line is about the 15M-parameter
-dynamics model at context 1024, where it is necessary. Here the model is 1.5M
+dynamics model at context 1024, where it is necessary. Here the model is 745k
 parameters and activations at batch 128 are ~400 MB, so fp32 is free, and it
 removes a class of numerical doubt from the one number the whole phase turns on.
 Add autocast only if a measured step time asks for it.
@@ -299,8 +301,8 @@ to move:
 | optimizer | AdamW, `weight_decay` 1e-4 | boring default; no evidence yet that decay matters at this data-to-parameter ratio |
 | lr | 3e-4, cosine to 3e-5 | the standard small-conv-autoencoder starting point |
 | warmup | 5% linear | the bottleneck `tanh` can saturate early on a cold start; cheap insurance |
-| epochs, ladder rungs | 15 | ~6 min each, enough to *rank* architectures |
-| epochs, the winner | 60 | ~25 min, the run whose PSNR is quoted |
+| epochs, ladder rungs | 15 | **21.9 min each, measured** - the ~6 min written here was wrong by 3.6x. Enough to *rank* architectures, though R0 was still climbing at 15 |
+| epochs, the winner | 60 | **~88 min at the measured 87.6 s/epoch**, not the ~25 min written here. The run whose PSNR is quoted |
 
 **Ranking at 15 epochs assumes the ordering survives longer training.** That
 usually holds for capacity comparisons and is not guaranteed. If two rungs land
@@ -311,8 +313,8 @@ FSQ is wired in at all:
 
 | Rung | Config | Answers |
 |---|---|---|
-| R0 | continuous bottleneck, quantizer bypassed, no attention | the architecture's ceiling. **If R0 misses 30 dB, no levels table will ever help** and the encoder is what needs work |
-| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the **29.02 dB** k-means floor |
+| ~~R0~~ | continuous bottleneck, quantizer bypassed, no attention | the architecture's ceiling. **Run 2026-08-28: 31.228 dB held out**, so the encoder is not the suspect. Read it as a loose upper bound - its bottleneck is 192 fp32 numbers where R1's is 64 tokens x 9 bits, so a comfortable R0 does not promise R1 clears the bar |
+| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the **28.27 dB** held-out k-means floor |
 | R2 | R1 plus attention at 8x8 | what joint coding buys |
 | R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder - with the paired LR check below |
 
@@ -401,8 +403,8 @@ you are probably quoting a random-init run**, which reads 2.6 dB low.
 | Union of distinct byte triples, whole set | **7**, worst palette distance 0.75 | item 3's palette-index preload is lossless, 1.16 GB not 3.49 GB |
 | 8x8 patches that are one flat colour | 63.47% | most of the frame is free to reconstruct |
 | Interior cells with a fully flat 22x22 receptive field | 20.28%, all table | Q-2's provable ceiling is 94.3% of uniform, so **the data does not force Q-2 to fail** |
-| k-means, 512 centroids, real patches | **29.02 dB**, all 512 centroids live | the floor item 5 must beat by **0.98 dB**. The superseded 26.39 dB / 150-live pair came from an unrecorded random initialisation, and was the only direct evidence Q-2 was at risk |
-| same, 1024 centroids | **30.51 dB** | doubling the vocabulary clears Q-1 outright, so vocabulary *is* a lever - it is just one the token budget forbids, since codes per token is fixed at 512 by the Phase 2 handoff |
+| k-means, 512 centroids, real patches | **28.27 dB** held out, **486 of 512** centroids live | the floor item 5 must beat by **1.73 dB**. Two superseded pairs sit behind this. 26.39 dB / 150-live came from an unrecorded random initialisation and was the only direct evidence Q-2 was at risk; 29.02 dB / 512-live came from k-means++ fit *and* scored on a sample that straddled the train/val split, worth 0.75 dB |
+| same, 1024 centroids | **29.39 dB** held out | doubling the vocabulary **still misses Q-1**, so vocabulary is not a proven lever at all. Read the useful way that is good news: it removes the main reason to regret the fixed 512-code budget the Phase 2 handoff imposes. The 30.51 dB that said otherwise was in-sample |
 | Share of that error in non-flat patches | **99.95%**, in 36.53% of patches | the fork diagnostic is close to predetermined - if Q-1 misses, 96x96 is indicated |
 | Loader at ctx=0, cold / warm | 6,804 / 109,682 frames/s | against a ~13,000 need: preload, do not hope |
 | FSQ levels tables checked | `[8,8,8]` `[8,6,5]` `[5,5,5]` `[4,4,4]` | `prod(levels)` codes exactly, index bijection holds |
