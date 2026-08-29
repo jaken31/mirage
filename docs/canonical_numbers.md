@@ -131,6 +131,25 @@ These are chosen, not measured. They move only by decision.
 | `NUM-LOAD-LUT` | **7 entries** | The inverting LUT - identical at both resolutions | r30 | current |
 | `NUM-LOAD-BUILD64` | **37.5 s** | Cost of building the preload array, once per run | r30 | current |
 | `NUM-LOAD-BUILD96` | **87.8 s** | Same at 96x96 | r30 | current |
+| `NUM-LOAD-COLD` | **6,804 frames/s** | `WindowSampler(ctx=0)` from a cold page cache - **the reason `preload` exists** | r30 | current |
+| `NUM-LOAD-WARM` | **109,682 frames/s** | The same read warm. Training needs ~13,000, so the cold path misses by 2x and the warm path cannot be relied on at a 3.5 GB working set | r30 | current |
+
+## Validator thresholds - the F-9 inputs item 6 recalibrates
+
+> **These four are the ones about to move.** Build order item 6 re-runs the F-9
+> sweep against *reconstructions* rather than ground truth, and an FSQ decoder
+> emits continuous colour where the renderer emitted seven exact triples. So
+> `NUM-VAL-TAU` is expected to rise and `NUM-VAL-FALSEPOS` is expected to stop
+> reading zero. **When it lands: update these rows, add the old values to the
+> supersession table, and change `configs/base.json` - in that order.** Every doc
+> that cites the ids then follows for free.
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-VAL-TAU` | **8.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash` | r18, r23 | current, **item 6 recalibrates** |
+| `NUM-VAL-WORSTDIST` | **0.75** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero | r18, r29 | current |
+| `NUM-VAL-HEADROOM` | **11x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. The slack item 6 is about to spend on decoder artifacts | r18 | derived |
+| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition | r23 | current, **on ground truth only** |
 
 ## Tokenizer - the floor it must beat
 

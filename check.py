@@ -58,6 +58,13 @@ def check_register() -> list[str]:
     4. every `NUM-` id cited anywhere in the tree is actually defined here, which
        is what makes renaming an entry safe
 
+    Check 4 also fires on a bare *group prefix* - a group name with a trailing
+    hyphen and no entry after it, written to mean "all the rows in this group".
+    That is deliberate and was left alone after it fired for real: spelling the
+    ids out is more useful to a reader and keeps every one of them greppable. The
+    prefix form is not written literally anywhere in this file for the same
+    reason CITE scans this file too.
+
     ponytail: deliberately NOT checking that live docs are free of superseded
     values. It sounds like the obvious check and it is unimplementable without a
     per-site opt-out: measured 2026-08-29, the superseded values appear 60 times

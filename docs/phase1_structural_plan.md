@@ -99,7 +99,7 @@ reason this item goes first: it is the proof the XML stayed frozen.
 
 **Done 2026-08-28.** All 14 blobs byte-identical, `git_sha` the only sidecar
 field that moved, the fixture reproduced under the ASan build too. The full
-regeneration measured **60.2 s at 4,980 fps** - budget from that, not from the
+regeneration measured at `NUM-DATA-GENFPS` - budget from that, not from the
 45-50 s recorded earlier the same day.
 
 ### 2. `mirage/configs/base96.json` - the second dataset
@@ -115,8 +115,9 @@ of 43,200 frames and four of 42,600, because episodes are spread evenly over the
 shards rather than packed to the 50,000 ceiling. The largest 96x96 shard is
 1.19 GB. Do not derive the shard count from `frames_per_shard` - read a sidecar.
 
-Generation measured **65.8 s at 4,560 fps** on 2026-08-28 and lands **8.294 GB**
-on disk, inside R-4's 20 GB with the 64x64 set alongside it. Two earlier figures
+Generation measured at `NUM-D96-GENFPS` on 2026-08-28 and lands `NUM-D96-SIZE`
+on disk, inside **R-4** - "dataset on disk, <= 20 GB" (`NUM-BAR-R4`) - with the
+64x64 set alongside it. Two earlier figures
 for this line were wrong in opposite directions: "~45 s at 6,775 fps" came from a
 superseded throughput number, and extrapolating the measured 64x64 cost by pixel
 count predicted 1.5-2 min. **2.25x the pixels costs 9% more wall clock** - 65.8 s
@@ -138,10 +139,11 @@ script; an explicit path skips the fixture fallback on purpose, so a missing set
 fails by name instead of quietly checking 40 other frames.
 
 **One number moved, and it is the one that matters to the fork: F-7 fell from
-5.35% to 4.78%**, margin 1.6x the 3% floor against 1.8x at 64x64. That is the
+`NUM-DATA-F7` to `NUM-D96-F7`**, margin 1.6x the `NUM-BAR-F7` floor against 1.8x
+at 64x64. That is the
 resolution working as intended - a bigger frame makes total occlusion rarer - but
 it means the 144-token path buys edge fidelity and spends occlusion headroom.
-F-6 is unchanged at 16.63%, contact being a physics fact rather than a pixel one.
+F-6 is unchanged at `NUM-DATA-F6`, contact being a physics fact rather than a pixel one.
 
 ### 3. `mirage/data.py` - `preload`
 
@@ -150,9 +152,10 @@ One function. Returns a `(n, h, w)` `uint8` array of palette indices plus the
 
 Why indices and not RGB: there are exactly **7** distinct byte triples across all
 300,000 frames - measured as a union over the whole set, not a per-frame count -
-so one byte per pixel is lossless, and the train split becomes **1.16 GB instead
-of 3.49 GB**. That matters because this machine has ~4.9 GB free, and the loader
-reads **6,804 frames/s cold against 109,682 warm**. Training needs ~13,000, so
+so one byte per pixel is lossless, and the train split becomes `NUM-LOAD-TRAIN64`
+instead of 3.49 GB raw. That matters because free RAM on this machine is of the
+same order, and the loader reads `NUM-LOAD-COLD` against `NUM-LOAD-WARM`.
+Training needs ~13,000, so
 the cold case is a real failure and the page cache cannot be relied on at a 3.5
 GB working set.
 
@@ -177,7 +180,8 @@ Doc page: **NumPy -> fancy indexing, `np.take`**.
 
 **Working when:** `LUT[preload(...)]` equals a straight
 `np.array(shard.pixels[i, ::-1])` byte for byte on a few thousand random frames,
-the train array is 1.16 GB, and the same call at 96x96 returns 2.62 GB with the
+the train array is `NUM-LOAD-TRAIN64`, and the same call at 96x96 returns
+`NUM-LOAD-TRAIN96` with the
 same 7-entry LUT.
 
 **Done 2026-08-28**, all of it, every figure landing exactly as predicted -
@@ -189,7 +193,7 @@ entries shared by both. `preload` takes the palette rgb as a parameter, not from
 Materialising 1.16 GB (2.62 at 96x96) on every self-check run would buy no
 coverage the val pass does not already give - it is the same code over 17x the
 frames - and the size is arithmetic. The full build is measured once and lives
-in `runs.jsonl`: **37.5 s at 64x64, 87.8 s at 96x96**, about 90 MB/s both times,
+in `runs.jsonl`: `NUM-LOAD-BUILD64` and `NUM-LOAD-BUILD96`, about 90 MB/s both times,
 so it is packing-bound rather than disk-bound. One-time against a 22 min run,
 but the 96x96 ladder pays it per rung.
 
@@ -261,12 +265,12 @@ Three choices that are not stylistic:
   64 codes describe the frame *jointly* rather than independently, and
   independently is measured: a k-means codebook of 512 entries over real 8x8
   patches, fit on the train episodes and scored on the val ones, reaches
-  **28.27 dB** against Q-1's 30 dB bar. The **1.73 dB** gap is what context has
+  `NUM-TOK-FLOOR512` against `NUM-BAR-Q1`. The `NUM-BAR-ROW2` gap is what context has
   to buy. **The prediction that followed - that the attention layer's value
   shows up in gate row 2 and not row 1 - was refuted on 2026-08-29, twice
   over.** It could not show up in row 2 either, because the eval charges row 2
   against the recorded floor rather than refitting, making it row 1 minus a
-  constant. And attention buys only **+0.087 dB at convergence** for +263,680
+  constant. And attention buys only `NUM-TOK-ATTN` at convergence for `NUM-TOK-ATTNPARAM`
   parameters, about a sixth of this file's own "within ~0.5 dB means tied"
   threshold. Where it does show up is **row 3**: +3.5 pp of token entropy, by
   decorrelating the three FSQ digits. The reasoning about *why* it was worth
@@ -287,11 +291,11 @@ monotone function of MSE, so the loss *is* the gate.
 
 The alternative was checked and it loses: per-pixel 7-way cross-entropy gives
 hard edges, but on this palette the mean squared distance between two distinct
-entries is **47,814**, so classification needs ~99.6% pixel accuracy to clear
+entries is `NUM-TOK-PIXELCOST`, so classification needs ~99.6% pixel accuracy to clear
 30 dB while regression can hedge with a blend.
 
 MSE's hedging is a real hole: it rewards blurring edges, and edges are where
-**99.95%** of the error lives. The counterweight is item 6 - `offpalette_px` on
+`NUM-TOK-EDGESHARE` of the error lives. The counterweight is item 6 - `offpalette_px` on
 reconstructions punishes precisely the blur that PSNR rewards, and the two
 numbers cannot both be gamed. Report them together or neither means much.
 
@@ -312,7 +316,7 @@ to move:
 | lr | 3e-4, cosine to 3e-5 | the standard small-conv-autoencoder starting point |
 | warmup | 5% linear | the bottleneck `tanh` can saturate early on a cold start; cheap insurance |
 | epochs, ladder rungs | 15 | **21.9 min each, measured** - the ~6 min written here was wrong by 3.6x. Enough to *rank* architectures, though R0 was still climbing at 15 |
-| epochs, the winner | 60 | **~88 min at the measured 87.6 s/epoch**, not the ~25 min written here. The run whose PSNR is quoted |
+| epochs, the winner | 60 | **60 x `NUM-TOK-EPOCH64`**, not the ~25 min written here. The run whose PSNR is quoted |
 
 **Ranking at 15 epochs assumes the ordering survives longer training.** That
 usually holds for capacity comparisons and is not guaranteed. If two rungs land
@@ -323,8 +327,8 @@ FSQ is wired in at all:
 
 | Rung | Config | Answers |
 |---|---|---|
-| ~~R0~~ | continuous bottleneck, quantizer bypassed, no attention | the architecture's ceiling. **Run 2026-08-28: 31.228 dB held out**, so the encoder is not the suspect. Read it as a loose upper bound - its bottleneck is 192 fp32 numbers where R1's is 64 tokens x 9 bits, so a comfortable R0 does not promise R1 clears the bar |
-| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the **28.27 dB** held-out k-means floor |
+| ~~R0~~ | continuous bottleneck, quantizer bypassed, no attention | the architecture's ceiling. **Run 2026-08-28: `NUM-TOK-R0` held out**, so the encoder is not the suspect. Read it as a loose upper bound - its bottleneck is 192 fp32 numbers where R1's is 64 tokens x 9 bits, so a comfortable R0 does not promise R1 clears the bar |
+| R1 | FSQ `[8,8,8]`, no attention | what quantization costs, and it is directly comparable to the `NUM-TOK-FLOOR512` held-out k-means floor |
 | R2 | R1 plus attention at 8x8 | what joint coding buys |
 | R3 | only if R2 falls short | residual blocks, wider channels, or the levels ladder - with the paired LR check below |
 
@@ -367,8 +371,21 @@ The one Phase 0 item left open, and it is not a chore. It is the counterweight t
 `validator.sweep(frames, metas, palette, tau)` needs no change: pass the
 **reconstructed** frames with the **original** metas, because ground truth came
 from the simulator and is still true. What changes is the expected magnitude -
-`offpalette_px` reads 0 on every ground-truth frame at tau 8, and an FSQ decoder
-emits continuous colour, so it will not read 0 here.
+`offpalette_px` reads `NUM-VAL-FALSEPOS` on every *ground-truth* frame at
+`NUM-VAL-TAU`, and an FSQ decoder emits continuous colour, so it will not read
+zero here. The slack you are spending is `NUM-VAL-HEADROOM`, tau over the worst
+distance any real pixel sits from its palette entry (`NUM-VAL-WORSTDIST`).
+
+**When the sweep lands, write the result in this order.** First the four register
+rows it moves - `NUM-VAL-TAU`, `NUM-VAL-FALSEPOS`, `NUM-VAL-HEADROOM`,
+`NUM-VAL-WORSTDIST`. Then their *old* values into the supersession table at the
+bottom of the same file, with one line on what moved them. Only then
+`configs/base.json`, which is what actually changes `validator_hash`.
+
+Every doc citing those ids follows for free, and `python check.py` will tell you
+if one no longer resolves. Write a new number into a doc instead and you have
+started a fourth copy of a figure that just moved, which is the failure the
+register exists to stop.
 
 **Do not apply F-2 to reconstructions.** The 24-colour bar is a statement about
 the renderer. A healthy decoder emits hundreds of colours and F-2 would fail it.
@@ -396,7 +413,7 @@ unchanged.
 | `ConvTranspose2d` in the decoder | Checkerboard artifacts read as edge error | Sends the project to 96x96 for a week on a false diagnosis |
 | F-2 applied to reconstructions | A healthy decoder fails a renderer check | `n_unique_colors` reads in the hundreds. Mode 1 only |
 | Adding an entropy or commitment loss to FSQ | Undoes the reason FSQ was chosen over VQ | Q-2 improves and you can no longer tell whether the codebook would have collapsed. If Q-2 misses, shrink the vocabulary instead |
-| A page cache assumption | Training runs 16x slower than the probe promised | Cold 6,804 frames/s vs warm 109,682. This is why item 3 exists |
+| A page cache assumption | Training runs 16x slower than the probe promised | `NUM-LOAD-COLD` vs `NUM-LOAD-WARM`. This is why item 3 exists |
 | Two runs writing one token-cache directory | Phase 2 trains on a mixture of two tokenizers | The manifest's `tokenizer_hash` disagrees with the checkpoint's. Name the directory by run id |
 
 ---
@@ -410,19 +427,19 @@ you are probably quoting a random-init run**, which reads 2.6 dB low.
 
 | Measure | Number | What it settles |
 |---|---|---|
-| Union of distinct byte triples, whole set | **7**, worst palette distance 0.75 | item 3's palette-index preload is lossless, 1.16 GB not 3.49 GB |
-| 8x8 patches that are one flat colour | 63.47% | most of the frame is free to reconstruct |
-| Interior cells with a fully flat 22x22 receptive field | 20.28%, all table | Q-2's provable ceiling is 94.3% of uniform, so **the data does not force Q-2 to fail** |
-| k-means, 512 centroids, real patches | **28.27 dB** held out, **486 of 512** centroids live | the floor item 5 must beat by **1.73 dB**. Two superseded pairs sit behind this. 26.39 dB / 150-live came from an unrecorded random initialisation and was the only direct evidence Q-2 was at risk; 29.02 dB / 512-live came from k-means++ fit *and* scored on a sample that straddled the train/val split, worth 0.75 dB |
-| same, 1024 centroids | **29.39 dB** held out | doubling the vocabulary **still misses Q-1**, so vocabulary is not a proven lever at all. Read the useful way that is good news: it removes the main reason to regret the fixed 512-code budget the Phase 2 handoff imposes. The 30.51 dB that said otherwise was in-sample |
-| Share of that error in non-flat patches | **99.95%**, in 36.53% of patches | the fork diagnostic is close to predetermined - if Q-1 misses, 96x96 is indicated |
-| Loader at ctx=0, cold / warm | 6,804 / 109,682 frames/s | against a ~13,000 need: preload, do not hope |
+| Union of distinct byte triples, whole set | `NUM-DATA-COLOURS`, worst palette distance `NUM-VAL-WORSTDIST` | item 3's palette-index preload is lossless, `NUM-LOAD-TRAIN64` not 3.49 GB raw |
+| 8x8 patches that are one flat colour | **63.47%** - `runs.jsonl` row 27, the complement of the non-flat share in `NUM-TOK-EDGESHARE`. **Not the same statistic as `NUM-TOK-FLAT`**, which counts 22x22 receptive fields and is far smaller | most of the frame is free to reconstruct |
+| Interior cells with a fully flat 22x22 receptive field | `NUM-TOK-FLAT`, all table | Q-2's provable ceiling is `NUM-TOK-Q2CEIL` of uniform, so **the data does not force Q-2 to fail** |
+| k-means, 512 centroids, real patches | `NUM-TOK-FLOOR512` held out, `NUM-TOK-LIVE512` centroids live | the floor item 5 must beat by `NUM-BAR-ROW2`. **Two superseded pairs sit behind this** and both chains are in `canonical_numbers.md` - the earlier one came from an unrecorded random initialisation and was the only direct evidence Q-2 was at risk; the later from k-means++ fit *and* scored on a sample straddling the train/val split, worth `NUM-TOK-LEAK` |
+| same, 1024 centroids | `NUM-TOK-FLOOR1024` held out | doubling the vocabulary **still misses Q-1**, so vocabulary is not a proven lever at all. Read the useful way that is good news: it removes the main reason to regret the fixed 512-code budget the Phase 2 handoff imposes. The in-sample figure that said otherwise is in the chain |
+| Share of that error in non-flat patches | `NUM-TOK-EDGESHARE` | the fork diagnostic is close to predetermined - if Q-1 misses, 96x96 is indicated |
+| Loader at ctx=0, cold / warm | `NUM-LOAD-COLD` / `NUM-LOAD-WARM` | against a ~13,000 need: preload, do not hope |
 | FSQ levels tables checked | `[8,8,8]` `[8,6,5]` `[5,5,5]` `[4,4,4]` | `prod(levels)` codes exactly, index bijection holds |
 
-Restating Q-1 in something physical, since a wrong pixel costs 47,814 squared
-error on this palette: **30 dB is about 17 of 4,096 pixels completely wrong**,
-35 dB is 5.3, and the k-means floor is 38.4. Phase 1's task is to halve the count
-a dumb dictionary produces.
+Restating Q-1 in something physical, since a wrong pixel costs `NUM-TOK-PIXELCOST`
+of squared error on this palette: **`NUM-BAR-Q1` is about 17 of a frame's 4,096
+pixels completely wrong**, `NUM-BAR-Q1B` is 5.3, and the k-means floor is 38.4.
+Phase 1's task is to halve the count a dumb dictionary produces.
 
 Record the GPU power state next to every timing. A timing without it is not a
 number.
