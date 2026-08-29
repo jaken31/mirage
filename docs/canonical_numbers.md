@@ -147,7 +147,7 @@ These are chosen, not measured. They move only by decision.
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
 | `NUM-VAL-TAU` | **8.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash` | r18, r23 | current, **item 6 recalibrates** |
-| `NUM-VAL-WORSTDIST` | **0.75** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero | r18, r29 | current |
+| `NUM-VAL-WORSTDIST` | **0.75 RGB units** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero. **Digit collision: `NUM-TOK-LEAK` is also 0.75 and is dB of PSNR, not colour distance.** It has already caused one misreading - see `mathematics_notes.md` section 1 | r18, r29 | current |
 | `NUM-VAL-HEADROOM` | **11x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. The slack item 6 is about to spend on decoder artifacts | r18 | derived |
 | `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition | r23 | current, **on ground truth only** |
 
@@ -159,7 +159,7 @@ These are chosen, not measured. They move only by decision.
 | `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first Q-2 shrink step | r33 | current |
 | `NUM-TOK-FLOOR1024` | **29.39 dB** | Same, 1024 codes - **still misses `NUM-BAR-Q1`** | r33 | current |
 | `NUM-TOK-LIVE512` | **486 of 512** | Centroids alive on held-out patches | r33 | current |
-| `NUM-TOK-LEAK` | **0.75 dB** | Whole-set floor minus held-out floor - the split leak | r33 | current |
+| `NUM-TOK-LEAK` | **0.75 dB** | Whole-set floor minus held-out floor - the split leak. **Digit collision: `NUM-VAL-WORSTDIST` is also 0.75 and is RGB colour distance, not dB.** Unrelated quantities, no shared derivation - check the unit before quoting either | r33 | current |
 | `NUM-TOK-FLAT` | **20.28%** | Interior cells whose 22x22 receptive field is one flat colour | r27 | current |
 | `NUM-TOK-Q2CEIL` | **94.25%** | Provable ceiling on token entropy. Docs rounding to 94.3% are not wrong, but quote this | r27 | current |
 | `NUM-TOK-EDGESHARE` | **99.95%** | Share of the floor's squared error in the **36.53%** of patches that are not flat | r27 | current |

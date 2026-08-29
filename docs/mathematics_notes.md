@@ -90,17 +90,20 @@ output that emits thousands, just slower.
 Draw a sphere of radius `tau` around each palette point. A pixel inside some
 sphere is legal; outside all of them, it counts toward `offpalette_px`.
 
-`offpalette_tau` lives in `mirage/configs/base.json` (**unregistered**; it is a
-config value, and the register's `CALC` convention covers reading it from there).
-Its current setting was chosen against ground-truth frames, where the worst
-distance any rendered pixel sits from its own palette entry is 0.75 RGB units
-(**unregistered**, `python -m mirage.validator`).
+`offpalette_tau` lives in `mirage/configs/base.json` and is now registered as
+`NUM-VAL-TAU`. Its current setting was chosen against ground-truth frames, where
+the worst distance any rendered pixel sits from its own palette entry is
+`NUM-VAL-WORSTDIST`. The ratio between them, `NUM-VAL-HEADROOM`, is the slack
+available. **All three move when build order item 6 lands**: it re-runs the F-9
+sweep against reconstructions rather than ground truth, so expect tau to rise and
+`NUM-VAL-FALSEPOS` to stop reading zero.
 
-> **Digit collision, and it has already caused one misreading.** That 0.75 is
-> **RGB units of colour distance**. `NUM-TOK-LEAK` is also 0.75, but it is **dB
-> of PSNR** and describes the k-means train/val split leak in section 7. The two
-> quantities are unrelated and share no derivation. Check the unit before
-> quoting either.
+> **Digit collision, and it has already caused one misreading.**
+> `NUM-VAL-WORSTDIST` is **RGB units of colour distance**. `NUM-TOK-LEAK` carries
+> the same digits but is **dB of PSNR**, and describes the k-means train/val
+> split leak in section 7. The two are unrelated and share no derivation. Check
+> the unit before quoting either - the register now carries this warning on both
+> rows, which is the only place someone looking up one would see the other.
 
 Recomputation, from `tau` as configured today:
 
@@ -126,8 +129,8 @@ flawless frame, and the validator reports block0, block2, link1 and table as
 missing. (All **unregistered**, `mirage/validator.py` docstring.)
 
 This is also why `Palette.rgb` stays unrounded float 0..255. Measured against
-229.5 rather than 230, the worst rendered pixel distance is the 0.75 RGB units
-above. Rounding the palette doubles that for no gain.
+229.5 rather than 230, the worst rendered pixel distance is `NUM-VAL-WORSTDIST`.
+Rounding the palette doubles that for no gain.
 
 ---
 
@@ -500,8 +503,8 @@ and should not become one.
 
 | Figure | Also appears in | Verified by |
 |---|---|---|
-| worst render-rounding palette distance, 0.75 **RGB units** | `AGENDA.md` item 6 | `python -m mirage.validator` |
-| `offpalette_tau` current setting | `AGENDA.md` item 6 | `mirage/configs/base.json`, `CALC` |
+| ~~worst render-rounding palette distance~~ | **registered 2026-08-29 as `NUM-VAL-WORSTDIST`** | `python -m mirage.validator` |
+| ~~`offpalette_tau` current setting~~ | **registered 2026-08-29 as `NUM-VAL-TAU`** | `mirage/configs/base.json`, `CALC` |
 | STE derivatives at zero, three levels tables | `AGENDA.md` shrink ladder | `FSQ._self_check` |
 | classification needs ~99.6% pixel accuracy | `docs/phase1_structural_plan.md` | palette arithmetic on `NUM-TOK-PIXELCOST` |
 | channel redundancy, 1.339 to 0.781 bits | this file only | `mirage/fsq_eval.py`, `entropy_split` |
@@ -509,9 +512,11 @@ and should not become one.
 | ~578 off-palette px without the void entry | this file only | `mirage/validator.py` docstring |
 | the (229, 191, 25) render rounding example | this file only | same |
 
-The top four have reached a second live doc and qualify for an entry today. The
-bottom four have not, and adding them now would be the duplication the register
-exists to prevent.
+Two of the top four were registered on 2026-08-29, as part of the item 6
+preparation - they are struck above rather than deleted, so the reason they were
+flagged stays legible. **The two that remain still qualify** and are the standing
+recommendation to the register owner. The bottom four do not, and adding them
+would be the duplication the register exists to prevent.
 
 ### One figure here is arithmetic, not measurement
 
