@@ -244,6 +244,101 @@ def entropy_split(counts: list[int], levels: list[int]) -> dict:
             "redundancy_bits": sum(per) - joint, "zero_count_codes": int((c == 0).sum())}
 
 
+# ------------------------------------- row 6. F-9 against reconstructions
+
+@torch.no_grad()
+def reconstruct(model: nn.Module, idx: np.ndarray, lut: torch.Tensor,
+                rows: np.ndarray, batch: int = 256) -> np.ndarray:
+    """`rows` of `idx`, round-tripped through the tokenizer, as the validator
+    wants them: `(n, h, w, 3)` uint8, channel axis last.
+
+    Rounded and clamped before it leaves, because uint8 is what the pipeline
+    actually delivers and `measure_pixels_only` refuses anything else. Measuring
+    the float output would calibrate a validator that never runs - and it would
+    calibrate it optimistically, since rounding is itself a source of colours
+    that sit off the palette.
+    """
+    out = []
+    for i in range(0, len(rows), batch):
+        x8 = _batch(idx, lut, rows[i:i + batch])
+        y8 = (model(x8 / PEAK) * PEAK).round().clamp(0, PEAK)
+        out.append(y8.byte().permute(0, 2, 3, 1).cpu().numpy())
+    return np.concatenate(out)
+
+
+def reconstruction_sweep(model: nn.Module, cfg: config.Config, shards, index,
+                         palette: validator.Palette, val_idx: np.ndarray,
+                         lut: torch.Tensor, tau: float, sample: int | None = None,
+                         seed: int = 0, batch: int = 256
+                         ) -> tuple[validator.Sweep, validator.Sweep]:
+    """(reconstruction sweep, ground-truth sweep) over the same val rows.
+
+    Gate row 6, and the measurement build order item 6 calibrates against. F-9
+    was accepted at zero false positives on *renders*; every threshold it fixed
+    therefore describes a frame with exactly seven colours in it. What Q-3
+    actually counts is frames out of the decoder, which softens every edge into
+    colours no palette entry names, so the thresholds have to be re-derived
+    against those or the coherence horizon reads zero on frame one forever.
+
+    Both sweeps run on the same rows and the same truth. The ground-truth half
+    is not decoration:
+
+      * it is the **alignment check**. `val_idx` and the meta come from two
+        different functions, and a misalignment would silently pair frame i's
+        pixels with frame j's truth - both arrays would still have the right
+        length and dtype, and every number below would be wrong and plausible.
+        Ground truth run through the same path has to reproduce F-9's known
+        result; when it does, the rows line up.
+      * it is the **baseline**. A reconstruction number means nothing on its
+        own - the question item 6 asks is how much worse than a render the
+        decoder is, and that is a difference, not a value.
+
+    Held-out rows on purpose: the val split, the same frames row 1's PSNR is
+    quoted over. A threshold calibrated on frames the tokenizer trained on
+    would be tuned to reconstructions that are better than any it will meet.
+    """
+    metas = data.split_meta(shards, index, "val", cfg.data["val_fraction"])
+    assert len(metas) == len(val_idx), (
+        f"{len(val_idx)} val frames against {len(metas)} val meta records - "
+        f"preload and split_meta disagree about the split"
+    )
+
+    # The whole val split by default, and not a sample, because the threshold
+    # this feeds is a **maximum**. A max over 2,000 frames is systematically
+    # smaller than one over 16,200, so a subsampled gate is a strictly easier
+    # gate than the calibration that set the number - it would pass here and
+    # fail on the full split, which is the worst way for a threshold to be wrong.
+    if sample is None:
+        rows = np.arange(len(val_idx))
+    else:
+        rng = np.random.default_rng(seed)
+        rows = np.sort(rng.choice(len(val_idx), size=min(sample, len(val_idx)),
+                                  replace=False))
+
+    lut_np = lut.round().clamp(0, PEAK).byte().cpu().numpy()
+    truth = lut_np[val_idx[rows]]
+    recon = reconstruct(model, val_idx, lut, rows, batch=batch)
+    assert recon.shape == truth.shape, f"{recon.shape} decoded against {truth.shape} truth"
+
+    r = validator.sweep(recon, metas[rows], palette, tau)
+    g = validator.sweep(truth, metas[rows], palette, tau)
+
+    # The alignment check, and the only one that can catch a silent row shift.
+    # These two are F-9's *known* ground-truth results - zero off-palette pixels,
+    # and a worst distance of 0.75 that is render rounding and nothing else. Truth
+    # pushed through this exact path has to reproduce them. If it does not, the
+    # frames and the meta are not the same rows, and every reconstruction number
+    # above is attributing one frame's pixels to another frame's truth.
+    assert g.offpalette_px_max == 0, (
+        f"{g.offpalette_px_max} off-palette px on ground truth at tau {tau} - "
+        f"F-9 says this is 0, so the frames and meta are misaligned or the palette moved"
+    )
+    assert g.max_palette_dist < 1.0, (
+        f"ground truth sits {g.max_palette_dist:.2f} from the palette, expected 0.75"
+    )
+    return r, g
+
+
 def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict:
     """The eight-row gate table for one run. Rows 1-5 are pass/fail here.
 
@@ -259,8 +354,13 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     underneath the floor, and `load_run` already refuses a `data_hash` mismatch
     loudly. `bench/patch_probe.py` remains the one place k-means lives.
 
-    Row 6 (the F-9 sweep against reconstructions) is **build order item 6**, not
-    this one, and is reported as deferred rather than silently omitted.
+    Row 6 runs the F-9 sweep against decoder output, using the thresholds build
+    order item 6 calibrated into `validator.offpalette_tau` and
+    `validator.offpalette_px_max`. It is a **regression check, not a
+    calibration**: the numbers were fixed once, against the R2 rung on the whole
+    held-out split, and re-deriving them per run would move `validator_hash` and
+    make two runs' Q-3 horizons incomparable. A later rung that cannot meet them
+    is telling you its decoder is worse, which is the point.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, knobs = load_run(run_id, cfg, dev)
@@ -283,6 +383,10 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
 
     db, _ = reconstruction_psnr(model, val_idx, lut)
     flat_db, edge_db, edge_share = edge_flat_psnr(model, val_idx, lut, patch)
+
+    tau = cfg.validator["offpalette_tau"]
+    px_max = cfg.validator["offpalette_px_max"]
+    r6, g6 = reconstruction_sweep(model, cfg, shards, index, palette, val_idx, lut, tau)
 
     # Row 5: re-encode shard 0 and compare its sha256 to the manifest. One shard
     # is the same property as seven and costs a seventh of the time.
@@ -318,8 +422,9 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
         (5, "Re-encode shard 0 from the checkpoint twice",
          "identical" if redo == man["shards"][0]["sha256"] else "DIFFERS",
          "bit-identical", redo == man["shards"][0]["sha256"]),
-        (6, "F-9 sweep against reconstructions", "deferred to build order item 6",
-         "zero false positives", None),
+        (6, f"F-9 sweep against reconstructions, tau {tau}",
+         f"{r6.offpalette_px_max} off-palette px worst frame, dist {r6.max_palette_dist:.1f}",
+         f"<= {px_max} px", r6.offpalette_px_max <= px_max),
         (7, "Edge-pixel PSNR vs flat-pixel PSNR",
          f"edge {edge_db:.3f} dB, flat {flat_db:.3f} dB, {edge_share:.2%} of error at edges",
          "reported", None),
@@ -334,6 +439,17 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     for n, name, value, bar, ok in rows:
         verdict = "-" if ok is None else ("PASS" if ok else "FAIL")
         print(f"{n:>2}  {name:<52} {value:<44} {bar:<16} {verdict}")
+
+    # Row 6 next to the renders it was originally calibrated on. Printed rather
+    # than left in the return value because the gap *is* the result: F-9's
+    # thresholds were set where the right-hand column sits, and item 6 exists
+    # because the left-hand column is where the validator actually has to work.
+    print()
+    print(f"    row 6 against ground truth on the same {r6.frames:,} rows: "
+          f"{g6.offpalette_px_max} off-palette px, worst dist {g6.max_palette_dist:.2f}, "
+          f"{g6.n_unique_max} unique colours")
+    print(f"    the decoder costs {r6.max_palette_dist / g6.max_palette_dist:.0f}x the palette "
+          f"distance and {r6.n_unique_max} unique colours, which is why tau moved")
 
     es = entropy_split(man["counts"], knobs["levels"])
     uniform = math.log2(man["codebook_size"])
@@ -350,6 +466,8 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     out = {"run_id": run_id, "val_psnr_db": db, "edge_psnr_db": edge_db,
            "flat_psnr_db": flat_db, "edge_error_share": edge_share,
            "entropy_ratio": man["entropy_ratio"], "live_codes": man["live_codes"],
+           "offpalette_px_max": r6.offpalette_px_max, "offpalette_tau": tau,
+           "recon_palette_dist": r6.max_palette_dist,
            "gap_db": result["gap_db"], "entropy_split": es, "failed_rows": failed}
     print("\nall pass/fail rows pass" if not failed else f"\nFAILED rows: {failed}")
     return out

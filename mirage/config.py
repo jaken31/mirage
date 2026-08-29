@@ -11,7 +11,7 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
                       "reach_done_dist"]),
     "data": frozenset(["shard_dir", "ctx", "val_fraction"]),
     "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
-                            "offpalette_tau"]),
+                            "offpalette_tau", "offpalette_px_max"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers"]),
     "engine": frozenset(),
@@ -25,6 +25,15 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
     "data": frozenset(["ctx"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers"]),
+}
+
+# Pixel counts used as verdict thresholds. Non-negative rather than positive:
+# zero is the *ground-truth* F-9 verdict - "any off-palette pixel at all is a
+# fault" - and stayed reachable on renders for the whole of Phase 0. It is only
+# on decoder output that it becomes unreachable, and a config schema that cannot
+# express the Phase 0 setting would make the two eras incomparable for no reason.
+NON_NEGATIVE_INT_KEYS: dict[str, frozenset[str]] = {
+    "validator": frozenset(["offpalette_px_max"]),
 }
 
 # Rates and splits, all of which must lie in [0, 1).
@@ -90,6 +99,12 @@ def _check_values(raw: dict[str, Any]) -> None:
             value = raw[section][key]
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{section}.{key} must be a positive int, got {value!r}")
+
+    for section, keys in NON_NEGATIVE_INT_KEYS.items():
+        for key in sorted(keys):
+            value = raw[section][key]
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{section}.{key} must be a non-negative int, got {value!r}")
 
     for section, keys in POSITIVE_FLOAT_KEYS.items():
         for key in sorted(keys):
@@ -267,6 +282,9 @@ def _self_check() -> None:
         ("sim", "reach_digit_noise_prob", 1.0, "[0, 1)"),
         ("sim", "jacobian_deadband", 0.0, "positive float"),
         ("validator", "offpalette_tau", 0.0, "positive float"),
+        ("validator", "offpalette_px_max", -1, "non-negative int"),
+        ("validator", "offpalette_px_max", 12.5, "non-negative int"),
+        ("validator", "offpalette_px_max", True, "non-negative int"),
         ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),

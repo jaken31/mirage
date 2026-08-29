@@ -20,7 +20,8 @@
     "validator": {
         "contact_rate_min": 0.05,
         "recoverable_occlusion_rate_min": 0.03,
-        "offpalette_tau": 8.0
+        "offpalette_tau": 32.0,
+        "offpalette_px_max": 788
     },
     "tokenizer": {
         "codebook_size": 512,

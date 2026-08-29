@@ -221,9 +221,26 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Meas
     would win silently while `validator_hash` - which is a hash over the
     `validator` config section - kept reporting the config's value. Two Q-3
     coherence-horizon rows taken at different taus would then carry the same
-    hash and claim to be comparable. `sweep` is what calibrates the value; the
-    current 8.0 sits an order of magnitude above the 0.75 that render rounding
-    costs on ground truth, and far below any real violation.
+    hash and claim to be comparable. `sweep` is what calibrates the value, and
+    build order item 6 calibrated the current **32.0 against decoder output**,
+    which is a different regime from the renders this function was written for:
+
+      * a rendered pixel sits at most 0.75 from its palette entry; a tokenizer
+        reconstruction's worst pixel sits ~155 away, and the median frame's
+        worst sits at 115. There is no tau that both keeps the ball tight and
+        reaches zero off-palette pixels on decoder output.
+      * so the verdict on reconstructions is `offpalette_px > offpalette_px_max`
+        rather than `> 0`. **100% of clean reconstructions carry off-palette
+        pixels** at every tau below 96, so a `> 0` verdict fires on every frame
+        and Q-3's coherence horizon reads zero forever.
+      * 32.0 is not a compromise between the two, it is the measured optimum:
+        at a threshold pinned to the clean maximum (zero false positives by
+        construction), detection of a blended-futures frame runs 23% at tau 8,
+        87% at tau 32, and the noise case collapses to 0.3% by tau 64.
+
+    Ground truth is unaffected - at 0.75 it clears any of these taus - so
+    `_self_check` still asserts the strict `offpalette_px_max == 0` for renders.
+    The full table is in the verification log.
     """
     if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
         raise ValueError(f"frame must be (h, w, 3) uint8, got {frame.shape} {frame.dtype}")
@@ -431,8 +448,11 @@ def _self_check(config_path: Path | str | None = None) -> None:
     if result.px_count_margin == 0:
         print(f"  -> px_count is NOT usable as a per-frame threshold: a visible block reaches "
               f"{result.min_visible_px} px, margin {result.px_count_margin}. Occlusion, not a bug")
-    print(f"  -> viable verdict today: offpalette_px > {result.offpalette_px_max} at tau "
+    print(f"  -> viable verdict on renders: offpalette_px > {result.offpalette_px_max} at tau "
           f"{result.tau} ({result.tau / max(result.max_palette_dist, 1e-9):.0f}x the render-rounding floor)")
+    print(f"  -> on decoder output the same verdict is offpalette_px > "
+          f"{cfg.validator['offpalette_px_max']}, which is gate row 6 and not this check - "
+          f"see fsq_eval.reconstruction_sweep")
 
     # The claim underneath mode 2: a pixel-only count tracks the segmentation
     # count. Under offsamples=0 there is no anti-aliasing, so these should agree

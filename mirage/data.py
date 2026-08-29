@@ -339,6 +339,37 @@ class WindowSampler:
 FIXTURE_CONFIG = Path(__file__).resolve().parent / "fixtures" / "fixture.json"
 
 
+def split_episodes(index: Sequence[Episode], split: str,
+                   val_fraction: float) -> list[Episode]:
+    """One split's episodes, in index order - the row order of everything below.
+
+    Factored out because `preload` and `split_meta` have to agree on it exactly.
+    They return two halves of the same rows, pixels and truth, and the caller
+    zips them; selecting or ordering differently would attribute every truth
+    field to the wrong frame while both arrays kept the right length and the
+    right dtype, so nothing would raise. One predicate, one iteration order,
+    one function.
+    """
+    if split not in ("train", "val"):
+        raise ValueError(f"split is {split!r}, expected 'train' or 'val'")
+    want_val = split == "val"
+    return [e for e in index if is_val(e.episode_id, val_fraction) == want_val]
+
+
+def split_meta(shards: Sequence[Shard], index: Sequence[Episode], split: str,
+               val_fraction: float) -> np.ndarray:
+    """The meta records `preload` drops, same split, same rows, same order.
+
+    `preload` returns pixels alone, which is all training needs. The F-9 sweep
+    needs the truth beside the pixels, and rebuilding that half here beats
+    widening `preload`'s return: that call sits in the training loop where the
+    meta is dead weight, and this one runs once per calibration.
+    """
+    episodes = split_episodes(index, split, val_fraction)
+    return np.concatenate([np.asarray(shards[e.shard].meta[e.start:e.start + e.length])
+                           for e in episodes])
+
+
 def preload(
     shards: Sequence[Shard],
     index: Sequence[Episode],
@@ -369,11 +400,7 @@ def preload(
     flawless frame. Two entries claiming one triple would make the LUT
     non-invertible, so that is checked too.
     """
-    if split not in ("train", "val"):
-        raise ValueError(f"split is {split!r}, expected 'train' or 'val'")
-
-    want_val = split == "val"
-    episodes = [e for e in index if is_val(e.episode_id, val_fraction) == want_val]
+    episodes = split_episodes(index, split, val_fraction)
     n = sum(e.length for e in episodes)
     h = int(shards[0].sidecar["height"])
     w = int(shards[0].sidecar["width"])
