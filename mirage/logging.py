@@ -8,7 +8,8 @@ file must not touch. The third is W&B, which is a viewer over this one.
 jsonl stays the source of truth, so the history survives independently of any
 account, and F-17's ladder table is a jsonl-to-markdown script rather than a
 screenshot. W&B is a flag, never a dependency: the whole module imports and runs
-with `wandb` absent from the environment, which is how it is verified.
+with `wandb` absent from the environment; the mirror itself is verified
+offline against 0.29.0 by the self-check.
 
 Every record carries the run id and whatever hashes the caller names, so E-4
 ("reproducible from a config hash") and E-5 hold by construction rather than by
@@ -23,6 +24,7 @@ bench loop records into a preallocated array and writes afterwards.
         run.log({"step": step, "loss": float(loss)})
 """
 
+import os
 import json
 import subprocess
 import time
@@ -119,9 +121,12 @@ class Run:
         # top-level `import wandb` would make an optional viewer a hard
         # dependency of every training run.
         #
-        # UNVERIFIED. wandb is absent from this environment, which is the
-        # condition the rest of this file is verified against, so this branch
-        # has never executed. Do not write it up as working.
+        # Verified 2026-08-29 against wandb 0.29.0 by the offline branch of
+        # `_self_check`: this init, three `log` calls and `finish` all run, and
+        # the jsonl path is unaffected. **Upload and auth are still unverified** -
+        # offline never contacts the server - so a first networked run can still
+        # fail on credentials. It would fail here, at init, before step 0, which
+        # is the cheap place to fail a multi-hour run.
         self._wandb = None
         if wandb_project is not None:
             import wandb  # noqa: PLC0415
@@ -241,7 +246,46 @@ def _self_check() -> None:
         assert on_disk == got, "the coerced return value differs from the line on disk"
         print("coercion: numpy scalar, numpy array, Path and an opaque object all survive")
 
-    print("logging self-check ok (W&B mirror NOT exercised - wandb is absent)")
+    # The W&B mirror, exercised end to end in **offline** mode. Offline is not a
+    # weaker check of the thing that was actually at risk: the risk was never the
+    # network, it was that `wandb.init(...)`/`Settings(x_disable_stats=...)` might
+    # not match the installed version's signature and would blow up at run start,
+    # killing a multi-hour training run at minute zero. Offline runs the same
+    # constructor and the same `log`/`finish` calls against a local directory.
+    # What offline does NOT check is upload, auth, or the server-side view.
+    try:
+        import wandb  # noqa: PLC0415
+    except ImportError:
+        print("W&B mirror NOT exercised - wandb is absent from this environment")
+    else:
+        prev = os.environ.get("WANDB_MODE")
+        os.environ["WANDB_MODE"] = "offline"
+        try:
+            # ignore_cleanup_errors, and not by preference: on Windows wandb
+            # still holds `wandb/offline-run-*/logs/debug-internal.log` open
+            # after `finish()` returns, so the rmtree raises WinError 32 and
+            # fails a self-check whose subject already passed. Verified 0.29.0.
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                os.environ["WANDB_DIR"] = tmp
+                with Run("wandb", root=Path(tmp), hashes={"h": "0" * 8},
+                         config={"epochs": 1}, wandb_project="mirage-selfcheck") as run3:
+                    assert run3._wandb is not None, "wandb_project was passed but no run was made"
+                    for i in range(3):
+                        run3.log({"step": i, "loss": 1.0 / (i + 1)})
+                assert run3._wandb is None, "finish() did not clear the wandb handle"
+                lines = run3.path.read_text(encoding="utf-8").strip().splitlines()
+                assert len(lines) == 3, "the jsonl path lost lines while mirroring"
+            print(f"W&B mirror ok, offline, wandb {wandb.__version__}: init with "
+                  f"Settings(x_disable_stats=True), 3 records, finish - and the "
+                  f"jsonl path is unaffected. Upload and auth are NOT checked")
+        finally:
+            os.environ.pop("WANDB_DIR", None)
+            if prev is None:
+                os.environ.pop("WANDB_MODE", None)
+            else:
+                os.environ["WANDB_MODE"] = prev
+
+    print("logging self-check ok")
 
 
 if __name__ == "__main__":
