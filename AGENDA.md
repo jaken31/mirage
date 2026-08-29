@@ -24,7 +24,7 @@ The Phase 0 debt checklist is **closed, 12 of 12**. Three of its items change ho
 Phase 1 starts:
 
 - **The validator's palette thresholds are calibrated and in config** - item 6,
-  landed 2026-08-29. `NUM-VAL-TAU` and `NUM-VAL-PXMAX` now describe *decoder
+  landed 2026-08-29. `NUM-VAL-TAU` and `NUM-VAL-FRACMAX` now describe *decoder
   output*, which is a different regime from renders, not a noisier one:
   `NUM-VAL-RECONDIST` against `NUM-VAL-WORSTDIST`. Changing either moves
   `validator_hash`, which is the whole reason they were moved out of code -
@@ -39,6 +39,58 @@ Phase 1 starts:
 
 Nothing from Phase 0 is pending. The F-9 threshold calibration, the last item,
 landed as Phase 1 item 6 on 2026-08-29 - `runs.jsonl` r42.
+
+---
+
+## The writeup. Highest priority, and the only item here with an outside deadline
+
+**Phase 1's gate passed 2026-08-29 and nothing has been published.** This is the
+one item on this list that is not an engineering task. Its deadline is not a gate,
+it is **2026-09-09**, when classes start and the hours this project runs on
+collapse.
+
+**It does not wait for the Phase 4 benchmark table.** Phase 2 is budgeted at two
+weeks, Phase 3 at three days, Phase 4 at six - and those are full-time weeks that
+stop existing on September 9. Holding the writeup for a table that far out is how
+it does not get written. **Ship Phases 0-1 as part one.** The ladder table is part
+two, and a published part one is what makes anyone read it.
+
+Nothing here is assembled from scratch:
+
+| Have | Where |
+|---|---|
+| The eight-row gate table, passing | `python -m mirage.fsq --eval` |
+| Eight figures | `docs/figures/fig1_curves.png` through `fig8_token_entropy_map.png`, described in `tokenizer_figures.md` |
+| Two narratives over the log | `phase1_progress_report.md`, `phase1_item5_report.md` |
+| Every number with its provenance | `canonical_numbers.md`, `runs.jsonl` |
+| Plain-English framing, already written | `timeline.md`, `decision_notes.md` |
+
+**Lead with the refutations.** They are the part nobody else's writeup has, and
+all three are this project's own measurements overturning its own predictions:
+
+- **15 epochs is not convergence.** Every rung missed `NUM-BAR-Q1` at 15 epochs
+  and every rung clears it at 60, with no change to the architecture - only
+  `--epochs`. A day was lost reading ranking runs as gate verdicts
+- **`NUM-HW-READBACK`, against the ~30 ms the MuJoCo discussion reported.** The
+  single riskiest unknown in the plan, the one that could have turned Week 0 into
+  three weeks, did not exist
+- **`NUM-HW-FP16` after a chassis cooling fix, with no throttle flag ever set.**
+  The instantaneous flags read `Not Active` through a 45 W cap and the evidence
+  was in the counters
+- **`NUM-VAL-PCTL`: the resolution-free validator statistic that was obviously
+  right and is wrong.** A quantile of palette distance replaces a pixel count
+  and needs no per-resolution calibration - and it misses gaussian noise 99.9%
+  of the time, because it is a *tail* statistic where the failures are *bulk*.
+  The cheaper fix, the same count over the frame's pixels, keeps item 6's
+  verdict bit-identical at 64x64. This one is the cleanest example of the
+  project's own house rule working: the argument was airtight and the
+  measurement killed it in one run
+
+**Cite the register id, not the value** - the same rule this file already lives
+under. A writeup that hard-codes figures joins the list of documents that went
+stale the day the floor moved. Chosen bars are the stated exception.
+
+**Done when** it is published and linked from `README.md`. Not "drafted".
 
 ---
 
@@ -110,7 +162,7 @@ row misses.
 | 3 | Token entropy / `log2(codebook)`, all frames (`NUM-DATA-FRAMES`) | **>= 70%** (`NUM-BAR-Q2`) | **Q-2** - "token entropy vs uniform over 512 codes". The codebook must not collapse onto a handful of entries, or the 512-code budget is a fiction and Phase 2 inherits a smaller vocabulary than it was promised |
 | 4 | Token cache rows == `shard.frames`, every shard | **exact** | Not a numbered requirement - the Phase 2 handoff indexes tokens by frame, so an off-by-one here is silent and corrupts everything downstream |
 | 5 | Re-encode from one checkpoint twice | **bit-identical** | **E-1** - "deterministic sim given a seed", defined as *same as F-4*: same seed and action sequence give bit-identical frames. Encoding is inference, so no backward pass and no cuDNN nondeterminism |
-| 6 | F-9 sweep against reconstructions, at `NUM-VAL-TAU` | **<= `NUM-VAL-PXMAX`** | **F-9** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives*. Item 6 recalibrated it for decoder output, where "zero off-palette pixels" is unreachable - see `NUM-VAL-RECONFP`. The ground-truth half of the sweep runs alongside as an alignment assert |
+| 6 | F-9 sweep against reconstructions, at `NUM-VAL-TAU` | **<= `NUM-VAL-FRACMAX`** | **F-9** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives*. Item 6 recalibrated it for decoder output, where "zero off-palette pixels" is unreachable - see `NUM-VAL-RECONFP`. The ground-truth half of the sweep runs alongside as an alignment assert |
 | 7 | Edge-pixel PSNR vs flat-pixel PSNR | reported | Not a requirement - **this is the 64/144 fork**, and the numbers are `NUM-TOK-EDGE-R1` and `NUM-TOK-EDGE-R2` |
 | 8 | Train-val PSNR gap; live codes at mass > 1e-4 | reported | Not a requirement - overfit and collapse canaries |
 
@@ -163,7 +215,7 @@ frames" first.
    log. **`--resume` was itself broken on CUDA and had never once been executed**
    until it was fixed and tested on 2026-08-29 - `runs.jsonl` row 41
 6. ~~F-9 recalibration against reconstructions~~ **done 2026-08-29**, r42.
-   `NUM-VAL-TAU` and a new `NUM-VAL-PXMAX` are in `configs/base.json`;
+   `NUM-VAL-TAU` and a new `NUM-VAL-FRACMAX` are in `configs/base.json`;
    `validator_hash` moved and `data_hash` did not. **The obvious recipe was
    wrong**: raising tau past `NUM-VAL-RECONDIST` needs ~160, a ball 6.5 million
    times the calibrated volume, so the verdict changed shape - `> N` off-palette

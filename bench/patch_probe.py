@@ -28,9 +28,19 @@ Frame orientation is not corrected. The blob's rows are bottom-up, and a
 vertical flip is a bijection on the patch set - it maps every patch to its own
 flip - so every statistic here is invariant under it.
 
-    python bench/patch_probe.py
+    python bench/patch_probe.py                                  # 64x64
+    python bench/patch_probe.py --config mirage/configs/base96.json
+
+`--config` is what makes the 96x96 fork measurable: gate row 2 charges a rung
+against a k-means floor measured at *that rung's resolution*, and the 64x64
+floor is not that number for a 96x96 rung. **The patch budget is held fixed
+across resolutions, not the frame count** - a 96x96 frame yields 144 patches
+where a 64x64 frame yields 64, so sampling the same 2,800 frames would fit the
+96x96 codebook on 2.25x the data and report a floor that is partly a sample-size
+result. `PATCH_BUDGET` below is the invariant; the frame count follows from it.
 """
 
+import argparse
 import json
 import pathlib
 import sys
@@ -45,7 +55,7 @@ sys.path.insert(0, str(ROOT))
 from mirage import config, data  # noqa: E402
 
 PATCH = 8
-KMEANS_FRAMES = 2800  # 2800 * 64 patches = the 179,200 the original used
+PATCH_BUDGET = 179_200  # 2800 * 64 patches - the count the original 64x64 run used
 RF_FRAMES = 3500
 RF = 22  # the encoder's receptive field at one 8x8 cell
 KS = (240, 512, 1024)
@@ -54,10 +64,21 @@ ITERS = 25
 SEED = 0
 PEAK = 255.0
 
-cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
+_ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_ap.add_argument("--config", default=str(ROOT / "mirage" / "configs" / "base.json"))
+_args = _ap.parse_args()
+
+cfg = config.load(_args.config)
 shards = data.load_shards(ROOT / cfg.data["shard_dir"], cfg.data_hash)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 
+_h, _w = cfg.shapes.image_size
+PER_FRAME = (_h // PATCH) * (_w // PATCH)
+KMEANS_FRAMES = PATCH_BUDGET // PER_FRAME
+
+print(f"config {pathlib.Path(_args.config).name}, {_h}x{_w}, "
+      f"{PER_FRAME} patches/frame, sampling {KMEANS_FRAMES:,} frames "
+      f"for a {KMEANS_FRAMES * PER_FRAME:,}-patch budget")
 print(f"data_hash {cfg.data_hash[:16]}, {len(shards)} shards, "
       f"{sum(s.frames for s in shards):,} frames, device {dev}")
 

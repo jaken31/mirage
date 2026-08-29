@@ -27,7 +27,7 @@ import torch
 from torch import nn
 
 from mirage import config, data, validator
-from mirage.fsq import (KMEANS_FLOOR_DB, PEAK, PSNR_BAR_DB, ROOT, Tokenizer,
+from mirage.fsq import (PEAK, PSNR_BAR_DB, ROOT, Tokenizer, kmeans_floor_db,
                         _batch, psnr_db, reconstruction_psnr)
 
 
@@ -346,7 +346,8 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     gate exists to check the artifact that would ship; reading the training log
     would pass a checkpoint that failed to save correctly.
 
-    Row 2 charges against the recorded `KMEANS_FLOOR_DB` rather than refitting
+    Row 2 charges against the recorded floor for *this config's resolution*
+    (`fsq.kmeans_floor_db`) rather than refitting
     k-means. The plan asked for a refit so rows 1 and 2 could disagree, but the
     val split is fixed by `data.is_val` over a checked `data_hash`, so a refit at
     seed 0 returns 28.27 dB every time - it is a constant dressed as a
@@ -355,8 +356,9 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     loudly. `bench/patch_probe.py` remains the one place k-means lives.
 
     Row 6 runs the F-9 sweep against decoder output, using the thresholds build
-    order item 6 calibrated into `validator.offpalette_tau` and
-    `validator.offpalette_px_max`. It is a **regression check, not a
+    order item 6 calibrated into `validator.offpalette_tau`, and the
+    `validator.offpalette_frac_max` share that restated item 6's pixel count in
+    a resolution-free form. It is a **regression check, not a
     calibration**: the numbers were fixed once, against the R2 rung on the whole
     held-out split, and re-deriving them per run would move `validator_hash` and
     make two runs' Q-3 horizons incomparable. A later rung that cannot meet them
@@ -385,7 +387,7 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     flat_db, edge_db, edge_share = edge_flat_psnr(model, val_idx, lut, patch)
 
     tau = cfg.validator["offpalette_tau"]
-    px_max = cfg.validator["offpalette_px_max"]
+    frac_max = cfg.validator["offpalette_frac_max"]
     r6, g6 = reconstruction_sweep(model, cfg, shards, index, palette, val_idx, lut, tau)
 
     # Row 5: re-encode shard 0 and compare its sha256 to the manifest. One shard
@@ -408,12 +410,13 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     redo = hashlib.sha256(again.tobytes()).hexdigest()
 
     counts_ok = all(s["frames"] == sh_.frames for s, sh_ in zip(man["shards"], shards))
+    floor = kmeans_floor_db(cfg)  # keyed by resolution - see fsq.KMEANS_FLOOR_DB
     rows = [
         (1, "Held-out PSNR, uint8, over the val frames", f"{db:.3f} dB",
          f">= {PSNR_BAR_DB}", db >= PSNR_BAR_DB),
-        (2, f"That minus the {KMEANS_FLOOR_DB} dB held-out k-means floor",
-         f"{db - KMEANS_FLOOR_DB:+.3f} dB",
-         f">= {PSNR_BAR_DB - KMEANS_FLOOR_DB:+.2f}", db - KMEANS_FLOOR_DB >= PSNR_BAR_DB - KMEANS_FLOOR_DB),
+        (2, f"That minus the {floor} dB held-out k-means floor",
+         f"{db - floor:+.3f} dB",
+         f">= {PSNR_BAR_DB - floor:+.2f}", db - floor >= PSNR_BAR_DB - floor),
         (3, "Token entropy / log2(codebook), all 300,000 frames",
          f"{man['entropy_ratio']:.1%} ({man['entropy_bits']:.3f} bits)",
          ">= 70%", man["entropy_ratio"] >= 0.70),
@@ -422,9 +425,10 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
         (5, "Re-encode shard 0 from the checkpoint twice",
          "identical" if redo == man["shards"][0]["sha256"] else "DIFFERS",
          "bit-identical", redo == man["shards"][0]["sha256"]),
-        (6, f"F-9 sweep against reconstructions, tau {tau}",
-         f"{r6.offpalette_px_max} off-palette px worst frame, dist {r6.max_palette_dist:.1f}",
-         f"<= {px_max} px", r6.offpalette_px_max <= px_max),
+        (6, f"F-9 off-palette share of the worst frame, tau {tau}",
+         f"{r6.offpalette_frac_max:.4%} "
+         f"({r6.offpalette_px_max} px, worst dist {r6.max_palette_dist:.1f})",
+         f"<= {frac_max:.4%}", r6.offpalette_frac_max <= frac_max),
         (7, "Edge-pixel PSNR vs flat-pixel PSNR",
          f"edge {edge_db:.3f} dB, flat {flat_db:.3f} dB, {edge_share:.2%} of error at edges",
          "reported", None),
@@ -450,6 +454,10 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
           f"{g6.n_unique_max} unique colours")
     print(f"    the decoder costs {r6.max_palette_dist / g6.max_palette_dist:.0f}x the palette "
           f"distance and {r6.n_unique_max} unique colours, which is why tau moved")
+    h_w = cfg.shapes.image_size[0] * cfg.shapes.image_size[1]
+    print(f"    row 6's bar {frac_max:.4%} is {frac_max * h_w:.0f} px at this "
+          f"resolution; the same share was {frac_max * 4096:.0f} px at 64x64, "
+          f"which is item 6's calibrated 350")
 
     es = entropy_split(man["counts"], knobs["levels"])
     uniform = math.log2(man["codebook_size"])
@@ -467,6 +475,7 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
            "flat_psnr_db": flat_db, "edge_error_share": edge_share,
            "entropy_ratio": man["entropy_ratio"], "live_codes": man["live_codes"],
            "offpalette_px_max": r6.offpalette_px_max, "offpalette_tau": tau,
+           "offpalette_frac_max": r6.offpalette_frac_max,
            "recon_palette_dist": r6.max_palette_dist,
            "gap_db": result["gap_db"], "entropy_split": es, "failed_rows": failed}
     print("\nall pass/fail rows pass" if not failed else f"\nFAILED rows: {failed}")

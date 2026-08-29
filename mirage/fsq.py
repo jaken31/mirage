@@ -60,7 +60,40 @@ PEAK = 255.0
 # scored on a sample that straddled the split; 0.75 dB of that difference is the
 # leak and 0.86 dB is the advantage of scoring a codebook on its own patches.
 PSNR_BAR_DB = 30.0
-KMEANS_FLOOR_DB = 28.27
+
+# **Keyed by resolution, because the floor is a property of the frames.** Gate
+# row 2 charges a rung against the floor measured at *that rung's* resolution;
+# charging a 96x96 rung against the 64x64 floor compares two different questions
+# and the answer looks like a free win. Not in `config.json`: it is a
+# measurement, not a knob, and adding a key to the `tokenizer` section would move
+# `tokenizer_hash` and orphan every checkpoint already on disk.
+KMEANS_FLOOR_DB: dict[tuple[int, int], float] = {
+    (64, 64): 28.27,
+    # Measured 2026-08-29, same probe, same 179,200-patch budget. **Higher than
+    # the 64x64 floor by 1.70 dB, not lower** - an 8x8 patch covers 2.25x less
+    # of the scene at 96x96, so 73.09% of patches are a single flat colour
+    # against 63.47% at 64x64, and a per-patch codebook finds the frames easier.
+    # The consequence is that row 2's bar here is only +0.03 dB: at 96x96 the
+    # k-means baseline very nearly clears Q-1 on its own, so row 2 stops being
+    # an informative row and row 1 carries the whole question.
+    (96, 96): 29.97,
+}
+
+
+def kmeans_floor_db(cfg: "config.Config") -> float:
+    """The recorded held-out k-means-512 floor for this config's resolution.
+
+    Raises rather than extrapolating. An area-scaled guess is exactly the class
+    of number this project keeps having to retract - see the F-9 pixel budget in
+    `configs/base96.json`.
+    """
+    size = tuple(cfg.shapes.image_size)
+    if size not in KMEANS_FLOOR_DB:
+        raise KeyError(
+            f"no recorded k-means floor at {size[0]}x{size[1]}. Measure it with "
+            f"`python bench/patch_probe.py --config <cfg>` and record the "
+            f"held-out 512-centroid uint8 PSNR here - do not scale the 64x64 one")
+    return KMEANS_FLOOR_DB[size]
 
 # One rung is one question, and the only thing that varies is these two flags.
 # R3 is deliberately absent: it is "residual blocks, wider channels, or the
@@ -777,8 +810,9 @@ def main() -> None:
     # which is why both are printed rather than the headline alone.
     print(f"\n{args.run.upper()} {out['run_id']}: held-out {db:.3f} dB")
     print(f"  row 1  vs the {PSNR_BAR_DB} dB Q-1 bar:            {db - PSNR_BAR_DB:+.3f} dB")
-    print(f"  row 2  vs the {KMEANS_FLOOR_DB} dB held-out floor: {db - KMEANS_FLOOR_DB:+.3f} dB "
-          f"(needs >= {PSNR_BAR_DB - KMEANS_FLOOR_DB:+.2f})")
+    floor = kmeans_floor_db(cfg)
+    print(f"  row 2  vs the {floor} dB held-out floor: {db - floor:+.3f} dB "
+          f"(needs >= {PSNR_BAR_DB - floor:+.2f})")
     print(f"  train-val gap {out['gap_db']:+.3f} dB, {out['train_s']}s")
 
 

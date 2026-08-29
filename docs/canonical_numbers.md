@@ -143,8 +143,16 @@ These are chosen, not measured. They move only by decision.
 > non-zero is a **different quantity on different pixels**, so it got its own id
 > (`NUM-VAL-RECONFP`) rather than overwriting this one. Two regimes now coexist
 > on purpose: renders must have zero off-palette pixels, decoder output may have
-> up to `NUM-VAL-PXMAX`, and conflating them is exactly how a threshold ends up
+> up to `NUM-VAL-FRACMAX`, and conflating them is exactly how a threshold ends up
 > measuring the wrong population.
+>
+> **The verdict became a share of the frame on 2026-08-29, not a pixel count**
+> (`NUM-VAL-FRACMAX` supersedes `NUM-VAL-PXMAX`). A count is resolution-dependent,
+> so the 96x96 fork needed a second calibrated number and the one on disk was an
+> unevidenced area rescale. The share is a **single** number with a testable
+> claim attached: that it transfers unchanged across resolutions. It has been
+> verified at 64x64 and is **not yet verified at 96x96** - see the trigger in the
+> architecture doc's verification log.
 
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
@@ -152,7 +160,9 @@ These are chosen, not measured. They move only by decision.
 | `NUM-VAL-WORSTDIST` | **0.75 RGB units** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero. **Digit collision: `NUM-TOK-LEAK` is also 0.75 and is dB of PSNR, not colour distance.** It has already caused one misreading - see `mathematics_notes.md` section 1 | r18, r29 | current |
 | `NUM-VAL-HEADROOM` | **43x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. Slack over *renders* only - against `NUM-VAL-RECONDIST` the same tau has no slack at all, which is the whole finding | r42 | derived |
 | `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
-| `NUM-VAL-PXMAX` | **350 px** | `validator.offpalette_px_max` - the most off-palette pixels a *reconstruction* may carry before the frame is a fault. 1.11x `NUM-VAL-RECONFP`, and the margin is deliberately thin: 512 px would drop blur detection from 100% to 1.1% | r42 | current |
+| `NUM-VAL-FRACMAX` | **8.5449% of a frame** | `validator.offpalette_frac_max` - the largest off-palette *share* a reconstruction may carry before the frame is a fault. **Exactly `NUM-VAL-PXMAX` / 4,096**, so at 64x64 the verdict is bit-identical to the pixel count it replaced; the point of the change is that the same number is meaningful at any resolution. 1.11x `NUM-VAL-RECONFP`, a deliberately thin margin: 512 px would drop blur detection from 100% to 1.1% | r42, r43 | current |
+| `NUM-VAL-PXMAX` | **350 px** | The same bar as a pixel count, at 64x64 only. `validator.offpalette_px_max` **no longer exists** - it was replaced by `NUM-VAL-FRACMAX` on 2026-08-29 because a count needs one calibrated value per resolution. Kept as an id because item 6's whole table is quoted in pixels | r42 | **superseded by `NUM-VAL-FRACMAX`**, still correct at 64x64 |
+| `NUM-VAL-PCTL` | **refuted** | A *quantile of palette distance* was the first candidate for a resolution-free verdict, and it is the one this project would have shipped on the argument alone. Measured, it fails: at the best quantile of the ladder, gaussian noise at sigma 16 is caught **0.1%** of the time against `NUM-VAL-FRACMAX`'s 100%. A quantile is a *tail* statistic and the failures that matter are *bulk* | r43 | **refuted - do not revive without reading r43** |
 | `NUM-VAL-RECONDIST` | **154.9 RGB units** | Worst distance any *decoded* pixel sits from its palette entry, over all `NUM-DATA-VALFRAMES` held-out frames - **207x `NUM-VAL-WORSTDIST`**. Reaching zero off-palette pixels would need tau ~160, a ball 6.5 million times the calibrated volume, which is why the verdict changed shape instead | r42 | current |
 | `NUM-VAL-RECONFP` | **314 px** | Off-palette pixels on the worst *clean* reconstruction at `NUM-VAL-TAU`, R2 rung; R1 reads 298. **100% of clean reconstructions carry some**, at every tau below 96, so the ground-truth `> 0` verdict is unusable on decoder output | r42 | current |
 

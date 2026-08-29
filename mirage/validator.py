@@ -133,6 +133,7 @@ class Measurement(NamedTuple):
     n_unique_colors: int  # raw frame, before any mapping. F-2, mode 1 only
     offpalette_px: int  # pixels whose nearest palette entry is further than tau
     max_palette_dist: float  # the worst such distance, so tau can be calibrated
+    offpalette_frac: float  # that count over the frame's pixels - THE verdict
     px_count: np.ndarray  # (p,) int64
     bbox: np.ndarray  # (p, 4) int64 - x0, y0, x1, y1 inclusive; zeros if absent
     compactness: np.ndarray  # (p,) float64 - ~1.0 intact, ~0.05 confetti; 0 if absent
@@ -175,6 +176,42 @@ def _label(frame: np.ndarray, palette: Palette):
     labels = nearest[inverse].reshape(frame.shape[:2])
     counts = np.bincount(inverse, minlength=len(uniq))
     return labels, len(uniq), dist, counts
+
+
+def _weighted_pctl(dist: np.ndarray, counts: np.ndarray, q: float) -> float:
+    """The `q`-quantile of the per-pixel palette distance, q in (0, 1).
+
+    Nearest-rank, not interpolated: the smallest distance `d` such that at least
+    a `q` fraction of the frame's pixels sit at distance <= d. Interpolation
+    would invent a value no pixel has, and the whole point of this statistic is
+    that it names a real pixel.
+
+    Weighted because `_label` works on the frame's *distinct colours*, not its
+    pixels - `dist[i]` is one colour's distance and `counts[i]` is how many
+    pixels carry it. Expanding to per-pixel first would undo that optimisation
+    for no gain.
+
+    **Not on the measurement vector, and not the verdict.** This was tried as the
+    resolution-free replacement for the off-palette pixel count on 2026-08-29 and
+    **refuted by measurement** - `bench/palette_pctl_probe.py`. A quantile of
+    distance answers "how far off are the worst pixels", which is a tail
+    question; grey collapse and additive noise are *bulk* failures with a modest
+    tail, so the quantile cannot see them. Detection at zero false positives, on
+    the best quantile of the ladder against the fraction that replaced it:
+    blur 98.8% / 100%, blend 97.2% / 87.4%, **noise sigma 16 0.1% / 100%**. It
+    survives here because the probe reports the whole ladder, and because the
+    next person to have this idea should find the measurement rather than repeat
+    it.
+    """
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"q must be in (0, 1), got {q}")
+    order = np.argsort(dist, kind="stable")
+    d, c = dist[order], counts[order]
+    cum = np.cumsum(c)
+    # searchsorted on the cumulative count, so ties in `dist` cannot split a
+    # colour across the boundary - the rank lands on whichever colour holds it.
+    need = q * cum[-1]
+    return float(d[min(int(np.searchsorted(cum, need, side="left")), len(d) - 1)])
 
 
 def _oriented(ys: np.ndarray, xs: np.ndarray) -> tuple[float, float, float]:
@@ -229,10 +266,23 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Meas
         reconstruction's worst pixel sits ~155 away, and the median frame's
         worst sits at 115. There is no tau that both keeps the ball tight and
         reaches zero off-palette pixels on decoder output.
-      * so the verdict on reconstructions is `offpalette_px > offpalette_px_max`
-        rather than `> 0`. **100% of clean reconstructions carry off-palette
-        pixels** at every tau below 96, so a `> 0` verdict fires on every frame
-        and Q-3's coherence horizon reads zero forever.
+      * so the verdict on reconstructions cannot be `> 0`. **100% of clean
+        reconstructions carry off-palette pixels** at every tau below 96, so a
+        `> 0` verdict fires on every frame and Q-3's coherence horizon reads
+        zero forever.
+
+    The verdict statistic is `offpalette_frac` - that same count over the frame's
+    pixels - against `validator.offpalette_frac_max`. It replaced item 6's raw
+    `offpalette_px > N` on 2026-08-29 for one reason: a *count* scales with frame
+    area, so 64x64 and 96x96 each needed their own calibrated N and the obvious
+    area rescale had no evidence behind it. A fraction needs one number.
+
+    **A quantile of the distance was tried first and refuted by measurement** -
+    `bench/palette_pctl_probe.py`. It is equally resolution-free, but it is a
+    *tail* statistic where the failures that matter are *bulk*: at the best
+    quantile on the ladder, gaussian noise at sigma 16 was caught 0.1% of the
+    time against the fraction's 100%. `_weighted_pctl` survives as the probe's
+    helper and is deliberately not on this vector.
       * 32.0 is not a compromise between the two, it is the measured optimum:
         at a threshold pinned to the clean maximum (zero false positives by
         construction), detection of a blended-futures frame runs 23% at tau 8,
@@ -269,6 +319,7 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Meas
         n_unique_colors=n_unique,
         offpalette_px=int(uniq_counts[dist > tau].sum()),
         max_palette_dist=float(dist.max()),
+        offpalette_frac=float(uniq_counts[dist > tau].sum()) / float(frame.shape[0] * frame.shape[1]),
         px_count=px_count,
         bbox=bbox,
         compactness=compactness,
@@ -312,7 +363,8 @@ class Sweep(NamedTuple):
     frames: int
     tau: float  # the offpalette radius the sweep was run at
     max_palette_dist: float  # worst distance seen; tau must exceed this
-    offpalette_px_max: int  # worst offpalette count under that tau
+    offpalette_px_max: int  # worst offpalette count under that tau - reported
+    offpalette_frac_max: float  # worst per-frame off-palette share - THE bar
     min_visible_px: int  # smallest px_count on a block truth says is visible
     px_count_margin: int  # gap to the next-smallest, i.e. how tight min_px is
     n_unique_max: int  # F-2's bar, mode 1 only
@@ -343,6 +395,7 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -
     visible_counts: list[int] = []
     max_dist = 0.0
     off_max = 0
+    frac_max = 0.0
     uniq_max = 0
     worst_compact = np.inf
 
@@ -350,6 +403,7 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -
         m, truth = measure_with_truth(frame, meta, palette, tau)
         max_dist = max(max_dist, m.max_palette_dist)
         off_max = max(off_max, m.offpalette_px)
+        frac_max = max(frac_max, m.offpalette_frac)
         uniq_max = max(uniq_max, m.n_unique_colors)
         for b, entry in enumerate(palette.blocks):
             if truth.visible_px[b] > 0:
@@ -366,6 +420,7 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -
         tau=tau,
         max_palette_dist=max_dist,
         offpalette_px_max=off_max,
+        offpalette_frac_max=frac_max,
         min_visible_px=ordered[0],
         px_count_margin=(ordered[1] - ordered[0]) if len(ordered) > 1 else 0,
         n_unique_max=uniq_max,
@@ -426,6 +481,8 @@ def _self_check(config_path: Path | str | None = None) -> None:
     print(f"F-9 sweep over {result.frames:,} frames at tau {result.tau}:")
     print(f"  worst palette distance {result.max_palette_dist:6.2f} - tau must exceed this")
     print(f"  offpalette_px max      {result.offpalette_px_max:6d} - any threshold above is 0 FP")
+    print(f"  offpalette share  {result.offpalette_frac_max:9.5%} - the verdict "
+          f"statistic, resolution-free; on renders it is exactly 0")
     print(f"  min px_count on a block truth calls visible {result.min_visible_px:4d} px, "
           f"margin {result.px_count_margin} px to the next")
     print(f"  worst compactness on a visible block        {result.worst_compactness:.3f}")
@@ -450,9 +507,10 @@ def _self_check(config_path: Path | str | None = None) -> None:
               f"{result.min_visible_px} px, margin {result.px_count_margin}. Occlusion, not a bug")
     print(f"  -> viable verdict on renders: offpalette_px > {result.offpalette_px_max} at tau "
           f"{result.tau} ({result.tau / max(result.max_palette_dist, 1e-9):.0f}x the render-rounding floor)")
-    print(f"  -> on decoder output the same verdict is offpalette_px > "
-          f"{cfg.validator['offpalette_px_max']}, which is gate row 6 and not this check - "
-          f"see fsq_eval.reconstruction_sweep")
+    print(f"  -> on decoder output the verdict is the same statistic with a "
+          f"non-zero bar: offpalette share > "
+          f"{cfg.validator['offpalette_frac_max']:.5%}, which is gate row 6 and "
+          f"not this check - see fsq_eval.reconstruction_sweep")
 
     # The claim underneath mode 2: a pixel-only count tracks the segmentation
     # count. Under offsamples=0 there is no anti-aliasing, so these should agree
