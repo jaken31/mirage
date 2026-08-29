@@ -170,6 +170,13 @@ stated as a measurement rather than as a preference.
 
 # Handoff - build order item 5, `mirage/fsq.py`
 
+> **SPENT, 2026-08-28. Do not follow this section.** Its first slice - stages 5a,
+> 5b and 5c plus rung R0 - is done, and two of the numbers it hands you have
+> moved: the k-means floor is **28.27 dB** held out, not 29.02, so gate row 2's
+> bar is **+1.73 dB**, not +0.98. See `docs/phase1_item5_report.md`, whose second
+> half is the live handoff for stages **5d** and **5e**. Kept here unedited
+> because the report above is the record of what this session worked from.
+
 ## Start here
 
 `phase1_structural_plan.md`, section **5. `mirage/fsq.py`** - five stages,

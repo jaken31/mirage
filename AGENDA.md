@@ -43,9 +43,12 @@ is Phase 1 item 6 by design.
 **Structural plan: `phase1_structural_plan.md`.** What each file owns, the build
 order with named APIs, done-when per file, and the gotchas.
 
-**Items 1-4 are done.** Outcomes, the numbers they moved and the handoff for item
-5 are in `phase1_progress_report.md` - a narrative over `runs.jsonl` and the
-verification log, which stay authoritative.
+**Items 1-4 are done**, and so is **item 5's first slice** - stages 5a, 5b, 5c
+and rung R0, which cleared Q-1 at **31.228 dB** held out. Outcomes and the
+numbers they moved are in `phase1_progress_report.md` (items 1-4) and
+`phase1_item5_report.md` (item 5's first slice, plus the **live handoff for
+stages 5d and 5e** - the one in the older report is spent). Both are narratives
+over `runs.jsonl` and the verification log, which stay authoritative.
 
 > **The six pre-work numbers were re-measured on 2026-08-28, and the k-means
 > floor was refuted - by its own methodology, not by the regeneration.**
