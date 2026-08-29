@@ -26,8 +26,20 @@ This file is the current-state view over that log. The split that keeps it hones
 |---|---|---|
 | **Log** | `runs.jsonl`, the verification log in `world_model_architecture.md` | yes - it *is* the evidence |
 | **Register** | this file | yes - exactly once, and it says where from |
-| **Live** | `AGENDA.md`, both structural plans, `CLAUDE.md`, `README.md` | **no.** Cite the `NUM-` id and the name |
+| **Live** | `AGENDA.md`, both structural plans, `CLAUDE.md`, `README.md`, the derived explainers | **measured or derived values: no** - cite the name and the `NUM-` id. **Chosen bars: yes**, with the id beside them |
 | **Frozen** | `phase0_report.md`, `phase1_item5_report.md`, `phase1_progress_report.md`, `tokenizer_figures.md` | yes - they are dated snapshots, and preserving what was believed at the time is their whole job |
+
+The live row is split that way because the split is what the history actually
+shows. **Every figure that went stale was measured or derived** - the k-means
+floor moved three times, the bar derived from it moved three times, F-7 was
+restated, `data_hash` moved twice. **No chosen bar has ever moved**: 30 dB, 70%,
+3% and 20 GB are the same today as the day they were written, because changing
+one is a decision someone makes on purpose rather than a number that drifts. A
+gate table that hides its own threshold behind an id is unusable, and hiding it
+would buy nothing.
+
+So: `**>= 30.0 dB** (\`NUM-BAR-Q1\`)` is correct in a live doc. `28.27 dB` is
+not - write *the held-out k-means floor (`NUM-TOK-FLOOR512`)*.
 
 A frozen report holding a stale number is **correct behaviour**. A live doc
 holding one is the bug this file exists to prevent.
