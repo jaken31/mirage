@@ -77,6 +77,13 @@ all three are this project's own measurements overturning its own predictions:
 - **`NUM-HW-FP16` after a chassis cooling fix, with no throttle flag ever set.**
   The instantaneous flags read `Not Active` through a 45 W cap and the evidence
   was in the counters
+- **The 64/144 fork: the higher resolution wins on the metric everyone was
+  watching and fails one nobody was.** `NUM-TOK-FORK` of Q-1 quality, and
+  `NUM-TOK-ENT-R1-96` against `NUM-BAR-Q2`. One mechanism drives both signs, and
+  **both remedies this project had written down die to arithmetic before either
+  is run** - `NUM-TOK-MARGSUM-96` and `NUM-TOK-SHRINK240-UB`. The strongest
+  refutation of the set, because the plan was wrong about *which number decides*
+  rather than about the value of a number
 - **`NUM-VAL-PCTL`: the resolution-free validator statistic that was obviously
   right and is wrong.** A quantile of palette distance replaces a pixel count
   and needs no per-resolution calibration - and it misses gaussian noise 99.9%
@@ -241,44 +248,46 @@ void**: thermal throttling took one run to 99.2 s/epoch and Modern Standby put a
 | ~~R0~~ | continuous bottleneck, no FSQ, no attention | `NUM-TOK-R0`, **at 15 epochs**. A loose upper bound - its bottleneck is 192 fp32 numbers against R1's 64 tokens x 9 bits. **At 60 epochs it is UNMEASURED**, deliberately: the gate does not need it, and it is an input to the 64-vs-96 fork rather than to item 5 |
 | ~~R1~~ | FSQ `[8,8,8]`, no attention | `NUM-TOK-R1-60` at 60 epochs (`runs.jsonl` row 34 for the 15-epoch run). Quantization is *not* the wall - at convergence R1 alone passes every gate row. The "quantization costs 1.322 dB" figure was R0 minus R1 with both under-trained |
 | ~~R2~~ | R1 + self-attention on the 8x8 grid | `NUM-TOK-R2-60` at 60 epochs (row 35 for 15). Joint coding buys `NUM-TOK-ATTN` for `NUM-TOK-ATTNPARAM` extra parameters - about a sixth of the plan's own "tied" threshold, so a **measured non-lever for quality**. It buys `NUM-TOK-ATTNENT` of token entropy by decorrelating the three FSQ digits, which no document predicted |
-| R3 | **not needed for the gate** | The levels ladder is specifically ruled out: **zero of 512 codes have zero count** in any rung, so nothing collapsed and the shrink ladder addresses a failure mode that never happened. If quality is pushed further it is capacity or resolution, and **R0 at 60 is the run that says which** |
+| R3 | **not needed for the gate, and now closed** | The levels ladder is ruled out at 64x64 for the reason given here - **zero of 512 codes have zero count** in any rung, so nothing collapsed - and ruled out at 96x96 for a *different* reason, by arithmetic: `NUM-TOK-SHRINK240-UB`, r45. "If quality is pushed further it is capacity or resolution, and R0 at 60 says which" is **superseded**: resolution was measured directly by the 96x96 arm, which is a better answer than R0 would have given, and **R0 at 60 was deliberately skipped** |
+| ~~R1 96~~ | FSQ `[8,8,8]`, no attention, **96x96** | `NUM-TOK-R1-96`. **The fork's answer** - and the run that closed it. See the box below |
+| R2 96 | R1 96 + attention | **Never run, and not running it is the result.** `NUM-TOK-MARGSUM-96` is a hard ceiling on any decorrelator and sits below `NUM-BAR-Q2`, so a perfect one still fails. Refuted for the cost of reading a token cache |
 
-> **The 96x96 arm ran on 2026-08-29 and the fork's price is not the one this
-> section predicts.** R1 at 96x96 reaches `NUM-TOK-R1-96`, which is
-> `NUM-TOK-FORK` over the 64x64 rung - and it **fails gate row 3**:
-> `NUM-TOK-ENT-R1-96` against `NUM-BAR-Q2`, where the identical architecture at
-> 64x64 clears it. **The fork buys Q-1 and breaks Q-2**, and no document
-> predicted that. One mechanism drives both signs - `NUM-D96-FLATPATCH` of
-> patches are one flat colour at 96x96, which raises `NUM-TOK-FLOOR512-96` and
+> ## The 64/144 fork is RESOLVED: **64x64**. Decided 2026-08-29, `runs.jsonl` r44 + r45.
+>
+> The 96x96 arm ran. **It wins on Q-1 and fails Q-2**, which no document
+> predicted: `NUM-TOK-R1-96`, a gain of `NUM-TOK-FORK` over the 64x64 rung, with
+> every other knob identical - and `NUM-TOK-ENT-R1-96` against `NUM-BAR-Q2`, where
+> the same architecture at 64x64 clears it.
+>
+> **One mechanism, two opposite signs.** `NUM-D96-FLATPATCH` of patches are one
+> flat colour at 96x96. That raises `NUM-TOK-FLOOR512-96` - easier patches, which
+> is also why gate row 2's bar there is a nearly vacuous +0.03 dB - and it
 > concentrates the token distribution at the same time. It is **skew, not
-> collapse** (`NUM-TOK-SKEW-96`; zero codes unused), so the Q-2 shrink ladder
-> below is the right instrument and is triggered for the first time. Everything
-> after this paragraph was written before that run - read it as the plan the
-> measurement replaced, not as current guidance. Full account: `runs.jsonl` r44.
-
-Then the 96x96 arm, which is what turns the fork into a measurement. Row 7 now
-prices it on converged tokenizers: flat regions are solved (`NUM-TOK-EDGE-R1`,
-`NUM-TOK-EDGE-R2` carry the edge/flat pair) and **96% of all squared error is
-still edge geometry** (`runs.jsonl` row 37).
-
-**Budget it as ~3 hours a rung, not "one training run".** Measured 2026-08-29 on
-this card at batch 128: `NUM-PERF-RUNG96-R1` and `NUM-PERF-RUNG96-R2` for a
-60-epoch rung, against roughly half that at 64x64. The fork's other two costs
-were already known and are the small ones - one config file and one generation
-pass at `NUM-D96-GENFPS` - so every earlier statement of this fork's price was
-carrying the expensive term unpriced. Add `NUM-LOAD-BUILD96` of preload per rung
-and `NUM-LOAD-TRAIN96` of RAM for the train split, against `NUM-LOAD-TRAIN64` at
-64x64; caching the preloaded array to disk is the recorded answer if that bites,
-and this is the arm where it would.
-
-**bf16 autocast is the lever if 3 h a rung is too slow, and it is worth less here
-than at 64x64**: `NUM-PERF-BF16-96` against `NUM-PERF-BF16-64`, because it
-accelerates the tensor-core matmuls and not the `nn.Upsample` / `GroupNorm` /
-`SiLU` chain, which is bandwidth-bound. **It is deliberately not enabled** - R1
-and R2 at 60 epochs differ by `NUM-TOK-ATTN`, and changing the arithmetic
-underneath makes every later rung incomparable to both. If this arm takes it,
-re-run one baseline in bf16 and quote that; do not assume bf16 is neutral.
-Numbers in `runs.jsonl`, "the training step profiled".
+> collapse**: `NUM-TOK-SKEW-96`, zero codes unused, 422 live.
+>
+> **Both remedies this file names are refuted by arithmetic, at zero GPU cost**
+> (`bench/entropy_shrink_est.py`, r45):
+>
+> - **Attention cannot pass, ever.** `NUM-TOK-MARGSUM-96` is a hard ceiling on
+>   any method that only decorrelates channels, and it sits below `NUM-BAR-Q2`.
+>   The R2 rung at 96x96 was never run, and **not running it is the result.**
+> - **The shrink ladder dies at its first step.** `NUM-TOK-SHRINK240-UB` bounds
+>   `[8,6,5]` from above and is already under the bar.
+>
+> Neither lever touches skew, which is the actual failure. The one instrument that
+> would is the entropy auxiliary loss ruled out below, **and that ruling stands.**
+>
+> **Not acted on, deliberately:** by Q-2's stated purpose - that Phase 2 not
+> inherit a shrunken vocabulary - 96x96 delivers `NUM-TOK-BITSFRAME-96`, 1.68x the
+> bits per frame, with zero dead codes. The statistic fails while the rationale is
+> satisfied. **`NUM-BAR-Q2` is not moved.** Moving a bar because a run missed it
+> is the failure mode this project's discipline exists to prevent.
+>
+> **Consequences, all of them good for the schedule.** DiagD stays in reserve,
+> F-16 does not promote to M, and CUDA graphs stay a win rather than table stakes.
+> Phase 2 is budgeted against the 64-token path. **No further tokenizer runs are
+> planned** - the next item on this file is the writeup, and the 96x96 arm goes
+> into it as a result rather than as a failed attempt.
 
 ---
 
@@ -359,22 +368,24 @@ gradient at zero is 0.858 / 1.001 / 0.668 across those tables, so a levels chang
 silently rescales the bottleneck learning rate by up to 1.5x and a single-LR
 comparison reports a levels result that is partly an LR result.
 
-### If Q-1 misses, the diagnosis is probably already made
+### If Q-1 misses, the diagnosis is probably already made - and Q-1 did not miss
 
-**`NUM-TOK-EDGESHARE` - almost all of the k-means floor's error sits in the
-third of patches that are not a single flat colour** - re-measured 2026-08-28 and
-confirmed, the one pre-work conclusion the re-run left completely intact. Edge
-placement is the one failure mode 96x96 fixes and the one thing levels tuning
-does not, so the arch doc's fork rule points at 96x96 before Phase 1 has run a
-single step. That is why the 96x96 arm is in the ladder - and **price it from the
-ladder section above, at `NUM-PERF-RUNG96-R1` / `NUM-PERF-RUNG96-R2` a rung**,
-not from the "one training run" this paragraph used to claim. It replaces a
-prediction about Phase 4's difficulty with a number.
+**Moot as written, kept for what it got right.** Q-1 passes on both 64x64 rungs,
+so this section's "if" never fired. Its diagnosis was correct anyway:
+`NUM-TOK-EDGESHARE` held up on re-measurement, edge placement *is* what 96x96
+fixes, and the arm confirmed it - `NUM-TOK-FORK` of quality, essentially all of it
+at edges.
 
-Consequence if the 144-token path is taken: DiagD graduates from reserve to
-required, F-16 promotes to **M**, and CUDA graphs stop being the headline win and
-become table stakes. The fork table in `world_model_architecture.md` has the
-arithmetic.
+**What it did not anticipate is that fixing edges would break something else.**
+More resolution means flatter patches (`NUM-D96-FLATPATCH`), and flatter patches
+concentrate the token distribution. The fork was decided against 96x96 on Q-2,
+not on Q-1 - see the resolution box above. This section pointed at the right
+lever and had no way to see its cost.
+
+Consequences of the 144-token path, all now **avoided**: DiagD stays in reserve
+rather than graduating to required, F-16 does not promote to **M**, and CUDA
+graphs stay the headline win rather than table stakes. The fork table in
+`world_model_architecture.md` has the arithmetic.
 
 ---
 

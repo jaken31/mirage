@@ -681,6 +681,57 @@ kind of project fails.
 
 ### I1. Measure both picture sizes in Week 2, rather than starting small and switching on a diagnosis
 
+> **SETTLED 2026-08-29: we are staying at the smaller picture size.** Both sizes
+> were built and scored, which is what this decision bought, and the answer was
+> not the one anybody expected.
+>
+> The larger size **wins on picture quality** - 32.5 against 31.1 on the scale the
+> bar is set in, comfortably over the bar of 30, using 2.25 times as many numbers
+> per picture. On the measure this whole decision was written around, it is the
+> better option.
+>
+> It **fails a different check entirely**, and one nobody had it under suspicion
+> for. The compressor is supposed to spread its work across its 512-value
+> vocabulary reasonably evenly; at the smaller size it uses 74% of the available
+> evenness, and at the larger size only 55%, against a bar of 70%.
+>
+> **The same fact causes both results.** A tile covers less of the scene when the
+> picture is bigger, so 73% of tiles are a single flat colour instead of 63%.
+> Flatter tiles are easier to reproduce - that is the quality win - and flatter
+> tiles also mean the compressor keeps reaching for the same few vocabulary
+> entries, which is the evenness loss. One cause, two opposite signs.
+>
+> Importantly, **nothing collapsed**: every one of the 512 entries gets used, and
+> 422 get real use. The vocabulary is not being ignored. It is being used
+> lopsidedly.
+>
+> **Both fixes we had written down were ruled out by arithmetic, without running
+> anything.** Shrinking the vocabulary (I2) cannot work, because making the
+> vocabulary smaller throws away information faster than it lowers the bar - even
+> the very best case for the first step lands at 63%, under the 70% needed. And
+> the "let tiles describe each other" mechanism cannot work either: there is a
+> hard ceiling on what that mechanism can ever achieve here, and the ceiling is
+> 67.5%, also under the bar. Both of these are limits, not guesses, so neither
+> was worth a three-hour run to confirm.
+>
+> **Why they both fail:** the problem is lopsidedness *within* each number, and
+> both fixes address something else - one addresses a collapse that is not
+> happening, the other addresses numbers copying each other. The one tool that
+> would target lopsidedness is the training term I2 rules out, and that ruling
+> stands.
+>
+> **One thing we noticed and deliberately did not act on.** The evenness check
+> exists so the later stage inherits a full vocabulary. By that standard the
+> larger size is *better* - it carries 1.68 times as much information per picture,
+> with no unused entries. The check fails while the thing the check is for is
+> satisfied. **We did not move the bar.** Lowering a bar because a run missed it
+> is exactly the habit this project is built to avoid, so it is written down as an
+> observation and the bar stands.
+>
+> **What would reopen it:** a way to make each number use its full range. Recovering
+> 45% of the lopsidedness would be enough. Nothing like that is currently proposed,
+> and the later stages are now budgeted against the smaller size.
+
 - **Chose** build and score the compressor at both 64-by-64 and the larger size
   in the same week. **Revised 2026-08-28 - this used to read "start at the
   smaller size; switch only on a specific diagnosis."**
@@ -750,13 +801,25 @@ kind of project fails.
   actually used against a perfectly even spread, and a perfectly even spread is
   not something this scene has any reason to produce - so a smaller vocabulary
   scores better on it than a large one does, which is a slightly perverse
-  incentive. It is kept as a pass/fail bar anyway, because the failure it is
+  incentive. **Half-confirmed and half-refuted 2026-08-29.** The first half was
+  right: the check did turn out to be measuring something other than the failure
+  it is named for - at the larger picture size it fails while the vocabulary is
+  fuller than ever. The second half was wrong, and this is the useful part: a
+  *smaller* vocabulary does **not** automatically score better. Shrinking throws
+  away information at the same time as it lowers the bar, and here it throws away
+  more than it saves - the first step down the ladder scores **worse**, not
+  better. So the perverse incentive this note worried about does not exist in the
+  direction it feared, and the ladder is not the free move it was assumed to be. It is kept as a pass/fail bar anyway, because the failure it is
   really watching for - the compressor ignoring almost all of its vocabulary - is
   a genuine failure whichever way the bar is phrased.
 - **Fallback** (1) Report the number of vocabulary entries in real use alongside
   the evenness figure, so a reader can see which of the two is doing the work.
   (2) If shrinking all the way to 64 still fails, that is evidence the compressor
-  itself is too weak, and the answer moves to I1's first fallback.
+  itself is too weak, and the answer moves to I1's first fallback. **Never
+  exercised, and now known to be untestable the cheap way**: at the larger picture
+  size the whole ladder was priced by arithmetic in 2026-08-29's r45 and no rung
+  passes, so "shrink until it works" was never a live option there. At the smaller
+  picture size the check passes and the ladder stays untouched.
 - **Watch for** changing the vocabulary size quietly changes how strongly the
   compressor learns. The rounding step passes a gradient of 0.858 at 512 values,
   1.001 at 125 and 0.668 at 64 - a spread of about 1.5x. So every vocabulary
