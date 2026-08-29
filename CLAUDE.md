@@ -17,11 +17,11 @@ world model on it. `AGENDA.md` is the ordered list of what to do next.
   answer. **Cite the `NUM-` id, do not copy the value.** `python check.py` fails
   on a citation to an id that does not exist, which is what makes renaming safe.
 
-Derived explainers restate those three in plain words and are never a citable
+Derived explainers restate the files above in plain words and are never a citable
 source - when one disagrees with the code, the code wins: `decision_notes.md`
 (each choice with its trigger and fallbacks), `timeline.md` (schedule and gates),
-`mathematics_notes.md` (every formula the project runs, with the measured number
-next to it and a provenance table).
+`mathematics_notes.md` (every formula the project runs, from scratch, citing
+`NUM-` ids for its inputs).
 
 ## Every requirement claim carries its evidence
 
