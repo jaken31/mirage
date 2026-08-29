@@ -10,6 +10,18 @@ world model on it. `AGENDA.md` is the ordered list of what to do next.
   that would change each one.
 - `docs/world_model_requirements.md` - the `P-` / `F-` / `E-` / `Q-` requirement
   IDs referenced everywhere else.
+- `docs/canonical_numbers.md` - **the current value of every number quoted in more
+  than one place**, each with the `runs.jsonl` row that asserts it. `runs.jsonl`
+  stays the evidence and keeps superseded values on purpose; this is the
+  current-state view over it, which is the one question an append-only log cannot
+  answer. **Cite the `NUM-` id, do not copy the value.** `python check.py` fails
+  on a citation to an id that does not exist, which is what makes renaming safe.
+
+Derived explainers restate those three in plain words and are never a citable
+source - when one disagrees with the code, the code wins: `decision_notes.md`
+(each choice with its trigger and fallbacks), `timeline.md` (schedule and gates),
+`mathematics_notes.md` (every formula the project runs, with the measured number
+next to it and a provenance table).
 
 ## Every requirement claim carries its evidence
 

@@ -77,6 +77,13 @@ back to the committed 40-frame fixture in `mirage/fixtures/` when `data/shards`
 is empty. This is a runner, not a test framework, and it does not reverse the
 per-module choice recorded in `docs/phase0_debt_checklist.md`.
 
+It also validates `docs/canonical_numbers.md`, the register holding the current
+value of every number this project quotes in more than one place. Four checks, all
+chosen because they cannot false-positive: no id defined twice, every entry names
+a source, every `r<N>` source points at a `runs.jsonl` row that exists, and every
+`NUM-` id cited anywhere in the tree is defined. **Cite the id, not the value** -
+that is what lets a figure move in one place instead of seventeen.
+
 ## Taking a measurement
 
 **Do not gate on `pstate == P0`.** That rule was refuted 2026-08-23. The reported
