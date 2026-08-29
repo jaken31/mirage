@@ -9,7 +9,8 @@ world model on it. `AGENDA.md` is the ordered list of what to do next.
 - `docs/world_model_architecture.md` - design decisions, and the explicit trigger
   that would change each one.
 - `docs/world_model_requirements.md` - the `P-` / `F-` / `E-` / `Q-` requirement
-  IDs referenced everywhere else.
+  IDs referenced everywhere else. Note: you must explain what these IDs says 
+  rather than just simply stating them.
 - `docs/canonical_numbers.md` - **the current value of every number quoted in more
   than one place**, each with the `runs.jsonl` row that asserts it. `runs.jsonl`
   stays the evidence and keeps superseded values on purpose; this is the
