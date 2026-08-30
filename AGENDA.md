@@ -210,9 +210,11 @@ frames" first.
    paid once per run
 4. ~~`mirage/logging.py`~~ **done 2026-08-28.** `Run.log(dict)` -> one jsonl line
    in `runs/<run_id>/`, always, each carrying the run id and the caller's hashes;
-   W&B only when `wandb_project` is passed. **The W&B mirror is UNVERIFIED** -
-   wandb is not installed here, which is the condition the rest was verified
-   against. Do not quote it as working until someone runs it
+   W&B only when `wandb_project` is passed. **The W&B mirror is verified offline**
+   as of 2026-08-29, against wandb 0.29.0 - init, three logs, finish, with the
+   jsonl path intact underneath. The signature risk that made it UNVERIFIED is
+   closed. **Upload and auth stay unverified**: offline never contacts the server,
+   so a first networked run can still fail on credentials - at init, before step 0
 5. ~~`mirage/fsq.py` and `mirage/fsq_eval.py`~~ **done 2026-08-29.** Quantizer,
    encoder/decoder, train loop, PSNR, token cache and the eight-row gate table,
    split at the plan's 500-line trigger. **The gate passes**; two 60-epoch
@@ -229,10 +231,11 @@ frames" first.
    pixels rather than `> 0`, because every clean reconstruction has some. tau was
    picked by detection rate at zero false positives and is an **interior**
    optimum. Three of the four thresholds this item expected to write were refuted
-   and left out on purpose; the verification log has the table. **Still open:**
-   `configs/base96.json` carries an area-scaled `offpalette_px_max` that is
-   **unverified** - there is no 96x96 tokenizer yet, and the first one must
-   re-run this
+   and left out on purpose; the verification log has the table. **Still unverified, and now moot:**
+   `configs/base96.json` carries an area-scaled `offpalette_px_max` that nothing
+   has ever checked. The fork closed at 64x64 and no 96x96 tokenizer is planned,
+   so this is not blocking anything - but if a 96x96 rung is ever revived, it must
+   re-run this before quoting an F-9 number
 
 ### The ladder - four runs, each answering one question
 

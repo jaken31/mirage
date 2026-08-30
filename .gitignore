@@ -63,3 +63,8 @@ wandb/
 # Claude Code worktrees. EnterWorktree creates linked checkouts here; an
 # unignored worktree dir commits an entire second copy of the tree.
 .claude/worktrees/
+
+# Obsidian's per-vault workspace state. docs/ opens as a vault; the directory is
+# UI state (open panes, cursor positions) that changes on every read and belongs
+# to one machine, not to the docs.
+docs/.obsidian/
