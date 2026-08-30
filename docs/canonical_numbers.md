@@ -27,7 +27,15 @@ This file is the current-state view over that log. The split that keeps it hones
 | **Log** | `runs.jsonl`, the verification log in `world_model_architecture.md` | yes - it *is* the evidence |
 | **Register** | this file | yes - exactly once, and it says where from |
 | **Live** | `AGENDA.md`, both structural plans, `CLAUDE.md`, `README.md`, the derived explainers | **measured or derived values: no** - cite the name and the `NUM-` id. **Chosen bars: yes**, with the id beside them |
-| **Frozen** | `phase0_report.md`, `phase1_item5_report.md`, `phase1_progress_report.md`, `tokenizer_figures.md` | yes - they are dated snapshots, and preserving what was believed at the time is their whole job |
+| **Frozen** | `phase0_report.md`, `phase1_item5_report.md`, `phase1_progress_report.md`, `tokenizer_figures.md`, `writeup_part1.md` | yes - they are dated snapshots, and preserving what was believed at the time is their whole job |
+
+> `writeup_part1.md` is frozen for an unusual reason: it is written for readers
+> outside this repo, who cannot resolve a `NUM-` id. It cites ids in its prose
+> like a live doc **and** carries a resolution table at the end that states every
+> value once. That table is a filtered copy of this file, so it goes stale the
+> day a number moves - which is correct for a dated publication and would be a
+> bug in anything else. **If a number moves after publication, the writeup gets
+> an erratum, not a silent edit.**
 
 The live row is split that way because the split is what the history actually
 shows. **Every figure that went stale was measured or derived** - the k-means

@@ -55,6 +55,11 @@ stop existing on September 9. Holding the writeup for a table that far out is ho
 it does not get written. **Ship Phases 0-1 as part one.** The ladder table is part
 two, and a published part one is what makes anyone read it.
 
+**Part one is written: `docs/writeup_part1.md`, linked from `README.md`.** Its
+numbers were checked against the register on 2026-08-29 and all 56 match. What
+is left is *publishing* it somewhere outside this repo - which is what the
+done-when below means, and the only part of this item still open.
+
 Nothing here is assembled from scratch:
 
 | Have | Where |

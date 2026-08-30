@@ -24,6 +24,11 @@ source - when one disagrees with the code, the code wins: `decision_notes.md`
 `mathematics_notes.md` (every formula the project runs, from scratch, citing
 `NUM-` ids for its inputs).
 
+`docs/writeup_part1.md` is the outward-facing account of Phases 0-1, written for
+readers who cannot resolve a `NUM-` id, so it states every value once in a table
+at the end. It is **frozen** - a dated publication, not a source. Never cite it,
+and when a number moves, give it an erratum rather than a silent edit.
+
 ## Every requirement claim carries its evidence
 
 A doc line naming a specific flag, attribute, or API as a **requirement** must carry
