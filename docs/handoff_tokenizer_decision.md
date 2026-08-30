@@ -239,18 +239,25 @@ trainer pid explicitly or it keeps training.
 
 **These findings were measured in an earlier session and exist only in its
 conversation.** r46
-records A and C in passing; **D, E and F have no `runs.jsonl` row, no
+records A and C in passing; **D, E and F had no `runs.jsonl` row, no
 verification-log entry, and no register id.** By this project's own rules they
-cannot be quoted until reproduced or recorded.
+could not be quoted until reproduced or recorded.
+
+**All three were re-run and recorded on 2026-08-30** - r47, r48, r49, with r50
+added when the Q-5 repair was refuted. **Two of the three came back with
+different numbers**, which is the argument for this table rather than against it:
+a recollection that is 2.2x out on one figure and 1.3x out in the other direction
+on its neighbour would have been quoted as fact by whoever wrote the Phase 2 plan.
+The status column now carries what moved.
 
 | | finding | status |
 |---|---|---|
 | A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in r46 as evidence; the restatement itself is *not* decided |
 | B | `GroupNorm` couples tokens globally | **recorded and superseded** by r46, which measured it properly |
 | C | `bench/patch_probe.py:60` sets `RF = 22`; the true conv field is **15** | **recorded in r46, NOT FIXED.** See below |
-| D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **unrecorded** |
-| E | Q-5's 10% link-drift bar fails the simulator's own frames (35.6% mean) | **unrecorded** |
-| F | Phase 2 sizing: 14,592,384 params, 975-token sequence, 38.4 MB cache, ~16x under Chinchilla, fp32 6.6 h/epoch vs bf16 49 min | **unrecorded** |
+| D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 in r48, and acted on**: Q-3's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
+| E | Q-5's 10% link-drift bar fails the simulator's own frames (35.6% mean) | **recorded 2026-08-30 in r47, and acted on**: Q-5 is now relative, Q-4's treatment. **The number moved** - 44.2% on link1 and 23.0% on link0, not one 35.6% figure; the recollection appears to have averaged two links that fail for different reasons. r50 additionally refutes the obvious repair |
+| F | Phase 2 sizing: 14,592,384 params, 975-token sequence, 38.4 MB cache, ~16x under Chinchilla, fp32 6.6 h/epoch vs bf16 49 min | **recorded 2026-08-30 in r49, and THREE OF ITS NUMBERS MOVED.** Params 14,593,152 for RoPE+untied (the recollection is 768 short, and the four layout variants span only 571,008 in total). Chinchilla shortfall 15.0x, not ~16x. **The epoch times were wrong in both directions**: fp32 is 2.99 h, not 6.6, and bf16 is 1.06 h, not 49 min. Sequence length and cache size reproduce exactly. Nothing depended on the two wrong ones |
 
 **No `NUM-` id was minted for anything this session.** Registering is a separate,
 deliberate act; quote `r46` until then.
@@ -278,7 +285,7 @@ what follows is only the reminder that they exist:
 | 2 | data volume: 500 episodes or regenerate 3x / 5x | gated on the `data_hash` provenance story |
 | 3 | restate F-11 against the persistence baseline | evidence now recorded in r46; the decision is not taken |
 | 4 | sequence layout and position encoding | **irreversible.** RoPE is the lazy correct answer |
-| 5 | Q-3's verdict expression and calibration population | finding D, unrecorded |
+| ~~5~~ | ~~Q-3's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded in r48 and Q-3 now terminates on frame-to-frame continuity rather than on F-9's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see the Q-3 risk row in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
 | 6 | rollout sampling: greedy vs temperature | sim is deterministic (E-1), greedy is the strong default |
 | 7 | file split `dynamics.py` / `dynamics_eval.py` | do **not** start `engine.py` (Phase 3) |
 | 8 | exposure bias: mitigate now or name a trigger | |

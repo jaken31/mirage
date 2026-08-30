@@ -85,16 +85,50 @@ P-6 dropped from 20k/sec. MuJoCo plus offscreen render is far slower than a hand
 | Q-1 | M | Tokenizer reconstruction PSNR, held-out, at 64x64 | >= 30 dB |
 | Q-1b | S | Same | >= 35 dB |
 | Q-2 | M | Token entropy vs uniform over 512 codes | >= 70% |
-| Q-3 | M | Coherence horizon: frames until F-9 validator fails | >= 200 |
+| Q-3 | M | **Coherence horizon**: frames until the rollout's **frame-to-frame continuity** verdict fires | **>= 200.** The verdict bounds per-step change in the pose features already on the validator's vector - `link_angle`, `link_extent`, and each block's `bbox` centroid - calibrated so that **zero windows of ground-truth frames fire**, the same acceptance shape F-9 uses. **Was "frames until the F-9 validator fails" until 2026-08-30, and that verdict was blind**: `runs.jsonl` r48 offered a rollout the reconstruction of a frame 300 steps out of position and F-9's palette verdict fired on **0.00%** of them, against 0.00% on correct reconstructions and 100% on its sigma-16 noise control. The blindness is **structural, not a threshold** - a drifted frame is a *plausible* frame, and the verdict never references frame `t`, so no value of `offpalette_tau` or `offpalette_frac_max` recovers a comparison the statistic does not make. `bench/q3_blind_probe.py` is the acceptance test for the replacement: it must fire on 100% of 300-step substitutions and 0% of clean reconstructions |
 | Q-3b | S | Same | >= 500 |
 | Q-4 | M | Action-following accuracy, **scored relative to the simulator's own score** | **>= 90% of the ground-truth agreement measured the same way on the same subset**, and **both numbers reported**. Agreement is `sign(theta_t+1 - theta_t)` against the commanded sign; the subset is **action-balanced** - equal frames per action, drawn from the val split, not the raw split, which F-5's 5% floor is what makes drawable. **Was an absolute 90% until 2026-08-28, which is above what the simulator itself scores**: ground truth reads 83.1% at `action_hold_steps = 20`, because for about one joint settling time after each sign flip the joint is still moving the old way. An absolute bar there fails a model that is exactly right. The ceiling is a property of the physics, so the bar has to be too. `bench/hold_probe.py` measures the ground-truth term |
-| Q-5 | M | Arm kinematic plausibility: link lengths stable across a 200-step rollout | drift <= 10% |
+| Q-5 | M | Arm kinematic plausibility: link-length drift across a 200-step rollout, **scored relative to the simulator's own drift** | **<= 1.1x the ground-truth drift, measured the same way on the same statistic and the same subset, per link, and both numbers reported.** The statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. **Was an absolute 10% until 2026-08-30, which is below what the simulator itself scores**: ground truth reads 23.0% on link0 and 44.2% on link1 (`runs.jsonl` r47), so a perfect model failed 31 and 34 of its 36 windows. Two causes were identified and **removing them was measured not to help** (r50): deprojecting by the pixel-measured angle and excluding occluded or clipped frames still leaves 25.9%-34.8%, while discarding 77%-96% of the frames. The residual is the noise floor of a ~30-pixel PCA extent at 64x64. The ceiling is a property of the measurement, so the bar has to be too. `bench/link_drift_probe.py` measures the ground-truth term |
 | Q-6 | S | **Object permanence**: block reappears in correct position after full occlusion | >= 80% of occlusion events |
 | Q-6b | C | Same, with position error <= 2 px | >= 60% |
 
 Q-6 is the memory result, back in scope because occlusion is native to manipulation rather than bolted on. It stays **S**, not M. It is the most likely thing to fail and the project ships without it.
 
 Q-5 replaces velocity-preservation. A model that hallucinates arm geometry is the characteristic failure here.
+
+**Q-3 was restated 2026-08-30**, after `bench/q3_blind_probe.py` measured what its
+terminator could actually see. **F-9 itself is unchanged and is not at fault** -
+it is a per-frame plausibility check accepted at zero false positives on ground
+truth, it does that job, and it caught the noise control at 100% in the same run.
+What was wrong is the *inference* Q-3 drew from it: that surviving 200 F-9
+verdicts means the rollout stayed coherent. **Implementing F-9's block-count and
+arm-pose halves would not have fixed this either** - they are per-frame
+plausibility too, and the failure mode is precisely that a wrong frame is a
+plausible one. Continuity is the weakest property a drifted rollout must actually
+violate, because arriving somewhere wrong requires a step no physics allows. The
+horizon and the tier are unchanged; this changes what terminates it.
+
+**Q-5 was restated 2026-08-30**, and its restatement went the long way round.
+`bench/link_drift_probe.py` first measured the old absolute bar against ground
+truth and found a perfect model failing it (r47). Its two controls named
+different causes for the two links - link0 is pure camera foreshortening, r 0.664
+against the projection model with nothing clipped; link1 is not projection at all,
+correlating **negative** at -0.104 while tracking visible pixel count at 0.951,
+with 45.9% of frames under a floor projection cannot cross and 32.3% touching the
+border. **Both causes were then removed, and the reading barely moved** (r50):
+deprojection from the pixel-measured angle is sound where it can be checked
+(r 0.928 against the `qpos`-derived factor) yet the residual drift is still
+25.9%-34.8%, and the visibility filter that gets there discards up to 96% of the
+frames. So the residual is the noise floor of measuring a ~30-pixel blob's PCA
+extent at 64x64, which is a property of the resolution and not of any wording.
+That is what forces the Q-4 treatment - a relative bar - rather than a better
+statistic. **A robust spread would very likely have passed, and was rejected for
+that reason**: choosing a statistic because ground truth passes it is circular,
+which is also why r50 sweeps its one tolerance instead of picking a value.
+Raising the absolute bar was rejected on the same evidence - past 44.2% it would
+accept a model that has lost the link entirely, which is exactly what a 182.6%
+window is. MuJoCo's links are rigid by construction; none of this was ever a
+claim about the simulator's physics.
 
 ### Engineering
 
@@ -130,4 +164,6 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | R-3 | 20M may be too small for Q-4 | Raise to 25M only if profiling shows headroom. Never above 40M |
 | **F-7** | **Was restated 2026-08-28 to exclude blocks that never return**, after measurement showed 73% of the old count was exactly that. Residual risk: the margin is now 1.8x, not 6.6x, so a scene edit that reduces genuine occlusion has far less room than the old number suggested. The recorded *cause* of the bias was also wrong - it said blocks were knocked off the table, and none ever has | Re-run `bench/occlusion_probe.py` after any scene change; it reports the split, the per-block breakdown, and whether a block has left the table or merely the camera. If the rate falls under 3%, widen the camera or move a block rather than relaxing the floor - F-7 exists to give Q-6 events to score |
 | **Q-4** | **Was measured 2026-08-28 to sit above its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene or `action_hold_steps` changes, and a Q-4 row quoting only the model's number is unfalsifiable | Report both numbers or the row does not count. `bench/hold_probe.py` produces the ground-truth term |
+| **Q-3** | **Was measured 2026-08-30 to terminate on a verdict blind to dynamics failure, and its terminator has been replaced** - see the row above. Residual risk: the continuity bound is calibrated on ground-truth frames, which are perfectly rendered, while Q-3's inputs are decoder output - the same two-regime trap that cost build-order item 6 its obvious recipe | Calibrate on **reconstructions**, not renders. Keep `bench/q3_blind_probe.py` as the regression test: a verdict that stops firing on the 300-step substitution has silently gone blind again |
+| **Q-5** | **Was measured 2026-08-30 to sit far below its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene, the camera or the resolution changes, and a Q-5 row quoting only the model's number is unfalsifiable. The 1.1x factor is a judgement, not a measurement - nothing has established how much worse than the simulator a *bad* model reads on this statistic, so the bar may not discriminate | Report both numbers or the row does not count; `bench/link_drift_probe.py` produces the ground-truth term. Before Phase 3 quotes a Q-5 verdict, measure the statistic on a deliberately broken rollout - if it does not separate from the simulator's own reading, Q-5 has no discriminating power and should be retired rather than re-tuned. **Do not re-attempt the deprojection**: r50 records it as measured and refuted |
 | P-6 | Two risks now. A software rasterizer instead of the GPU, ~50x slower; and `mjr_readPixels` fixed per-call cost under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms collapse to the single-pass render, near ~30 ms hand-roll a WGL pbuffer context |
