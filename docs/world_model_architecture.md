@@ -715,6 +715,52 @@ asserted.
 **Trigger to add more:** if R2 still falls short, residual blocks at the bottleneck
 come before wider channels, and both come before touching `levels`.
 
+### Phase 2 inherits R1, and the encoder keeps `GroupNorm`
+
+**Decided 2026-08-30.** The tokenizer Phase 2 builds on is **R1
+`20260829-005439-r1`** - FSQ `[8,8,8]`, no attention, `GroupNorm` in the encoder,
+60 epochs. Two alternatives were on the table and both are closed.
+
+**Not R2**, although R2 wins both reported gate numbers. Its Q-1 margin is
+**+0.087 dB for +263,680 parameters**, which is about a sixth of this file's own
+"within ~0.5 dB means tied" threshold and therefore a measured non-lever. The
+decision rests on the other two differences. R2's encoder attention makes tokens
+**batch-size dependent** - `F.scaled_dot_product_attention` returns batch-shaped
+floating point and ~2 latent values in 100,000 sit close enough to a rounding
+boundary to move - and **Phase 3 encodes a seed clip at batch 1**, so R2 carries
+an E-1 exposure that R1 structurally cannot have. R2 is also **twice as unstable**
+in time: 18.75% of its token transitions flip with no change in the cell's own
+receptive field, against R1's 8.86% (`runs.jsonl` r46). Attention adds global
+coupling on top of `GroupNorm`'s.
+
+**Not r1c**, the channel-only-normalisation rung, which eliminates spurious flips
+outright - 0 of 396,013 quiet-field transitions - for only 0.282 dB of Q-1. It
+**fails Q-2 at 54.6%** against the 70% bar, and unlike the 96x96 arm it has no
+"the statistic is measuring the wrong thing" defence: it delivers **314.2 bits per
+frame against R1's 426.9**, so it fails the bar *and* the rationale the bar exists
+to serve. `NUM-BAR-Q2` is not moved for it.
+
+**What this decision does not claim.** Token stability is a **tiebreaker here, not
+a driver.** Nothing has measured what spurious flips cost a dynamics model, in
+either direction - they are deterministic functions of the whole frame, and a
+transformer over the full sequence can in principle see everything it needs. The
+stability numbers agree with a choice the E-1 argument already decided; they
+should not be quoted as though they carried it.
+
+**Trigger, and it is one-directional: a rung may promote itself above R1, never
+demote R1.** Any tokenizer that passes *every* gate row and shows materially fewer
+spurious flips than 8.86% is a legitimate replacement, since it would be strictly
+better at the same parameter count. `r1w3` - the 3x3 local-window rung, whose one
+latent cell sees 1,849 px against R1's whole frame and r1c's 225 - is the only such
+candidate running, and it is the **only** interior point the architecture admits: a
+K x K window adds `2*(K-1)*7` px to the 15 px conv field, so K=5 already overshoots
+the 64 px frame. If it misses Q-2 it joins r1c as curve evidence and **no further
+rungs should be run chasing this**. **Second trigger:** Phase 2 evidence that token
+instability actually costs prediction accuracy would turn the tiebreaker into a
+driver and is worth reopening on. **Third:** if Phase 3 ever encodes its seed clip
+at the training batch size, R2's determinism objection weakens and only the
+stability gap and the parameter cost remain.
+
 ### fp32 for Phase 1, not bf16
 
 `world_model_ingredients.md` specifies bf16 training. That line is about the

@@ -110,6 +110,11 @@ RUNGS = {
     # mechanism behind spurious token flips (a token changing while its own 15x15
     # conv field did not), and this rung is the control that prices removing it.
     "r1c": dict(quantize=True, attention=False, encoder_norm="channel"),
+    # The middle of that curve, and there is only one point on it. A KxK
+    # normalisation window adds (K-1) at each stage's own resolution, so the
+    # support is 15 + 2*(K-1)*(4+2+1) px: K=3 gives 43x43 = 1,849 and K=5
+    # already gives 71, past the 64-pixel frame. Measured, and it agrees.
+    "r1w3": dict(quantize=True, attention=False, encoder_norm="local3"),
 }
 
 # GroupNorm needs a divisor of every channel count it is handed. 8 divides 64,
@@ -247,15 +252,66 @@ class ChannelNorm(nn.Module):
         g = x.view(b, self.groups, c // self.groups, h, w)
         g = (g - g.mean(2, keepdim=True)) * (
             g.var(2, unbiased=False, keepdim=True) + self.eps).rsqrt()
-        return g.view(b, c, h, w) * self.weight.view(1, -1, 1, 1)             + self.bias.view(1, -1, 1, 1)
+        g = g.view(b, c, h, w)
+        return g * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+
+
+class LocalNorm(nn.Module):
+    """The middle of the curve: statistics over a `window` x `window` patch.
+
+    `ChannelNorm` and `GroupNorm` are this module's two endpoints - window 1 is
+    per-pixel statistics, a window covering the feature map is `GroupNorm` - so
+    this is one knob interpolating between rungs `r1c` and `r1`, not a third
+    mechanism. Rung `r1w3` sits on it.
+
+    The box average is `avg_pool2d` at stride 1 with `count_include_pad=False`,
+    so a pixel at the edge normalises over the neighbours it actually has rather
+    than over zeros. Variance is `E[x^2] - E[x]^2` over the joint (the group's
+    channels x the window), the same population `GroupNorm` uses, restricted.
+
+    ponytail: that variance can come out slightly negative in fp32 when the
+    window is nearly constant, which is exactly what this dataset's void band
+    is, so it is clamped at 0 before the eps. Without the clamp `rsqrt` returns
+    NaN and the run dies in its first epoch.
+    """
+
+    def __init__(self, groups: int, ch: int, window: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        assert ch % groups == 0, f"{ch} channels do not split into {groups} groups"
+        assert window % 2 == 1 and window >= 1, f"window {window} must be odd and >= 1"
+        self.groups, self.window, self.eps = groups, window, eps
+        self.weight = nn.Parameter(torch.ones(ch))
+        self.bias = nn.Parameter(torch.zeros(ch))
+
+    def _box(self, t: torch.Tensor) -> torch.Tensor:
+        if self.window == 1:
+            return t
+        return F.avg_pool2d(t, self.window, 1, self.window // 2,
+                            count_include_pad=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        g = x.view(b, self.groups, c // self.groups, h, w)
+        # Channel-mean within the group first, then the spatial box average.
+        # Two steps give the same joint mean and pool `groups` maps instead of
+        # all `c` of them.
+        m = self._box(g.mean(2))
+        v = (self._box(g.pow(2).mean(2)) - m.pow(2)).clamp_min(0)
+        g = (g - m.unsqueeze(2)) * (v + self.eps).rsqrt().unsqueeze(2)
+        g = g.view(b, c, h, w)
+        return g * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
 
 
 def _norm(kind: str, ch: int) -> nn.Module:
+    """`group`, `channel`, or `localK` for a K x K window - see `LocalNorm`."""
     if kind == "group":
         return nn.GroupNorm(GN_GROUPS, ch)
     if kind == "channel":
         return ChannelNorm(GN_GROUPS, ch)
-    raise ValueError(f"unknown normalisation {kind!r}, expected 'group' or 'channel'")
+    if kind.startswith("local"):
+        return LocalNorm(GN_GROUPS, ch, int(kind[len("local"):]))
+    raise ValueError(
+        f"unknown normalisation {kind!r}, expected 'group', 'channel' or 'localK'")
 
 
 def _stage(cin: int, cout: int, stride: int, norm: str = "group") -> nn.Sequential:
@@ -815,7 +871,9 @@ def _self_check() -> None:
         m = Tokenizer((8, 8, 8), encoder_norm=encoder_norm)
         xin = torch.rand(1, 3, h, w, requires_grad=True)
         m.encoder(xin)[0, :, grid[0] // 2, grid[1] // 2].sum().backward()
-        return int((xin.grad.abs().sum(1)[0] > 0).sum())
+        gin = xin.grad  # bound once: `.grad` is a property, so narrowing it in
+        assert gin is not None, "backward produced no input gradient"
+        return int((gin.abs().sum(1)[0] > 0).sum())
 
     assert (2 * (2 * (2 * 1 + 1) + 1) + 1) == 15, "the conv-field arithmetic moved"
     got_ch, got_gn = _support("channel"), _support("group")
@@ -823,6 +881,26 @@ def _self_check() -> None:
     assert got_gn == h * w, f"GroupNorm reaches {got_gn} pixels, expected the whole {h}x{w}"
     print(f"one latent cell's gradient support: channel-only {got_ch} px (15x15), "
           f"GroupNorm {got_gn} px ({h}x{w}, the whole frame)")
+
+    # `LocalNorm` is only a middle if its endpoints really are the endpoints, so
+    # window 1 has to reproduce `ChannelNorm` and the interior window has to land
+    # strictly between. 15 + 2*(K-1)*7 is the support arithmetic; K=5 gives 71,
+    # which overshoots the frame, so **r1w3 is the only interior rung available**
+    # and that is a property of the architecture rather than a choice.
+    torch.manual_seed(0)
+    probe = torch.randn(2, 64, grid[0], grid[1])
+    cn, ln = ChannelNorm(GN_GROUPS, 64), LocalNorm(GN_GROUPS, 64, 1)
+    with torch.no_grad():
+        delta = float((cn(probe) - ln(probe)).abs().max())
+    assert delta < 1e-5, f"LocalNorm(window=1) differs from ChannelNorm by {delta:.2e}"
+    side_w3 = 15 + 2 * (3 - 1) * 7  # the conv field plus the window's reach
+    got_w3 = _support("local3")
+    assert side_w3 == 43 and got_w3 == side_w3 * side_w3 == 1849, \
+        f"local3 reaches {got_w3} pixels, expected {side_w3}x{side_w3}"
+    assert got_ch < got_w3 < got_gn, "local3 is not strictly between the endpoints"
+    assert _support("local5") == h * w, "local5 was expected to saturate the frame"
+    print(f"LocalNorm interpolates: window 1 matches ChannelNorm to {delta:.1e}, "
+          f"window 3 reaches {got_w3} px (43x43), window 5 already saturates")
 
     # A hand-computable case: total SSE 1.0 over 100 values, so MSE = 1/100.
     assert abs(psnr_db(1.0, 100) - 10 * math.log10(255 * 255 * 100)) < 1e-9
