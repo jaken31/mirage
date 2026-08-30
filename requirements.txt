@@ -40,8 +40,9 @@ pandas==3.0.2
 matplotlib==3.10.8
 pillow==12.0.0
 
-# OPTIONAL, and deliberately unpinned because it has never been installed here.
-# mirage/logging.py mirrors to Weights & Biases when `wandb_project` is passed.
-# That path is UNVERIFIED and must not be quoted as working until someone runs
-# it. Uncomment to be the person who does.
-# wandb
+# OPTIONAL, and deliberately left commented out: the mirror is a viewer, and the
+# lazy import in mirage/logging.py exists so it stays optional. 0.29.0 IS
+# installed on this machine, which is what the offline mirror and the credential
+# failures were verified against - see the verification log. Only the upload is
+# still unverified, and that needs an API key rather than a wheel.
+# wandb==0.29.0
