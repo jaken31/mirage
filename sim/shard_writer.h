@@ -26,6 +26,12 @@
 // a second implementation of the canonical-JSON hash would have to match
 // Python's float formatting byte for byte, and the day it stopped, two shards
 // with identical contents would carry different names.
+//
+// Not recomputed is not the same as not checked. main.cpp's VerifyDataHash asks
+// mirage/config.py what the config hashes to and aborts on a mismatch, so this
+// writer still copies the string without interpreting it, but a stale one never
+// reaches it. Until 2026-08-30 it was neither recomputed nor checked, which made
+// data_hash the one field in the sidecar that could claim anything at all.
 struct ShardProvenance {
     std::string data_hash;
     std::string git_sha;

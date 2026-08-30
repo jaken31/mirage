@@ -31,6 +31,33 @@ import numpy as np
 
 from mirage import config
 
+# Action-to-qpos alignment, which is the one thing about this record that a
+# reader cannot recover from the record. `sim/main.cpp` picks the action, writes
+# it to `ctrl`, calls `mj_step`, and only then reads the truth - so within one
+# record the action is the one applied *during* the step that produced that
+# record's `qpos`:
+#
+#     qpos[t] - qpos[t-1]  is the result of  action[t]      <- same record
+#
+# Q-4 scores `sign(theta_t+1 - theta_t)` against the commanded sign, so it must
+# pair a delta with the action in the *later* of the two records.
+#
+# **The data cannot arbitrate this and a sweep will pick the wrong one.** An
+# action is held for `sim.action_hold_steps` frames, so a one-step shift leaves
+# 14 of every 15 frames unchanged and both readings land a couple of points
+# apart, on the passing side of Q-4's 90% bar. The wrong one scores *higher*,
+# because shifting hands each delta the previous, already settled action
+# instead of the fresh one whose transient Q-4 cannot win - so calibrating the
+# alignment by maximising agreement inverts it. Agreement can never settle
+# this: a shifted held sequence is still a valid held sequence. Both measured
+# rates are in the verification log at the end of
+# `docs/world_model_architecture.md`, in the alignment row.
+#
+# What does pin it is the *phase* of the action stream against `step_idx`, which
+# `_self_check` asserts: `Policy::step` redraws only when its hold expires, so an
+# action can change only where `step_idx % action_hold_steps == 0`. A writer that
+# shifted the record by one step would move every change off that phase.
+
 # Row order. `mjr_readPixels` returns rows bottom-up - the OpenGL origin is the
 # bottom-left - and nothing in `sim/` flips them, so the blob is upside-down on
 # disk. Checked against the scene rather than assumed from the convention: the
@@ -557,6 +584,33 @@ def _self_check(config_path: Path | str | None = None) -> None:
         assert len(np.unique(w.meta["episode_id"])) == 1, "window straddles an episode boundary"
         assert np.array_equal(np.diff(w.meta["step_idx"].astype(np.int32)), ones), "step_idx jumps"
     print(f"20,000 windows of {ctx + 1}: one episode_id each, step_idx contiguous")
+
+    # The action-to-qpos alignment, pinned the one way the data can pin it - see
+    # the module-level note. `Policy::step` redraws only when its hold expires,
+    # so every action change must sit at `step_idx % action_hold_steps == 0`. A
+    # writer that appended the action one step out of step with the truth would
+    # move every change to a different phase, which is the failure that is
+    # otherwise invisible: both alignments score ~90% on Q-4 and the wrong one
+    # scores higher.
+    hold = cfg.sim["action_hold_steps"]
+    phases: set[int] = set()
+    changes = 0
+    for shard in shards:
+        a = np.asarray(shard.meta["action"])
+        st = np.asarray(shard.meta["step_idx"]).astype(np.int64)
+        ep = np.asarray(shard.meta["episode_id"])
+        # The first record of each episode is a change by definition - the hold
+        # is zeroed in `begin_episode` - and sits at step_idx 0, so it is phase 0
+        # and needs no special case.
+        changed = np.concatenate(([True], (a[1:] != a[:-1]) | (ep[1:] != ep[:-1])))
+        phases |= set(np.unique(st[changed] % hold).tolist())
+        changes += int(changed.sum())
+    assert phases == {0}, (
+        f"actions change at step_idx phases {sorted(phases)} mod {hold}, expected "
+        f"{{0}} - the action is out of step with the truth in the same record"
+    )
+    print(f"alignment: all {changes:,} action changes sit at step_idx % {hold} == 0, "
+          f"so action[t] is the action that produced qpos[t]")
 
     # The flip happened, exactly once.
     ep0 = index[0]

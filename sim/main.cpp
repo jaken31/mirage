@@ -131,10 +131,114 @@ namespace {
         return cfg;
     }
 
-    // Reads `git rev-parse HEAD` at build time is not available here, and this
-    // binary is not the right place to shell out, so provenance arrives as two
-    // required flags. Required rather than defaulted: a shard with no data_hash
-    // is a shard nothing can trace back to its config.
+    // Characters allowed in a config path before it is handed to the command
+    // interpreter below. Deliberately narrow: `_popen` goes through cmd.exe, so
+    // `&`, `|`, `^` and `%` are all live there, and a path is the one argument
+    // here that comes from outside. Spaces are rejected too - config paths are
+    // repo-relative by rule, so a space is more likely a quoting mistake than a
+    // real directory name, and failing loudly beats guessing at the quoting.
+    bool IsSafePathArg(const std::string& text) {
+        for (const char c : text) {
+            const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                            (c >= 'A' && c <= 'Z') || c == '_' || c == '-' ||
+                            c == '.' || c == '/' || c == '\\' || c == ':';
+            if (!ok) {
+                return false;
+            }
+        }
+        return !text.empty();
+    }
+
+    // stdout of `command`, or an empty string if it could not be run. stderr is
+    // deliberately left attached to ours, so a Python traceback is visible
+    // rather than swallowed into a return code.
+    //
+    // Windows-only, like the rest of this target - CMakeLists fetches the
+    // windows-x86_64 MuJoCo and builds with MSVC flags, so `_popen` needs no
+    // guard. It is the underscore spelling on purpose: the POSIX `popen` is the
+    // one MSVC deprecates, and /W4 /WX would make that fatal.
+    std::string RunCapture(const std::string& command, bool* ran) {
+        *ran = false;
+        FILE* pipe = _popen(command.c_str(), "r");
+        if (!pipe) {
+            return {};
+        }
+        std::string out;
+        char chunk[256];
+        while (std::fgets(chunk, sizeof(chunk), pipe)) {
+            out += chunk;
+        }
+        *ran = (_pclose(pipe) == 0);
+        return out;
+    }
+
+    std::string Trimmed(std::string text) {
+        const char* space = " \t\r\n";
+        const std::size_t first = text.find_first_not_of(space);
+        if (first == std::string::npos) {
+            return {};
+        }
+        return text.substr(first, text.find_last_not_of(space) - first + 1);
+    }
+
+    // Asks mirage/config.py what this config hashes to, and refuses to run if
+    // the caller said something else.
+    //
+    // Shelling out rather than hashing here, and that is the whole point.
+    // sim/shard_writer.h explains why a second implementation is not wanted:
+    // data_hash is sha256 over Python's canonical JSON, so a C++ copy would have
+    // to match Python's float formatting byte for byte, and the day it stopped,
+    // two shards with identical contents would carry different names. Asking the
+    // one implementation is the only answer that cannot drift from it.
+    //
+    // Aborts when Python cannot be run at all, rather than skipping the check -
+    // a verification that silently turns itself off is the hole it was added to
+    // close.
+    void VerifyDataHash(const std::string& config_path, const std::string& claimed) {
+        if (!IsSafePathArg(config_path)) {
+            mju_error("config path '%s' has characters outside [0-9A-Za-z_.:/\\-]; "
+                      "it is passed to a command interpreter to verify --data-hash",
+                      config_path.c_str());
+        }
+
+        // The path travels as argv[1], not spliced into the -c source, so it can
+        // never be read as Python. The script itself contains no quotes, which
+        // is what keeps the cmd.exe quoting here trivial.
+        const std::string command =
+            "python -c \"import sys;from mirage.config import load;"
+            "print(load(sys.argv[1]).data_hash)\" \"" + config_path + "\"";
+
+        bool ran = false;
+        const std::string actual = Trimmed(RunCapture(command, &ran));
+        if (!ran || actual.empty()) {
+            mju_error("could not verify --data-hash: `%s` failed. Run from the repo "
+                      "root with python on PATH - this check is not optional, an "
+                      "unverified data_hash is a shard nothing can trace back",
+                      command.c_str());
+        }
+        if (actual != claimed) {
+            mju_error("--data-hash is %s, but %s hashes to %s. The flag is stale: "
+                      "every shard this run wrote would claim a config that did not "
+                      "produce it", claimed.c_str(), config_path.c_str(),
+                      actual.c_str());
+        }
+        std::printf("data_hash:   %s (verified against %s)\n",
+                    actual.c_str(), config_path.c_str());
+    }
+
+    // Provenance arrives as two required flags. Required rather than defaulted:
+    // a shard with no data_hash is a shard nothing can trace back to its config.
+    //
+    // `--data-hash` is *verified* against the config this run actually loaded -
+    // see VerifyDataHash. It was unchecked until 2026-08-30, which made it the
+    // one unverified link in E-4's chain: any hex-ish string was accepted and
+    // stamped into every sidecar, and `mirage/data.load_shards` then trusted it.
+    // A stale hash left behind by an earlier config is the realistic way to hit
+    // that, and it is silent - the shards load, and they claim to describe a
+    // config that never produced them.
+    //
+    // `--git-sha` stays unverified. It names the working tree, not the config,
+    // and there is nothing in this process that could confirm it.
     struct Args {
         std::string config_path;
         std::string data_hash;
@@ -174,6 +278,11 @@ int main(int argc, const char** argv) {
                 "flags are required: a shard that cannot name the config and the\n"
                 "commit that produced it is a shard nothing can reproduce.\n"
                 "\n"
+                "--data-hash is checked against the config before anything is\n"
+                "written, by asking mirage/config.py, so a stale one aborts the\n"
+                "run rather than being stamped into every sidecar. That check\n"
+                "needs python on PATH. --git-sha is taken on trust.\n"
+                "\n"
                 "  python -c \"from mirage.config import load; "
                 "print(load('mirage/configs/base.json').data_hash)\"\n"
                 "  git rev-parse HEAD\n",
@@ -182,6 +291,7 @@ int main(int argc, const char** argv) {
     }
 
     const SimConfig cfg = LoadSimConfig(args.config_path);
+    VerifyDataHash(args.config_path, args.data_hash);
 
     constexpr int error_buffer_size = 1000;
     // Initialised, not just declared: if mj_loadXML fails without writing
