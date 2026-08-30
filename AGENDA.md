@@ -42,70 +42,6 @@ landed as Phase 1 item 6 on 2026-08-29 - `runs.jsonl` r42.
 
 ---
 
-## The writeup. Highest priority, and the only item here with an outside deadline
-
-**Phase 1's gate passed 2026-08-29 and nothing has been published.** This is the
-one item on this list that is not an engineering task. Its deadline is not a gate,
-it is **2026-09-09**, when classes start and the hours this project runs on
-collapse.
-
-**It does not wait for the Phase 4 benchmark table.** Phase 2 is budgeted at two
-weeks, Phase 3 at three days, Phase 4 at six - and those are full-time weeks that
-stop existing on September 9. Holding the writeup for a table that far out is how
-it does not get written. **Ship Phases 0-1 as part one.** The ladder table is part
-two, and a published part one is what makes anyone read it.
-
-**Part one is written: `docs/writeup_part1.md`, linked from `README.md`.** Its
-numbers were checked against the register on 2026-08-29 and all 56 match. What
-is left is *publishing* it somewhere outside this repo - which is what the
-done-when below means, and the only part of this item still open.
-
-Nothing here is assembled from scratch:
-
-| Have | Where |
-|---|---|
-| The eight-row gate table, passing | `python -m mirage.fsq --eval` |
-| Eight figures | `docs/figures/fig1_curves.png` through `fig8_token_entropy_map.png`, described in `tokenizer_figures.md` |
-| Two narratives over the log | `phase1_progress_report.md`, `phase1_item5_report.md` |
-| Every number with its provenance | `canonical_numbers.md`, `runs.jsonl` |
-| Plain-English framing, already written | `timeline.md`, `decision_notes.md` |
-
-**Lead with the refutations.** They are the part nobody else's writeup has, and
-all three are this project's own measurements overturning its own predictions:
-
-- **15 epochs is not convergence.** Every rung missed `NUM-BAR-Q1` at 15 epochs
-  and every rung clears it at 60, with no change to the architecture - only
-  `--epochs`. A day was lost reading ranking runs as gate verdicts
-- **`NUM-HW-READBACK`, against the ~30 ms the MuJoCo discussion reported.** The
-  single riskiest unknown in the plan, the one that could have turned Week 0 into
-  three weeks, did not exist
-- **`NUM-HW-FP16` after a chassis cooling fix, with no throttle flag ever set.**
-  The instantaneous flags read `Not Active` through a 45 W cap and the evidence
-  was in the counters
-- **The 64/144 fork: the higher resolution wins on the metric everyone was
-  watching and fails one nobody was.** `NUM-TOK-FORK` of Q-1 quality, and
-  `NUM-TOK-ENT-R1-96` against `NUM-BAR-Q2`. One mechanism drives both signs, and
-  **both remedies this project had written down die to arithmetic before either
-  is run** - `NUM-TOK-MARGSUM-96` and `NUM-TOK-SHRINK240-UB`. The strongest
-  refutation of the set, because the plan was wrong about *which number decides*
-  rather than about the value of a number
-- **`NUM-VAL-PCTL`: the resolution-free validator statistic that was obviously
-  right and is wrong.** A quantile of palette distance replaces a pixel count
-  and needs no per-resolution calibration - and it misses gaussian noise 99.9%
-  of the time, because it is a *tail* statistic where the failures are *bulk*.
-  The cheaper fix, the same count over the frame's pixels, keeps item 6's
-  verdict bit-identical at 64x64. This one is the cleanest example of the
-  project's own house rule working: the argument was airtight and the
-  measurement killed it in one run
-
-**Cite the register id, not the value** - the same rule this file already lives
-under. A writeup that hard-codes figures joins the list of documents that went
-stale the day the floor moved. Chosen bars are the stated exception.
-
-**Done when** it is published and linked from `README.md`. Not "drafted".
-
----
-
 ## Phase 1: the tokenizer. Budgeted at 1 week
 
 **Structural plan: `phase1_structural_plan.md`.** What each file owns, the build
@@ -124,8 +60,10 @@ decides it is that R2's tokens move with batch size while Phase 3 encodes a seed
 clip at batch 1, and that R2 flips twice as many tokens with no local cause
 (`runs.jsonl` r46). **The trigger is one-directional** - another rung can promote
 itself above R1 by passing every gate row with fewer spurious flips, and nothing
-demotes R1. Outcomes are in `phase1_progress_report.md` (items 1-4)
-and `phase1_item5_report.md` (item 5, complete). Both are narratives over
+demotes R1.
+
+Outcomes are in `phase1_progress_report.md` (items 1-4) and
+`phase1_item5_report.md` (item 5, complete). Both are narratives over
 `runs.jsonl` and the verification log, which stay authoritative.
 
 > **The lesson item 5 cost the most to learn: 15 epochs is not convergence, and
@@ -303,8 +241,7 @@ void**: thermal throttling took one run to 99.2 s/epoch and Modern Standby put a
 > **Consequences, all of them good for the schedule.** DiagD stays in reserve,
 > F-16 does not promote to M, and CUDA graphs stay a win rather than table stakes.
 > Phase 2 is budgeted against the 64-token path. **No further tokenizer runs are
-> planned** - the next item on this file is the writeup, and the 96x96 arm goes
-> into it as a result rather than as a failed attempt.
+> planned**, and the 96x96 arm is a result rather than a failed attempt.
 
 ---
 
