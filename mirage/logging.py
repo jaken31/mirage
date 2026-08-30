@@ -131,9 +131,11 @@ class Run:
         # `_self_check`: this init, three `log` calls and `finish` all run, and
         # the jsonl path is unaffected. The credential failures are verified
         # 2026-08-30 and all three land here, at init, before step 0 - see the
-        # `wandb.login` note below. **A successful upload is still unverified**,
-        # because no API key has ever been available on this machine;
-        # `--network` below is the command that closes it.
+        # `wandb.login` note below. **The upload is verified 2026-08-30 too**,
+        # by `--network` below: a three-record run reached the server, and its
+        # history read back through `wandb.Api()` matched what was logged while
+        # the jsonl underneath stayed intact. Nothing about the mirror is
+        # unverified now.
         self._wandb = None
         if wandb_project is not None:
             import wandb  # noqa: PLC0415
