@@ -103,6 +103,13 @@ RUNGS = {
     "r0": dict(quantize=False, attention=False),  # the architecture's ceiling
     "r1": dict(quantize=True, attention=False),   # what quantization costs
     "r2": dict(quantize=True, attention=True),    # what joint coding buys
+    # R1 with the encoder's spatial statistics removed. GroupNorm normalises over
+    # (channel group, H, W), so every token already depends on every pixel of the
+    # frame - measured by autograd on the R1 encoder: gradient support 4,096 px
+    # with it, exactly 15x15 with it monkeypatched to identity. That is the
+    # mechanism behind spurious token flips (a token changing while its own 15x15
+    # conv field did not), and this rung is the control that prices removing it.
+    "r1c": dict(quantize=True, attention=False, encoder_norm="channel"),
 }
 
 # GroupNorm needs a divisor of every channel count it is handed. 8 divides 64,
@@ -214,10 +221,47 @@ class FSQ(nn.Module):
 
 # ---------------------------------------------------- 5b. encoder and decoder
 
-def _stage(cin: int, cout: int, stride: int) -> nn.Sequential:
+class ChannelNorm(nn.Module):
+    """`GroupNorm`'s statistics taken **per pixel**: no spatial mixing at all.
+
+    Same groups, same learned per-channel scale and shift, same eps - the only
+    change is that the mean and variance are over the group's channels at one
+    (h, w) rather than over the group's channels *and the whole feature map*.
+    So a cell's output stops depending on pixels outside its conv receptive
+    field, which is what rung `r1c` is testing.
+
+    ponytail: written out rather than reusing `F.group_norm`, because getting
+    per-pixel statistics out of that call needs a permute and a copy of the
+    activation. This is a view plus two reductions.
+    """
+
+    def __init__(self, groups: int, ch: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        assert ch % groups == 0, f"{ch} channels do not split into {groups} groups"
+        self.groups, self.eps = groups, eps
+        self.weight = nn.Parameter(torch.ones(ch))
+        self.bias = nn.Parameter(torch.zeros(ch))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        g = x.view(b, self.groups, c // self.groups, h, w)
+        g = (g - g.mean(2, keepdim=True)) * (
+            g.var(2, unbiased=False, keepdim=True) + self.eps).rsqrt()
+        return g.view(b, c, h, w) * self.weight.view(1, -1, 1, 1)             + self.bias.view(1, -1, 1, 1)
+
+
+def _norm(kind: str, ch: int) -> nn.Module:
+    if kind == "group":
+        return nn.GroupNorm(GN_GROUPS, ch)
+    if kind == "channel":
+        return ChannelNorm(GN_GROUPS, ch)
+    raise ValueError(f"unknown normalisation {kind!r}, expected 'group' or 'channel'")
+
+
+def _stage(cin: int, cout: int, stride: int, norm: str = "group") -> nn.Sequential:
     return nn.Sequential(
         nn.Conv2d(cin, cout, 3, stride, 1),
-        nn.GroupNorm(GN_GROUPS, cout),
+        _norm(norm, cout),
         nn.SiLU(),
     )
 
@@ -304,14 +348,16 @@ class Tokenizer(nn.Module):
     """
 
     def __init__(self, levels=(8, 8, 8), attention: bool = False,
-                 quantize: bool = True, width: int = 64) -> None:
+                 quantize: bool = True, width: int = 64,
+                 encoder_norm: str = "group") -> None:
         super().__init__()
         c1, c2, c3 = width, width * 2, width * 4
         d = len(levels)
         self.fsq = FSQ(levels)
         self.quantize = quantize
         self.encoder = nn.Sequential(
-            _stage(3, c1, 2), _stage(c1, c2, 2), _stage(c2, c3, 2),
+            _stage(3, c1, 2, encoder_norm), _stage(c1, c2, 2, encoder_norm),
+            _stage(c2, c3, 2, encoder_norm),
             *([GridAttention(c3)] if attention else []),
             nn.Conv2d(c3, d, 1),
         )
@@ -413,7 +459,7 @@ def _keep_awake() -> None:
 
 
 def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = False,
-          quantize: bool = True, epochs: int = 15, batch: int = 128, lr: float = 3e-4,
+          quantize: bool = True, encoder_norm: str = "group", epochs: int = 15, batch: int = 128, lr: float = 3e-4,
           lr_floor: float = 3e-5, weight_decay: float = 1e-4, warmup: float = 0.05,
           seed: int = 0, eval_frames: int = 4096, log_every: int = 100,
           device: str | None = None, resume: str | None = None) -> dict:
@@ -493,7 +539,8 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     lut = torch.from_numpy(lut_np).to(dev).float()
     load_s = time.perf_counter() - t0
 
-    model = Tokenizer(levels, attention=attention, quantize=quantize).to(dev)
+    model = Tokenizer(levels, attention=attention, quantize=quantize,
+                      encoder_norm=encoder_norm).to(dev)
     params = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -511,7 +558,7 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
 
     hashes = {"data_hash": cfg.data_hash, "tokenizer_hash": cfg.tokenizer_hash}
     knobs = dict(rung=rung, levels=list(levels), attention=attention, quantize=quantize,
-                 epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
+                 encoder_norm=encoder_norm, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
                  weight_decay=weight_decay, warmup=warmup, seed=seed,
                  image_size=list(cfg.shapes.image_size),
                  token_grid=list(cfg.shapes.token_grid), params=params,
@@ -546,8 +593,13 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
         # the frame counts) are deliberately still unchecked: resuming onto a
         # second machine is a case this has to keep allowing, and those differ
         # without changing the computation.
+        # `encoder_norm` changes the architecture, so a mismatched resume would
+        # not even load. It is last on purpose: every checkpoint written before
+        # 2026-08-29 predates it and is refused by the `k in ck["knobs"]` assert
+        # below, which is the honest answer - none of them can be *shown* to
+        # match, and no run was in flight when it was added.
         for k in ("levels", "attention", "quantize", "batch", "lr", "lr_floor",
-                  "warmup", "weight_decay", "epochs", "seed"):
+                  "warmup", "weight_decay", "epochs", "seed", "encoder_norm"):
             assert k in ck["knobs"], (
                 f"resume {resume}: its checkpoint carries no {k!r}, so it predates "
                 f"this check and cannot be shown to match - retrain, do not resume"
@@ -753,6 +805,25 @@ def _self_check() -> None:
     print(f"encode: ids {tuple(ids.shape)} in [{int(ids.min())}, {int(ids.max())}], "
           f"deterministic, and refuses a continuous bottleneck")
 
+    # The whole point of the `r1c` rung, asserted rather than assumed. Backward
+    # from one latent cell and count the input pixels with a nonzero gradient.
+    # Three stride-2 3x3 convs give a conv field of 2*(2*(2*1+1)+1)+1 = 15, so
+    # channel-only normalisation must read exactly 15x15 for an interior cell,
+    # and GroupNorm - whose statistics span the feature map - must read the whole
+    # 64x64 frame. `bench/patch_probe.py`'s RF = 22 is neither.
+    def _support(encoder_norm: str) -> int:
+        m = Tokenizer((8, 8, 8), encoder_norm=encoder_norm)
+        xin = torch.rand(1, 3, h, w, requires_grad=True)
+        m.encoder(xin)[0, :, grid[0] // 2, grid[1] // 2].sum().backward()
+        return int((xin.grad.abs().sum(1)[0] > 0).sum())
+
+    assert (2 * (2 * (2 * 1 + 1) + 1) + 1) == 15, "the conv-field arithmetic moved"
+    got_ch, got_gn = _support("channel"), _support("group")
+    assert got_ch == 225, f"channel-only norm reaches {got_ch} pixels, expected 15x15=225"
+    assert got_gn == h * w, f"GroupNorm reaches {got_gn} pixels, expected the whole {h}x{w}"
+    print(f"one latent cell's gradient support: channel-only {got_ch} px (15x15), "
+          f"GroupNorm {got_gn} px ({h}x{w}, the whole frame)")
+
     # A hand-computable case: total SSE 1.0 over 100 values, so MSE = 1/100.
     assert abs(psnr_db(1.0, 100) - 10 * math.log10(255 * 255 * 100)) < 1e-9
     print("psnr_db agrees with 10*log10(255^2 / MSE) by hand")
@@ -803,7 +874,8 @@ def main() -> None:
     rung = RUNGS[args.run]
     out = train(args.run, cfg, levels=tuple(args.levels), epochs=args.epochs,
                 batch=args.batch, lr=args.lr, seed=args.seed, resume=args.resume,
-                quantize=rung["quantize"], attention=rung["attention"])
+                quantize=rung["quantize"], attention=rung["attention"],
+                encoder_norm=rung.get("encoder_norm", "group"))
     db = out["val_psnr_db"]
     # Row 1 and row 2 of the gate, the two that can disagree. Row 1 passing while
     # row 2 fails means the val split got easier, not that the model got better -

@@ -56,8 +56,11 @@ def load_run(run_id: str, cfg: config.Config,
             f"{run_id} was trained on data_hash {ckpt['data_hash'][:8]}, "
             f"this config is {cfg.data_hash[:8]}"
         )
+    # `.get` and not `[...]`: every checkpoint written before the `r1c` rung
+    # existed carries no `encoder_norm`, and all of them are GroupNorm.
     model = Tokenizer(tuple(knobs["levels"]), attention=knobs["attention"],
-                      quantize=knobs["quantize"]).to(dev)
+                      quantize=knobs["quantize"],
+                      encoder_norm=knobs.get("encoder_norm", "group")).to(dev)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model, knobs
