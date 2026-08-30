@@ -134,51 +134,62 @@ class Run:
         # `wandb.login` note below. **The upload is verified 2026-08-30 too**,
         # by `--network` below: a three-record run reached the server, and its
         # history read back through `wandb.Api()` matched what was logged while
-        # the jsonl underneath stayed intact. Nothing about the mirror is
-        # unverified now.
-        self._wandb = None
-        if wandb_project is not None:
-            import wandb  # noqa: PLC0415
+        # the jsonl underneath stayed intact. So: the offline init/log/finish
+        # path, the credential paths, and the scalar upload. Resume, artifacts,
+        # media and a mid-run network drop are deliberately not verified - the
+        # verification log says which, and why each is a different measurement.
+        try:
+            self._wandb = None
+            if wandb_project is not None:
+                import wandb  # noqa: PLC0415
 
-            # `wandb.init` authenticates implicitly, and with no key configured
-            # that means an **interactive prompt with no timeout**: a run
-            # launched from a terminal sits at "Enter your choice:" forever,
-            # having logged nothing. That is the one credential outcome worse
-            # than crashing, and it is the default. `Settings(login_timeout=)`
-            # does not reach the prompt - only an explicit `login(timeout=)`
-            # does. Measured 2026-08-30 against 0.29.0; see the verification log.
-            #
-            # `login` returning False is the other quiet case: the prompt timed
-            # out and W&B disabled itself, so `init` would then succeed and
-            # mirror nothing at all. Raise instead. A mirror that is silently
-            # off is worse than a run that refuses to start, because the run it
-            # was meant to record is the multi-hour one.
-            #
-            # Offline and disabled runs are exempt on purpose: neither contacts
-            # the server, so neither needs a key, and the offline self-check
-            # below is exactly that case. Known consequence, accepted: `login`
-            # verifies against the server and wandb reports unreachability as
-            # an auth error, so a transient outage also stops the run here,
-            # labelled auth. The mirror is opt-in and the jsonl needs no
-            # network, so re-running without `wandb_project` is the way out.
-            if wandb.setup().settings.mode == "online" and not wandb.login(
-                timeout=WANDB_LOGIN_TIMEOUT_S
-            ):
-                raise RuntimeError(
-                    "W&B is online but no API key is configured, and the login "
-                    f"prompt was not answered within {WANDB_LOGIN_TIMEOUT_S}s. "
-                    "Set WANDB_API_KEY, or run `wandb login`, or set "
-                    "WANDB_MODE=offline - never a key in a config or the repo."
+                # `wandb.init` authenticates implicitly, and with no key configured
+                # that means an **interactive prompt with no timeout**: a run
+                # launched from a terminal sits at "Enter your choice:" forever,
+                # having logged nothing. That is the one credential outcome worse
+                # than crashing, and it is the default. `Settings(login_timeout=)`
+                # does not reach the prompt - only an explicit `login(timeout=)`
+                # does. Measured 2026-08-30 against 0.29.0; see the verification log.
+                #
+                # `login` returning False is the other quiet case: the prompt timed
+                # out and W&B disabled itself, so `init` would then succeed and
+                # mirror nothing at all. Raise instead. A mirror that is silently
+                # off is worse than a run that refuses to start, because the run it
+                # was meant to record is the multi-hour one.
+                #
+                # Offline and disabled runs are exempt on purpose: neither contacts
+                # the server, so neither needs a key, and the offline self-check
+                # below is exactly that case. Known consequence, accepted: `login`
+                # verifies against the server and wandb reports unreachability as
+                # an auth error, so a transient outage also stops the run here,
+                # labelled auth. The mirror is opt-in and the jsonl needs no
+                # network, so re-running without `wandb_project` is the way out.
+                if wandb.setup().settings.mode == "online" and not wandb.login(
+                    timeout=WANDB_LOGIN_TIMEOUT_S
+                ):
+                    raise RuntimeError(
+                        "W&B is online but no API key is configured, and the login "
+                        f"prompt was not answered within {WANDB_LOGIN_TIMEOUT_S}s. "
+                        "Set WANDB_API_KEY, or run `wandb login`, or set "
+                        "WANDB_MODE=offline - never a key in a config or the repo."
+                    )
+
+                # x_disable_stats kills the background system-metrics sampler. It
+                # samples CPU/GPU/disk on its own schedule, and sampling the GPU
+                # during a tail-latency measurement inflates p99 quietly.
+                self._wandb = wandb.init(
+                    project=wandb_project, name=self.run_id,
+                    config=dict(config or {}) | self.hashes,
+                    settings=wandb.Settings(x_disable_stats=True),
                 )
-
-            # x_disable_stats kills the background system-metrics sampler. It
-            # samples CPU/GPU/disk on its own schedule, and sampling the GPU
-            # during a tail-latency measurement inflates p99 quietly.
-            self._wandb = wandb.init(
-                project=wandb_project, name=self.run_id,
-                config=dict(config or {}) | self.hashes,
-                settings=wandb.Settings(x_disable_stats=True),
-            )
+        except BaseException:
+            # `__init__` raising means `__enter__`/`__exit__` never run, so
+            # without this the metrics file stays open and this run directory
+            # is orphaned - and a retry in the same second then fails on
+            # `mkdir(exist_ok=False)`, which reads like the interleaving bug
+            # the class docstring warns about rather than like a login failure.
+            self._file.close()
+            raise
 
     def log(self, record: Mapping[str, Any]) -> dict:
         """Append one record. Returns the line as written, parsed back.
@@ -297,7 +308,7 @@ def _self_check() -> None:
     # not match the installed version's signature and would blow up at run start,
     # killing a multi-hour training run at minute zero. Offline runs the same
     # constructor and the same `log`/`finish` calls against a local directory.
-    # What offline does NOT check is upload, auth, or the server-side view.
+    # What offline does NOT check is upload or the server-side view.
     try:
         import wandb  # noqa: PLC0415
     except ImportError:

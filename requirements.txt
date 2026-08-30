@@ -43,6 +43,7 @@ pillow==12.0.0
 # OPTIONAL, and deliberately left commented out: the mirror is a viewer, and the
 # lazy import in mirage/logging.py exists so it stays optional. 0.29.0 IS
 # installed on this machine, which is what the offline mirror, the credential
-# failures and the networked upload were all verified against - see the
-# verification log. Nothing about the mirror is unverified now.
+# failures and the scalar upload were all verified against. Resume, artifacts,
+# media and a mid-run network drop are deliberately not verified - see the
+# verification log for the whole list.
 # wandb==0.29.0
