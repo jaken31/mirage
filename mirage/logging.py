@@ -226,9 +226,14 @@ class Run:
 def _self_check() -> None:
     """The plan's working-when, against a throwaway directory.
 
-    W&B is not exercised. It is absent from this environment, which is exactly
-    the condition this file has to survive - so the jsonl path is verified and
-    the mirror is not.
+    Three branches, in order: the jsonl path, which must work with W&B absent
+    entirely; the mirror against a local directory, `WANDB_MODE=offline`; and
+    the credential path, `_bad_credentials_check`, which contacts the server.
+    W&B is no longer absent from this environment - `requirements.txt` names
+    the installed version - so the mirror branch runs rather than skipping.
+    The upload itself is not here; it needs a key, and `--network <project>`
+    is the command for it. See the verification log at the end of
+    `docs/world_model_architecture.md` for what each of those measured.
     """
     import tempfile
 
@@ -401,13 +406,15 @@ def _network_check(project: str) -> None:
 
     assert os.environ.get("WANDB_MODE") in (None, "online"), "WANDB_MODE is not online"
     records = [{"step": i, "loss": 1.0 / (i + 1)} for i in range(3)]
+    hashes = {"h": "0" * 8}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         os.environ["WANDB_DIR"] = tmp
         try:
-            with Run("netcheck", {"h": "0" * 8}, config={"epochs": 1},
+            with Run("netcheck", hashes, config={"epochs": 1},
                      root=Path(tmp), wandb_project=project) as run:
                 assert run._wandb is not None, "wandb_project was passed but no run was made"
-                path, url, wid, entity = run.path, run._wandb.url, run._wandb.id, run._wandb.entity
+                path, run_id = run.path, run.run_id
+                url, wid, entity = run._wandb.url, run._wandb.id, run._wandb.entity
                 print(f"authenticated as {entity!r}, run {url}")
                 for r in records:
                     run.log(r)
@@ -420,8 +427,11 @@ def _network_check(project: str) -> None:
         assert len(rows) == len(records), f"{len(rows)} local lines for {len(records)} logs"
         for row, rec in zip(rows, records):
             assert {k: row[k] for k in rec} == rec, "a local record does not match what was logged"
+            assert row["run_id"] == run_id, "a local record does not name its run"
+            for k, v in hashes.items():
+                assert row[k] == v, f"a local record does not carry {k}"
         print(f"local jsonl intact underneath the mirror: {len(rows)} records, "
-              f"each carrying run_id and h")
+              f"each carrying run_id and {', '.join(hashes)}")
 
     # Server-side, through the public API - a different process's view.
     api_run = wandb.Api().run(f"{entity}/{project}/{wid}")
@@ -440,7 +450,9 @@ if __name__ == "__main__":
 
     # `--network <project>` needs a real key, from the environment or `wandb
     # login` - never from a file in this repo. Everything else runs without one.
-    if len(sys.argv) > 2 and sys.argv[1] == "--network":
+    if sys.argv[1:2] == ["--network"]:
+        if len(sys.argv) < 3 or not sys.argv[2].strip():
+            raise SystemExit("usage: python -m mirage.logging [--network <project>]")
         _network_check(sys.argv[2])
     else:
         _self_check()
