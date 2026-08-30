@@ -345,6 +345,14 @@ def _bad_credentials_check() -> None:
     """
     import tempfile
 
+    import wandb.errors  # noqa: PLC0415
+
+    # Only these two mean "the credential was rejected": r51 measured
+    # UsageError for no key and AuthenticationError for a wrong one. Anything
+    # else - a CommError, a socket failure - means the server was never
+    # reached, so the guard was not exercised and the check cannot pass.
+    rejected = (wandb.errors.AuthenticationError, wandb.errors.UsageError)
+
     prev_key, prev_mode = os.environ.get("WANDB_API_KEY"), os.environ.get("WANDB_MODE")
     os.environ["WANDB_API_KEY"] = "0" * 40  # syntactically valid, no such account
     os.environ.pop("WANDB_MODE", None)
@@ -353,9 +361,16 @@ def _bad_credentials_check() -> None:
             os.environ["WANDB_DIR"] = tmp
             try:
                 Run("badkey", root=Path(tmp), wandb_project="mirage-selfcheck")
-            except Exception as exc:  # noqa: BLE001 - the type is the finding
+            except rejected as exc:
                 print(f"bad credentials: rejected at Run() by "
                       f"{type(exc).__name__}, before step 0")
+            except Exception as exc:
+                raise AssertionError(
+                    f"bad-credentials check NOT RUN: Run() raised "
+                    f"{type(exc).__name__}, which is not a credential "
+                    f"rejection - the server was never reached, so the online "
+                    f"guard was not exercised. This check needs the network."
+                ) from exc
             else:
                 raise AssertionError(
                     "a 40-zero API key was accepted - the mirror is silently off"
