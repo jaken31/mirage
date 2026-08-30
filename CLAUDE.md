@@ -22,7 +22,9 @@ Derived explainers restate the files above in plain words and are never a citabl
 source - when one disagrees with the code, the code wins: `decision_notes.md`
 (each choice with its trigger and fallbacks), `timeline.md` (schedule and gates),
 `mathematics_notes.md` (every formula the project runs, from scratch, citing
-`NUM-` ids for its inputs).
+`NUM-` ids for its inputs), `handoff_tokenizer_decision.md` (why Phase 2 took R1,
+and the locality-versus-entropy curve behind it - a dated snapshot, so its "still
+open" sections go stale where the others do not).
 
 `docs/writeup_part1.md` is the outward-facing account of Phases 0-1, written for
 readers who cannot resolve a `NUM-` id, so it states every value once in a table
