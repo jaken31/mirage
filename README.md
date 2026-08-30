@@ -7,6 +7,7 @@ simulator, and control the learned model in real time at 30 fps.
 
 | File | What |
 |---|---|
+| [docs/writeup_part1.md](docs/writeup_part1.md) | **The writeup, part one.** Phases 0-1, the dataset and the tokenizer, refutation-first. Start here to know what this *is*; start at AGENDA to know what to *do* |
 | [AGENDA.md](AGENDA.md) | What to do next. Start here. |
 | [docs/world_model_architecture.md](docs/world_model_architecture.md) | How the pieces meet: interfaces, shard format, provenance, validator |
 | [docs/world_model_requirements.md](docs/world_model_requirements.md) | Tiered requirements and acceptance tests |
