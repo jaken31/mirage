@@ -213,9 +213,9 @@ Doc page: none. Stdlib `json`, `pathlib`, `time`.
 environment entirely, and `pandas.read_json(..., lines=True)` parses it.
 
 **Done 2026-08-28**, both, plus `meta.json` per run directory. `python -m
-mirage.logging` is the check. **The W&B mirror is verified end to end** -
-offline, the credential-failure paths, and a real networked run read back off
-the server - see the verification log at the end of
+mirage.logging` is the check. **The W&B mirror is verified offline, on the
+credential-failure paths, and on a real networked run read back off the
+server** - see the verification log at the end of
 `docs/world_model_architecture.md` for what each row measured.
 
 Two bugs the self-check caught, worth knowing because both are the quiet kind:
