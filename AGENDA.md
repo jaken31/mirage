@@ -47,18 +47,18 @@ landed as Phase 1 item 6 on 2026-08-29 - `runs.jsonl` r42.
 **Structural plan: `phase1_structural_plan.md`.** What each file owns, the build
 order with named APIs, done-when per file, and the gotchas.
 
-**Items 1-5 are done. Item 5's gate is met** - all five pass/fail rows pass, on
-two checkpoints either of which could ship: R1 `20260829-005439-r1`
+**Items 1-5 are done. Item 5's gate is met, and the checkpoint is chosen.** All
+five pass/fail rows pass on both 60-epoch rungs - R1 `20260829-005439-r1`
 (`NUM-TOK-R1-60`, `NUM-TOK-ENT-R1`) and R2 `20260828-230015-r2`
 (`NUM-TOK-R2-60`, `NUM-TOK-ENT-R2`), against **`NUM-BAR-Q1` = 30.0 dB** and
-**`NUM-BAR-Q2` = 70%**.
+**`NUM-BAR-Q2` = 70%** - so passing the gate never decided between them.
+**Phase 2 takes R1.**
 
-**Phase 2 takes R1, decided 2026-08-30**, and the reasoning with its reversal
-trigger is in `world_model_architecture.md` under "Phase 2 inherits R1, and the
-encoder keeps `GroupNorm`". R2's Q-1 win is a non-lever at `NUM-TOK-ATTN`; what
-decides it is that R2's tokens move with batch size while Phase 3 encodes a seed
-clip at batch 1, and that R2 flips twice as many tokens with no local cause
-(`runs.jsonl` r46). **The trigger is one-directional** - another rung can promote
+**Decided 2026-08-30**, with the reasoning and its reversal trigger in
+`world_model_architecture.md` under "Phase 2 inherits R1, and the encoder keeps
+`GroupNorm`". R2's Q-1 win is a non-lever at `NUM-TOK-ATTN`; what decides it is
+that R2's tokens move with batch size while Phase 3 encodes a seed clip at batch
+1, and that R2 flips twice as many tokens with no local cause (`runs.jsonl` r46). **The trigger is one-directional** - another rung can promote
 itself above R1 by passing every gate row with fewer spurious flips, and nothing
 demotes R1.
 
