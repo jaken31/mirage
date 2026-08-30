@@ -183,12 +183,27 @@ class Run:
                     settings=wandb.Settings(x_disable_stats=True),
                 )
         except BaseException:
-            # `__init__` raising means `__enter__`/`__exit__` never run, so
-            # without this the metrics file stays open and this run directory
-            # is orphaned - and a retry in the same second then fails on
-            # `mkdir(exist_ok=False)`, which reads like the interleaving bug
-            # the class docstring warns about rather than like a login failure.
+            # `__init__` raising means `__enter__`/`__exit__` never run, so both
+            # the open handle and the directory this call just created would be
+            # left behind - and a retry inside the same wall-clock second
+            # rebuilds the identical timestamped `run_id` and dies on
+            # `mkdir(exist_ok=False)`, which reads like the two-processes
+            # interleaving bug the class docstring warns about rather than like
+            # a login failure. Both are released here. Removing the directory is
+            # safe precisely because `exist_ok=False` above proves this call
+            # created it: it did not exist a moment ago, so nothing else's data
+            # can be in it. The two files are unlinked by name and the directory
+            # `rmdir`-ed rather than deleted recursively - an unexpected file in
+            # there should stop the cleanup, not be silently swept away. A
+            # failure to clean up is dropped rather than raised, because the
+            # login error is the one the operator needs to see.
             self._file.close()
+            try:
+                (self.dir / "meta.json").unlink(missing_ok=True)
+                self.path.unlink(missing_ok=True)
+                self.dir.rmdir()
+            except OSError:
+                pass
             raise
 
     def log(self, record: Mapping[str, Any]) -> dict:
