@@ -38,6 +38,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # side by side is a real trap - read the note there before "fixing" either.
 RUNS_DIR = ROOT / "runs"
 
+# How long the W&B login prompt may block a training run before it is treated as
+# a failure. Only reached on a terminal with no key configured; every other
+# credential outcome fails in under a second. Generous enough to paste a key
+# into, short enough that an unattended run gives up rather than sitting there.
+WANDB_LOGIN_TIMEOUT_S = 30
+
 
 def _jsonable(value: Any) -> Any:
     """Last-resort coercion for things `json` refuses.
@@ -123,13 +129,41 @@ class Run:
         #
         # Verified 2026-08-29 against wandb 0.29.0 by the offline branch of
         # `_self_check`: this init, three `log` calls and `finish` all run, and
-        # the jsonl path is unaffected. **Upload and auth are still unverified** -
-        # offline never contacts the server - so a first networked run can still
-        # fail on credentials. It would fail here, at init, before step 0, which
-        # is the cheap place to fail a multi-hour run.
+        # the jsonl path is unaffected. The credential failures are verified
+        # 2026-08-30 and all three land here, at init, before step 0 - see the
+        # `wandb.login` note below. **A successful upload is still unverified**,
+        # because no API key has ever been available on this machine;
+        # `--network` below is the command that closes it.
         self._wandb = None
         if wandb_project is not None:
             import wandb  # noqa: PLC0415
+
+            # `wandb.init` authenticates implicitly, and with no key configured
+            # that means an **interactive prompt with no timeout**: a run
+            # launched from a terminal sits at "Enter your choice:" forever,
+            # having logged nothing. That is the one credential outcome worse
+            # than crashing, and it is the default. `Settings(login_timeout=)`
+            # does not reach the prompt - only an explicit `login(timeout=)`
+            # does. Measured 2026-08-30 against 0.29.0; see the verification log.
+            #
+            # `login` returning False is the other quiet case: the prompt timed
+            # out and W&B disabled itself, so `init` would then succeed and
+            # mirror nothing at all. Raise instead. A mirror that is silently
+            # off is worse than a run that refuses to start, because the run it
+            # was meant to record is the multi-hour one.
+            #
+            # Offline and disabled runs are exempt on purpose: neither contacts
+            # the server, so neither needs a key, and the offline self-check
+            # below is exactly that case.
+            if wandb.setup().settings.mode == "online" and not wandb.login(
+                timeout=WANDB_LOGIN_TIMEOUT_S
+            ):
+                raise RuntimeError(
+                    "W&B is online but no API key is configured, and the login "
+                    f"prompt was not answered within {WANDB_LOGIN_TIMEOUT_S}s. "
+                    "Set WANDB_API_KEY, or run `wandb login`, or set "
+                    "WANDB_MODE=offline - never a key in a config or the repo."
+                )
 
             # x_disable_stats kills the background system-metrics sampler. It
             # samples CPU/GPU/disk on its own schedule, and sampling the GPU
@@ -277,7 +311,7 @@ def _self_check() -> None:
                 assert len(lines) == 3, "the jsonl path lost lines while mirroring"
             print(f"W&B mirror ok, offline, wandb {wandb.__version__}: init with "
                   f"Settings(x_disable_stats=True), 3 records, finish - and the "
-                  f"jsonl path is unaffected. Upload and auth are NOT checked")
+                  f"jsonl path is unaffected. Upload is NOT checked")
         finally:
             os.environ.pop("WANDB_DIR", None)
             if prev is None:
@@ -285,8 +319,107 @@ def _self_check() -> None:
             else:
                 os.environ["WANDB_MODE"] = prev
 
+        # teardown, and not for tidiness: `wandb.setup()` caches a
+        # process-global session on first use and then **ignores** later
+        # WANDB_MODE changes - it says so, as a warning. Without this the next
+        # check inherits `offline` from the block above, skips the online guard
+        # it exists to test, and passes for the wrong reason. It did.
+        wandb.teardown()
+        _bad_credentials_check()
+
     print("logging self-check ok")
 
 
+def _bad_credentials_check() -> None:
+    """A wrong key must fail at construction, before a single record.
+
+    The credential failure this guards against is not the crash - it is the
+    *quiet* outcome, where the mirror turns itself off and the run trains for
+    hours reporting to nothing. Both wrong-key and no-key land here, at `Run`
+    construction; the no-key-on-a-terminal case is the one that used to hang,
+    and it cannot be exercised without a terminal, so this checks the one that
+    can be. Needs the network, and says so rather than passing quietly if the
+    machine is offline.
+    """
+    import tempfile
+
+    prev_key, prev_mode = os.environ.get("WANDB_API_KEY"), os.environ.get("WANDB_MODE")
+    os.environ["WANDB_API_KEY"] = "0" * 40  # syntactically valid, no such account
+    os.environ.pop("WANDB_MODE", None)
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            os.environ["WANDB_DIR"] = tmp
+            try:
+                Run("badkey", root=Path(tmp), wandb_project="mirage-selfcheck")
+            except Exception as exc:  # noqa: BLE001 - the type is the finding
+                print(f"bad credentials: rejected at Run() by "
+                      f"{type(exc).__name__}, before step 0")
+            else:
+                raise AssertionError(
+                    "a 40-zero API key was accepted - the mirror is silently off"
+                )
+    finally:
+        os.environ.pop("WANDB_DIR", None)
+        for key, prev in (("WANDB_API_KEY", prev_key), ("WANDB_MODE", prev_mode)):
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+
+def _network_check(project: str) -> None:
+    """The one thing offline cannot check: a real run, uploaded and read back.
+
+    Deliberately tiny - three records, no GPU. Reading the history back through
+    the public API is the point: `finish()` returning is not evidence that
+    anything arrived, only that nothing raised on the way out.
+    """
+    import tempfile
+
+    import wandb
+
+    assert os.environ.get("WANDB_MODE") in (None, "online"), "WANDB_MODE is not online"
+    records = [{"step": i, "loss": 1.0 / (i + 1)} for i in range(3)]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        os.environ["WANDB_DIR"] = tmp
+        try:
+            with Run("netcheck", {"h": "0" * 8}, config={"epochs": 1},
+                     root=Path(tmp), wandb_project=project) as run:
+                assert run._wandb is not None, "wandb_project was passed but no run was made"
+                path, url, wid, entity = run.path, run._wandb.url, run._wandb.id, run._wandb.entity
+                print(f"authenticated as {entity!r}, run {url}")
+                for r in records:
+                    run.log(r)
+        finally:
+            os.environ.pop("WANDB_DIR", None)
+
+        # The local log is authoritative and must be untouched by the mirror.
+        rows = [json.loads(line) for line in
+                path.read_text(encoding="utf-8").strip().splitlines()]
+        assert len(rows) == len(records), f"{len(rows)} local lines for {len(records)} logs"
+        for row, rec in zip(rows, records):
+            assert {k: row[k] for k in rec} == rec, "a local record does not match what was logged"
+        print(f"local jsonl intact underneath the mirror: {len(rows)} records, "
+              f"each carrying run_id and h")
+
+    # Server-side, through the public API - a different process's view.
+    api_run = wandb.Api().run(f"{entity}/{project}/{wid}")
+    history = list(api_run.scan_history(keys=["step", "loss"]))
+    assert api_run.state == "finished", f"server reports state {api_run.state!r}"
+    assert len(history) == len(records), f"server has {len(history)} rows for {len(records)} logs"
+    for got, rec in zip(history, records):
+        assert got["step"] == rec["step"] and got["loss"] == rec["loss"], "server row differs"
+    print(f"server-side: state {api_run.state!r}, {len(history)} rows read back "
+          f"through wandb.Api(), values match")
+    print(f"W&B networked check ok, wandb {wandb.__version__}: {url}")
+
+
 if __name__ == "__main__":
-    _self_check()
+    import sys
+
+    # `--network <project>` needs a real key, from the environment or `wandb
+    # login` - never from a file in this repo. Everything else runs without one.
+    if len(sys.argv) > 2 and sys.argv[1] == "--network":
+        _network_check(sys.argv[2])
+    else:
+        _self_check()
