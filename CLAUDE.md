@@ -49,7 +49,11 @@ decision that caused them.
 
 ## Environment facts (verified 2026-08-21)
 
-**Everything runs on Windows.** Python 3.14.2, torch 2.9.1+cu130 with working
+**Everything runs on Windows.** From a WSL shell that means `py.exe`, which
+reads a `\\wsl.localhost\...` cwd fine - WSL's own `python3` has none of the
+deps. Environment variables do **not** cross into it unless named in `WSLENV`
+(`WSLENV=WANDB_API_KEY py.exe ...`), which is how a secret reaches a run without
+ever being written down. Python 3.14.2, torch 2.9.1+cu130 with working
 CUDA, numpy 2.4.4, pyopengl 3.1.10 already installed; the `mujoco` wheel resolves
 cleanly for this Python.
 

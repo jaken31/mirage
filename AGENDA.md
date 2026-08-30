@@ -173,13 +173,14 @@ frames" first.
    `Settings(login_timeout=)` does not reach it. `Run` now bounds the login with
    `WANDB_LOGIN_TIMEOUT_S` and raises when it lapses, because the bounded failure
    is otherwise *silent* - wandb disables itself and the run mirrors nothing. The
-   verification log has all three cases. **Upload stays unverified, and it is the
-   last of this item**: nothing on this machine has ever held a W&B API key, so no
-   run has reached the server. `python -m mirage.logging --network <project>`
-   closes it in one tiny run - three records, its own history read back through
-   `wandb.Api()`, and the local jsonl asserted intact underneath. Needs
-   `WANDB_API_KEY` in the environment or a prior `wandb login`; **never a key in a
-   config, a fixture, or this repo**
+   verification log has all three cases. **The upload is verified too, 2026-08-30,
+   and this item is closed.** `python -m mirage.logging --network <project>` ran a
+   three-record run against the real server: it authenticated, created the
+   `mirage` project under the account's default entity, and read its own history
+   back through `wandb.Api()` - state `finished`, three rows, values matching -
+   with the local jsonl asserted intact underneath. Re-runnable at any time; it
+   needs `WANDB_API_KEY` in the environment or a prior `wandb login`, and
+   **never a key in a config, a fixture, or this repo**
 5. ~~`mirage/fsq.py` and `mirage/fsq_eval.py`~~ **done 2026-08-29.** Quantizer,
    encoder/decoder, train loop, PSNR, token cache and the eight-row gate table,
    split at the plan's 500-line trigger. **The gate passes**; two 60-epoch
