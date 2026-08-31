@@ -110,36 +110,36 @@ class Run:
         self.path = self.dir / "metrics.jsonl"
         self._file = self.path.open("w", encoding="utf-8", newline="\n")
 
-        (self.dir / "meta.json").write_text(
-            json.dumps(
-                {
-                    "run_id": self.run_id,
-                    "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.started)),
-                    "git_sha": git_sha(),
-                    "hashes": self.hashes,
-                    "config": config,
-                },
-                indent=1, default=_jsonable,
-            ) + "\n",
-            encoding="utf-8", newline="\n",
-        )
-
-        # Imported here, not at module scope: the flag is the whole point, and a
-        # top-level `import wandb` would make an optional viewer a hard
-        # dependency of every training run.
-        #
-        # Verified 2026-08-29 against wandb 0.29.0 by the offline branch of
-        # `_self_check`: this init, three `log` calls and `finish` all run, and
-        # the jsonl path is unaffected. The credential failures are verified
-        # 2026-08-30 and all three land here, at init, before step 0 - see the
-        # `wandb.login` note below. **The upload is verified 2026-08-30 too**,
-        # by `--network` below: a three-record run reached the server, and its
-        # history read back through `wandb.Api()` matched what was logged while
-        # the jsonl underneath stayed intact. So: the offline init/log/finish
-        # path, the credential paths, and the scalar upload. Resume, artifacts,
-        # media and a mid-run network drop are deliberately not verified - the
-        # verification log says which, and why each is a different measurement.
         try:
+            (self.dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": self.run_id,
+                        "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.started)),
+                        "git_sha": git_sha(),
+                        "hashes": self.hashes,
+                        "config": config,
+                    },
+                    indent=1, default=_jsonable,
+                ) + "\n",
+                encoding="utf-8", newline="\n",
+            )
+
+            # Imported here, not at module scope: the flag is the whole point, and a
+            # top-level `import wandb` would make an optional viewer a hard
+            # dependency of every training run.
+            #
+            # Verified 2026-08-29 against wandb 0.29.0 by the offline branch of
+            # `_self_check`: this init, three `log` calls and `finish` all run, and
+            # the jsonl path is unaffected. The credential failures are verified
+            # 2026-08-30 and all three land here, at init, before step 0 - see the
+            # `wandb.login` note below. **The upload is verified 2026-08-30 too**,
+            # by `--network` below: a three-record run reached the server, and its
+            # history read back through `wandb.Api()` matched what was logged while
+            # the jsonl underneath stayed intact. So: the offline init/log/finish
+            # path, the credential paths, and the scalar upload. Resume, artifacts,
+            # media and a mid-run network drop are deliberately not verified - the
+            # verification log says which, and why each is a different measurement.
             self._wandb = None
             if wandb_project is not None:
                 import wandb  # noqa: PLC0415
