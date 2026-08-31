@@ -171,7 +171,12 @@ class Run:
                 # to name: `_offline` is `mode in ("offline", "dryrun")` and
                 # `_noop` is `mode == "disabled"` in 0.29.0, so `dryrun` - an
                 # offline alias that `login` refuses on principle - is covered
-                # without this guard having to track the list. Known consequence,
+                # without this guard having to track the list. Measured
+                # 2026-08-31, both attributes read off `wandb.Settings(mode=m)`
+                # for every one of the six mode literals 0.29.0 accepts; see the
+                # verification log. They are private, so a wandb upgrade can move
+                # them - `_bad_credentials_check` refuses to pass on an
+                # `AttributeError` for exactly that reason. Known consequence,
                 # accepted: `login` verifies against the server and wandb reports
                 # unreachability as an auth error, so a transient outage also
                 # stops the run here, labelled auth. The mirror is opt-in and the
