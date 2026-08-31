@@ -418,6 +418,8 @@ def _bad_credentials_check() -> None:
     """
     import tempfile
 
+    import wandb  # noqa: PLC0415
+
     prev_key, prev_mode = os.environ.get("WANDB_API_KEY"), os.environ.get("WANDB_MODE")
     os.environ["WANDB_API_KEY"] = "0" * 40  # syntactically valid, no such account
     os.environ.pop("WANDB_MODE", None)
@@ -433,6 +435,15 @@ def _bad_credentials_check() -> None:
                 # retry inside the same second die on `mkdir(exist_ok=False)`.
                 orphans = [str(d) for d in Path(tmp).glob("*-badkey")]
                 assert not orphans, f"failed Run() left its directory behind: {orphans}"
+                # A bare programming error is not a credential refusal. The
+                # online guard reads two attributes wandb does not promise, and
+                # this is the only check that ever evaluates them; without this
+                # line a rename would surface as a green "refused to construct"
+                # for a mirror that cannot start at all.
+                assert not isinstance(exc, (AttributeError, TypeError, NameError)), (
+                    f"Run() failed with {type(exc).__name__}, which is mirage's "
+                    f"own bug, not a credential refusal: {exc}"
+                )
                 print(f"bad credentials: Run() refused to construct, before "
                       f"step 0, with {type(exc).__name__} - a type consistent "
                       f"with either a rejected key or an unreachable server, "
@@ -448,6 +459,10 @@ def _bad_credentials_check() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = prev
+        # Symmetric with the teardown before this check, and for the same
+        # reason: this one leaves a session cached with the bogus key inside it,
+        # which the next check would silently inherit.
+        wandb.teardown()
 
 
 def _network_check(project: str) -> None:
