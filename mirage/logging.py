@@ -199,9 +199,11 @@ class Run:
             # failure to clean up is dropped rather than raised, because the
             # login error is the one the operator needs to see - but it is
             # printed, so a leftover directory has a stated reason instead of
-            # surfacing later as that misleading `FileExistsError`.
-            self._file.close()
+            # surfacing later as that misleading `FileExistsError`. `close()`
+            # sits inside the same guard: a raising close must not replace the
+            # login error nor skip the warning.
             try:
+                self._file.close()
                 (self.dir / "meta.json").unlink(missing_ok=True)
                 self.path.unlink(missing_ok=True)
                 self.dir.rmdir()
