@@ -186,6 +186,26 @@ class Run:
                 if not (
                     wandb_settings._offline or wandb_settings._noop
                 ) and not wandb.login(timeout=WANDB_LOGIN_TIMEOUT_S):
+                    # A failed `login` does not just return False: it writes
+                    # `mode` on the process-global session it was handed -
+                    # `disabled` on timeout, `offline` when the prompt was
+                    # declined (0.29.0, `sdk/wandb_login.py`). Those are the two
+                    # attributes the guard above reads, and `wandb.init` copies
+                    # that mode too, so a second `Run(..., wandb_project=...)`
+                    # in this interpreter - a notebook cell, a retry, a sweep
+                    # driver - would be exempted by the guard and mirror
+                    # nothing, silently, which is the outcome this guard exists
+                    # to prevent. Tearing the session down makes the next
+                    # `wandb.setup()` re-resolve the mode from the environment,
+                    # so the retry gets the same refusal rather than a quiet
+                    # non-mirror. Printed, not raised, for the same reason as
+                    # the teardowns in the self-checks: it must not replace the
+                    # login error the operator needs to read.
+                    try:
+                        wandb.teardown()
+                    except Exception as teardown_exc:  # noqa: BLE001 - must not mask the login error
+                        print(f"warning: wandb.teardown() failed: {teardown_exc}",
+                              file=sys.stderr)
                     raise RuntimeError(
                         "W&B is online but the login did not complete, so the "
                         "mirror would be off. Either no API key is configured and "
