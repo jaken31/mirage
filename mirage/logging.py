@@ -161,16 +161,21 @@ class Run:
                 #
                 # Offline and disabled runs are exempt on purpose: neither contacts
                 # the server, so neither needs a key, and the offline self-check
-                # below is exactly that case. Known consequence, accepted: `login`
-                # verifies against the server and wandb reports unreachability as
-                # an auth error, so a transient outage also stops the run here,
-                # labelled auth. The mirror is opt-in and the jsonl needs no
-                # network, so re-running without `wandb_project` is the way out.
-                if wandb.setup().settings.mode not in (
-                    "offline", "disabled"
-                ) and not wandb.login(
-                    timeout=WANDB_LOGIN_TIMEOUT_S
-                ):
+                # below is exactly that case. The exemption is asked of wandb
+                # rather than spelled out here, because the mode literals are its
+                # to name: `_offline` is `mode in ("offline", "dryrun")` and
+                # `_noop` is `mode == "disabled"` in 0.29.0, so `dryrun` - an
+                # offline alias that `login` refuses on principle - is covered
+                # without this guard having to track the list. Known consequence,
+                # accepted: `login` verifies against the server and wandb reports
+                # unreachability as an auth error, so a transient outage also
+                # stops the run here, labelled auth. The mirror is opt-in and the
+                # jsonl needs no network, so re-running without `wandb_project`
+                # is the way out.
+                wandb_settings = wandb.setup().settings
+                if not (
+                    wandb_settings._offline or wandb_settings._noop
+                ) and not wandb.login(timeout=WANDB_LOGIN_TIMEOUT_S):
                     raise RuntimeError(
                         "W&B is online but no API key is configured, and the login "
                         f"prompt was not answered within {WANDB_LOGIN_TIMEOUT_S}s. "
