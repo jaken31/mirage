@@ -171,9 +171,10 @@ frames" first.
    **On a terminal, no key means an untimed prompt**, so a run launched from a
    shell hangs before step 0 rather than failing, and the run-level
    `Settings(login_timeout=)` does not reach it. `Run` now bounds the login with
-   `WANDB_LOGIN_TIMEOUT_S` and raises when it lapses, because the bounded failure
-   is otherwise *silent* - wandb disables itself and the run mirrors nothing. The
-   verification log has all three cases. **The upload is verified too, 2026-08-30,
+   `WANDB_LOGIN_TIMEOUT_S` and raises whenever that login does not complete - a
+   lapsed prompt is only one of the causes wandb reports the same way - because
+   the bounded failure is otherwise *silent*: wandb disables itself and the run
+   mirrors nothing. The verification log has all three cases. **The upload is verified too, 2026-08-30,
    and this item is closed.** `python -m mirage.logging --network <project>` ran a
    three-record run against the real server: it authenticated, created the
    `mirage` project under the account's default entity, and read its own history
