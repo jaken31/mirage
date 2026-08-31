@@ -1199,8 +1199,8 @@ such places were found on 2026-08-28 and ten were real - the audit is D8 in
 
 **Three of these rows were re-run later the same day and two of them moved, one a lot** - see "The six pre-work numbers, re-measured" in the log above. The k-means figures here were produced by a run whose initialisation nobody recorded, and that choice turned out to be worth 2.6 dB. They are kept as written, with the current figure marked inline, because the superseded number is what the rest of the tree was planned around and a reader who greps for `26.39` has to land somewhere that says so.
 
-| Claim | Method | Result |
-|---|---|---|
+| Claim | Method | Result | What it corrected, and where |
+|---|---|---|---|
 | **A patch-independent tokenizer can pass Q-1** | **refuted by measurement** - Lloyd's k-means, 25 iterations on GPU, 179,200 real 8x8 patches from 2,800 frames sampled evenly across all 7 shards, PSNR from summed squared error over all pixels and channels | **26.39 dB at 512 centroids**, 25.67 at 240, **27.60 at 1024** - all short of Q-1's 30 dB, so vocabulary is not the lever. **SUPERSEDED 2026-08-28: those are random-init numbers. Seeded with k-means++ the same patches give 27.53 / 29.02 / 30.51 dB at 240 / 512 / 1024, so 1,024 centroids clear the bar outright and the floor at 512 is 29.02.** Only **150 of 512** centroids stay live, which is the Q-2 risk stated directly.
 **SUPERSEDED: all 512 stay live under k-means++, so this evidence for the Q-2 risk is
 gone.** A frequency-ranked dictionary of the top-512 exact patches does slightly worse, 26.02 dB, and needs **2,048** entries to reach 29.31. **SUPERSEDED: the gap is 0.98 dB, not 3.6.** **The gap is what the 22x22 receptive field, the attention layer and a shared decoder have to buy** - the phase's whole task, and the reason R2 exists |

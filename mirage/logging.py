@@ -108,9 +108,10 @@ class Run:
         self.dir = Path(root or RUNS_DIR) / self.run_id
         self.dir.mkdir(parents=True, exist_ok=False)
         self.path = self.dir / "metrics.jsonl"
-        self._file = self.path.open("w", encoding="utf-8", newline="\n")
+        self._file = None
 
         try:
+            self._file = self.path.open("w", encoding="utf-8", newline="\n")
             (self.dir / "meta.json").write_text(
                 json.dumps(
                     {
@@ -165,7 +166,9 @@ class Run:
                 # an auth error, so a transient outage also stops the run here,
                 # labelled auth. The mirror is opt-in and the jsonl needs no
                 # network, so re-running without `wandb_project` is the way out.
-                if wandb.setup().settings.mode == "online" and not wandb.login(
+                if wandb.setup().settings.mode not in (
+                    "offline", "disabled"
+                ) and not wandb.login(
                     timeout=WANDB_LOGIN_TIMEOUT_S
                 ):
                     raise RuntimeError(
@@ -201,9 +204,11 @@ class Run:
             # printed, so a leftover directory has a stated reason instead of
             # surfacing later as that misleading `FileExistsError`. `close()`
             # sits inside the same guard: a raising close must not replace the
-            # login error nor skip the warning.
+            # login error nor skip the warning, and `self._file` is `None` when
+            # the open itself is what failed.
             try:
-                self._file.close()
+                if self._file is not None:
+                    self._file.close()
                 (self.dir / "meta.json").unlink(missing_ok=True)
                 self.path.unlink(missing_ok=True)
                 self.dir.rmdir()
