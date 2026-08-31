@@ -26,6 +26,7 @@ bench loop records into a preallocated array and writes afterwards.
 
 import os
 import json
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -196,14 +197,17 @@ class Run:
             # `rmdir`-ed rather than deleted recursively - an unexpected file in
             # there should stop the cleanup, not be silently swept away. A
             # failure to clean up is dropped rather than raised, because the
-            # login error is the one the operator needs to see.
+            # login error is the one the operator needs to see - but it is
+            # printed, so a leftover directory has a stated reason instead of
+            # surfacing later as that misleading `FileExistsError`.
             self._file.close()
             try:
                 (self.dir / "meta.json").unlink(missing_ok=True)
                 self.path.unlink(missing_ok=True)
                 self.dir.rmdir()
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                print(f"warning: could not remove {self.dir}: {cleanup_exc}",
+                      file=sys.stderr)
             raise
 
     def log(self, record: Mapping[str, Any]) -> dict:
@@ -403,9 +407,16 @@ def _bad_credentials_check() -> None:
             try:
                 Run("badkey", root=Path(tmp), wandb_project="mirage-selfcheck")
             except Exception as exc:  # noqa: BLE001 - see the docstring
+                # The constructor is the only thing that could have created a
+                # `*-badkey` directory here, so any survivor is an orphan its
+                # failure path failed to remove - the leak that makes the next
+                # retry inside the same second die on `mkdir(exist_ok=False)`.
+                orphans = [str(d) for d in Path(tmp).glob("*-badkey")]
+                assert not orphans, f"failed Run() left its directory behind: {orphans}"
                 print(f"bad credentials: Run() refused to construct, before "
                       f"step 0, with {type(exc).__name__} - a type consistent "
-                      f"with either a rejected key or an unreachable server")
+                      f"with either a rejected key or an unreachable server, "
+                      f"leaving no run directory behind")
             else:
                 raise AssertionError(
                     "a 40-zero API key was accepted - the mirror is silently off"
@@ -472,13 +483,18 @@ def _network_check(project: str) -> None:
 
 
 if __name__ == "__main__":
-    import sys
-
     # `--network <project>` needs a real key, from the environment or `wandb
     # login` - never from a file in this repo. Everything else runs without one.
+    # Anything that is neither that nor a bare invocation is rejected: falling
+    # through to the offline check would answer a mistyped `--netowrk` with a
+    # green result from a check that never contacted the server, which is the
+    # silent degradation this module exists to prevent.
+    usage = "usage: python -m mirage.logging [--network <project>]"
     if sys.argv[1:2] == ["--network"]:
-        if len(sys.argv) < 3 or not sys.argv[2].strip():
-            raise SystemExit("usage: python -m mirage.logging [--network <project>]")
+        if len(sys.argv) != 3 or not sys.argv[2].strip():
+            raise SystemExit(usage)
         _network_check(sys.argv[2])
+    elif sys.argv[1:]:
+        raise SystemExit(usage)
     else:
         _self_check()
