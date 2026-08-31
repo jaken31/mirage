@@ -153,11 +153,16 @@ class Run:
                 # does not reach the prompt - only an explicit `login(timeout=)`
                 # does. Measured 2026-08-30 against 0.29.0; see the verification log.
                 #
-                # `login` returning False is the other quiet case: the prompt timed
-                # out and W&B disabled itself, so `init` would then succeed and
-                # mirror nothing at all. Raise instead. A mirror that is silently
-                # off is worse than a run that refuses to start, because the run it
-                # was meant to record is the multi-hour one.
+                # `login` returning False is the other quiet case: `init` would
+                # then succeed and mirror nothing at all. Raise instead. A mirror
+                # that is silently off is worse than a run that refuses to start,
+                # because the run it was meant to record is the multi-hour one.
+                # The False carries no reason with it - the prompt may have timed
+                # out, the operator may have declined to paste a key, or a wandb
+                # run may already be active in this process - so the message names
+                # the possibilities rather than picking one. Reading which of them
+                # happened would mean reading wandb's private login internals, and
+                # this module does not do that.
                 #
                 # Offline and disabled runs are exempt on purpose: neither contacts
                 # the server, so neither needs a key, and the offline self-check
@@ -177,10 +182,13 @@ class Run:
                     wandb_settings._offline or wandb_settings._noop
                 ) and not wandb.login(timeout=WANDB_LOGIN_TIMEOUT_S):
                     raise RuntimeError(
-                        "W&B is online but no API key is configured, and the login "
-                        f"prompt was not answered within {WANDB_LOGIN_TIMEOUT_S}s. "
-                        "Set WANDB_API_KEY, or run `wandb login`, or set "
-                        "WANDB_MODE=offline - never a key in a config or the repo."
+                        "W&B is online but the login did not complete, so the "
+                        "mirror would be off. Either no API key is configured and "
+                        f"the prompt went unanswered within {WANDB_LOGIN_TIMEOUT_S}s "
+                        "or was declined - set WANDB_API_KEY, or run `wandb login`, "
+                        "or set WANDB_MODE=offline, never a key in a config or the "
+                        "repo - or a W&B run is already active in this process, "
+                        "which is not a credential problem: finish that run first."
                     )
 
                 # x_disable_stats kills the background system-metrics sampler. It
