@@ -201,11 +201,19 @@ class Run:
                     # non-mirror. Printed, not raised, for the same reason as
                     # the teardowns in the self-checks: it must not replace the
                     # login error the operator needs to read.
-                    try:
-                        wandb.teardown()
-                    except Exception as teardown_exc:  # noqa: BLE001 - must not mask the login error
-                        print(f"warning: wandb.teardown() failed: {teardown_exc}",
-                              file=sys.stderr)
+                    #
+                    # The third cause is exempt, and must be: `login` returns
+                    # False for an already-active run before it reads the
+                    # singleton at all, so there is nothing poisoned to clear -
+                    # and `teardown` "completes any runs that were not
+                    # explicitly finished", which would finish that caller's
+                    # live mirror with exit code 0 while it keeps training.
+                    if wandb.run is None:
+                        try:
+                            wandb.teardown()
+                        except Exception as teardown_exc:  # noqa: BLE001 - must not mask the login error
+                            print(f"warning: wandb.teardown() failed: {teardown_exc}",
+                                  file=sys.stderr)
                     raise RuntimeError(
                         "W&B is online but the login did not complete, so the "
                         "mirror would be off. Either no API key is configured and "
