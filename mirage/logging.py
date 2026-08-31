@@ -461,8 +461,15 @@ def _bad_credentials_check() -> None:
                 os.environ[key] = prev
         # Symmetric with the teardown before this check, and for the same
         # reason: this one leaves a session cached with the bogus key inside it,
-        # which the next check would silently inherit.
-        wandb.teardown()
+        # which the next check would silently inherit. Running last in a
+        # `finally`, it must not replace whatever this check was reporting - the
+        # sentence naming the defect is worth more than a wedged-service
+        # traceback - so a failure here is printed, not raised.
+        try:
+            wandb.teardown()
+        except Exception as teardown_exc:  # noqa: BLE001 - must not mask the check
+            print(f"warning: wandb.teardown() failed: {teardown_exc}",
+                  file=sys.stderr)
 
 
 def _network_check(project: str) -> None:
