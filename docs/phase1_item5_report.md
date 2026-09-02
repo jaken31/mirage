@@ -13,6 +13,13 @@ here disagrees with them, they win and this file is wrong. Do not correct a
 number here without correcting it there first, or this becomes a third place a
 stale figure can hide.
 
+**Erratum, 2026-08-30.** A later branch verified the W&B mirror: offline, on both
+credential-failure paths, and with a real networked upload read back through
+`wandb.Api()`. The bullets below that call W&B unexercised are left as
+transcribed from the 2026-08-28/08-29 sessions. `runs.jsonl` and the verification
+log at the end of `world_model_architecture.md` carry the corrected record and
+are authoritative.
+
 ---
 
 ## Outcome

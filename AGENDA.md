@@ -165,8 +165,23 @@ frames" first.
    W&B only when `wandb_project` is passed. **The W&B mirror is verified offline**
    as of 2026-08-29, against wandb 0.29.0 - init, three logs, finish, with the
    jsonl path intact underneath. The signature risk that made it UNVERIFIED is
-   closed. **Upload and auth stay unverified**: offline never contacts the server,
-   so a first networked run can still fail on credentials - at init, before step 0
+   closed. **The credential path is verified too, as of 2026-08-30, and it did not
+   behave as this file predicted.** No key and a wrong key both fail at `Run`
+   construction in under a second - but only when stdin/stderr are not a terminal.
+   **On a terminal, no key means an untimed prompt**, so a run launched from a
+   shell hangs before step 0 rather than failing, and the run-level
+   `Settings(login_timeout=)` does not reach it. `Run` now bounds the login with
+   `WANDB_LOGIN_TIMEOUT_S` and raises whenever that login does not complete - a
+   lapsed prompt is only one of the causes wandb reports the same way - because
+   the bounded failure is otherwise *silent*: wandb disables itself and the run
+   mirrors nothing. The verification log has all three cases. **The upload is verified too, 2026-08-30,
+   and this item is closed.** `python -m mirage.logging --network <project>` ran a
+   three-record run against the real server: it authenticated, created the
+   `mirage` project under the account's default entity, and read its own history
+   back through `wandb.Api()` - state `finished`, three rows, values matching -
+   with the local jsonl asserted intact underneath. Re-runnable at any time; it
+   needs `WANDB_API_KEY` in the environment or a prior `wandb login`, and
+   **never a key in a config, a fixture, or this repo**
 5. ~~`mirage/fsq.py` and `mirage/fsq_eval.py`~~ **done 2026-08-29.** Quantizer,
    encoder/decoder, train loop, PSNR, token cache and the eight-row gate table,
    split at the plan's 500-line trigger. **The gate passes**; two 60-epoch

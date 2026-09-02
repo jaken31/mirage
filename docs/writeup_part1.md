@@ -488,6 +488,14 @@ five-day stage becomes a three-week one.
 
 Stated as unverified because none of it has been executed here.
 
+**Erratum, 2026-08-30.** A later branch verified the W&B mirror: `wandb` 0.29.0 is
+now installed on this machine, and the mirror was exercised offline, on both
+credential-failure paths, and with a real networked upload read back through
+`wandb.Api()`. The first bullet below is left exactly as published, including its
+instruction not to quote the mirror as working. `runs.jsonl` and the verification
+log at the end of `world_model_architecture.md` carry the corrected record and are
+authoritative.
+
 - **The W&B mirror in the logging module.** `wandb` is not installed on this
   machine, which is the condition everything else was verified against. The local
   jsonl path is verified. Do not quote the mirror as working.
