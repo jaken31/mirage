@@ -292,18 +292,18 @@ class Run:
             self._wandb.log(dict(record))
         return json.loads(line)
 
-    def close(self) -> None:
+    def close(self, exit_code: int = 0) -> None:
         if not self._file.closed:
             self._file.close()
         if self._wandb is not None:
-            self._wandb.finish()
+            self._wandb.finish(exit_code=exit_code)
             self._wandb = None
 
     def __enter__(self) -> "Run":
         return self
 
-    def __exit__(self, *_exc) -> None:
-        self.close()
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close(exit_code=1 if exc_type is not None else 0)
 
 
 def _self_check() -> None:
@@ -373,6 +373,41 @@ def _self_check() -> None:
         on_disk = json.loads(run2.path.read_text(encoding="utf-8").strip())
         assert on_disk == got, "the coerced return value differs from the line on disk"
         print("coercion: numpy scalar, numpy array, Path and an opaque object all survive")
+
+        # A crashed run must reach `finish()` with a nonzero exit_code, a clean
+        # one with 0, and the exception must still propagate - none of which
+        # needs a real wandb handle, so a stub stands in for it and this
+        # touches no network or credentials.
+        class _StubWandb:
+            def __init__(self) -> None:
+                self.exit_codes: list[int] = []
+
+            def finish(self, exit_code: int = 0) -> None:
+                self.exit_codes.append(exit_code)
+
+        run3 = Run("exitcode-crash", root=tmp)
+        stub = run3._wandb = _StubWandb()
+        try:
+            with run3:
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("__exit__ swallowed the exception")
+        assert stub.exit_codes == [1], f"crash did not reach finish() with exit_code=1: {stub.exit_codes}"
+
+        run4 = Run("exitcode-clean", root=tmp)
+        stub2 = run4._wandb = _StubWandb()
+        with run4:
+            pass
+        assert stub2.exit_codes == [0], f"clean exit did not reach finish() with exit_code=0: {stub2.exit_codes}"
+
+        run5 = Run("exitcode-direct-close", root=tmp)
+        stub3 = run5._wandb = _StubWandb()
+        run5.close()
+        assert stub3.exit_codes == [0], f"close() with no arguments changed behaviour: {stub3.exit_codes}"
+        print("exit_code: crash -> finish(exit_code=1) with the exception still propagating, "
+              "clean exit and a bare close() -> finish(exit_code=0)")
 
     # The W&B mirror, exercised end to end in **offline** mode. Offline is not a
     # weaker check of the thing that was actually at risk: the risk was never the
