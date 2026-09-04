@@ -292,6 +292,14 @@ class Run:
             self._wandb.log(dict(record))
         return json.loads(line)
 
+    # wandb treats a *missing* `exit_code` as 0, so a run killed mid-training was
+    # stamped `finished` server-side and `wandb.Api().run(...).state` reported a
+    # crash as a completed run - two runs were logged that way before `__exit__`
+    # started passing one. The default stays 0 because `close()` has callers that
+    # are not `__exit__`. `_self_check`'s stub branch asserts what this module
+    # passes, with no wandb and no account; the keyword is exercised against the
+    # installed wandb only by the offline mirror branch, which leaves its
+    # `with Run(...)` cleanly and so reaches the real `finish(exit_code=0)`.
     def close(self, exit_code: int = 0) -> None:
         if not self._file.closed:
             self._file.close()
@@ -303,15 +311,20 @@ class Run:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        # Returns None, deliberately: a crashed run must be recorded as failed
+        # *and* still raise. Swallowing here would turn every training crash
+        # into a silent early return.
         self.close(exit_code=1 if exc_type is not None else 0)
 
 
 def _self_check() -> None:
     """The plan's working-when, against a throwaway directory.
 
-    Three branches, in order: the jsonl path, which must work with W&B absent
-    entirely; the mirror against a local directory, `WANDB_MODE=offline`; and
-    the credential path, `_bad_credentials_check`, which contacts the server.
+    Four branches, in order: the jsonl path, which must work with W&B absent
+    entirely; the exit-code contract, against a stub handle so it needs neither
+    the package nor an account; the mirror against a local directory,
+    `WANDB_MODE=offline`; and the credential path, `_bad_credentials_check`,
+    which contacts the server.
     W&B is no longer absent from this environment - `requirements.txt` names
     the installed version - so the mirror branch runs rather than skipping.
     The upload itself is not here; it needs a key, and `--network <project>`
