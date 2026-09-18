@@ -35,13 +35,16 @@ the gap between those two regimes is *exposure bias*. *Interleaved* means one
 sequence carries both frame tokens and action tokens, so an action is just
 another token in the stream. A *causal mask* is the arithmetic that stops a
 position attending to a later one; without it the model reads the answer.
-*Position encoding* is how a token learns where it sits: *learned positions* is
-one trainable vector per absolute position, capped at the longest sequence
-trained on, while *RoPE* rotates each query and key by an angle proportional to
-position, carries no parameters, and has no cap. A *tied output embedding*
-reuses the input embedding matrix as the output projection rather than training a
-second one. *Chinchilla-optimal* is the rule of thumb of about 20 training tokens
-per parameter; well below it a model is **data-bound**, and its failure mode is
+*Strictly causal* lets each position see only the positions before it;
+*block-causal* also lets the positions of one frame see each other, so a frame's
+tokens are predicted together rather than one at a time. *Position encoding* is
+how a token learns where it sits: *learned positions* is one trainable vector
+per absolute position, capped at the longest sequence trained on, while *RoPE*
+rotates each query and key by an angle proportional to position, carries no
+parameters, and has no cap. A *tied output embedding* reuses the input embedding
+matrix as the output projection rather than training a second one.
+*Chinchilla-optimal* is the rule of thumb of about 20 training tokens per
+parameter; well below it a model is **data-bound**, and its failure mode is
 memorisation rather than underfitting. The *KV cache* belongs to Phases 3 and 4
 and is not built here.
 
@@ -105,6 +108,41 @@ every hash Phase 2 moves. What is at risk instead is **irreversibility** - the
 sequence layout is baked into every checkpoint trained under it, into the engine's
 decode schedule in Phase 4, and into what a Q-4 verdict means. So the order runs
 irreversible-and-silent first, expensive second, and reported-only last.
+
+### Before item 1: strictly-causal against block-causal attention
+
+**Ordered 2026-09-22 to run before item 1, and it has not run.** The F-11 row in
+"Requirements at risk" in `world_model_requirements.md` records it:
+strictly-causal against block-causal attention, measured at a fixed step budget.
+It goes ahead of item 1 for item 1's own reason - the mask is baked into every
+checkpoint trained under it - and because it decides whether F-11's description
+still holds. Under block-causal attention the model predicts a frame's tokens
+together, and "predicts next token" would stop describing it. The requirement's
+own fallback is a second, separately dated amendment to F-11's description if
+block-causal is selected, and none if strictly-causal is.
+
+**This plan does not take it and quotes no result.** The items below are
+written for strictly-causal attention, which is what F-11's description says
+today and what r49 timed: `bench/dyn_size_probe.py` builds its mask as
+`torch.triu` over all 975 positions. A block-causal result changes three things,
+listed here so they are found in one place:
+
+- **item 3's causality assert** moves from per position to per frame: altering
+  a token in frame `f` leaves every logit in the frames before `f` identical,
+  and may change any logit inside frame `f`.
+- **item 3's loss and item 6's decode step**: a frame's 64 predictions come out
+  together rather than one position at a time. F-12's fixed step count and "all
+  64 positions every step" hold under either mask.
+- **how a frame's positions are fed in training.** A frame cannot be both the
+  input and the target of its own block, so block-causal needs a different
+  arrangement of inputs and targets. What that arrangement is belongs to the
+  measurement's own row, not to this plan.
+
+The order records "at a fixed step budget" and no more. The budget, the score
+and the population are for the measurement to state in its own `runs.jsonl`
+row. **A suggestion, not part of the order:** scoring it on gate row 1's
+measure - held-out per-cell accuracy against the persistence baseline on the
+same population - would make its result readable against F-11 directly.
 
 ### 1. The sequence layout, and the token/action window sampler
 
@@ -268,7 +306,8 @@ Three choices that are not stylistic:
 no checkpoint**, the way `mirage.config`, `mirage.logging` and `mirage.fsq`
 already do - the parameter count reproduces r49's figure for the variant item 1
 chose, exactly; altering a token at position `k` leaves every logit at positions
-`< k` bit-identical and changes at least one at `k`; and the sequence assembled
+`< k` bit-identical and changes at least one at `k` - the strictly-causal form,
+with the block-causal one under "Before item 1"; and the sequence assembled
 for one window round-trips to the same token rows item 1 asserted.
 
 ### 4. The training loop, and the instrument for the risk that actually exists
@@ -416,12 +455,13 @@ table when it is settled.
 a pass/fail row misses, mirroring `python -m mirage.fsq --eval`, which is what
 makes a gate usable from a script rather than only by reading it.
 
-**These rows are proposals against the requirements that already exist. They are
-not new requirements, and none of them moves a bar.**
+**These rows are proposals against the requirements that already exist, not new
+requirements, and none of them moves a bar.** Row 1 is written against F-11 as
+`world_model_requirements.md` restated it on 2026-09-22.
 
 | # | Measure | Bar | What the requirement actually says |
 |---|---|---|---|
-| 1 | Held-out next-token accuracy, against the marginal-frequency baseline **and** against copy-the-previous-frame's-token, both reported | **see the open decision below** | **F-11** - "dynamics model consumes interleaved frame and action tokens, predicts next token", accepted when held-out accuracy beats the marginal-frequency baseline by 3x. r46 measured the zero-parameter copy baseline at **85.67%** on the checkpoint Phase 2 inherits, far above 3x the marginal top-1. **Whether F-11 is restated because of that is a Phase 2 decision and this plan does not take it** |
+| 1 | Held-out next-token accuracy against the **persistence baseline** - copying the previous frame's token at the same cell - on the same held-out population as the model, with the marginal-frequency baseline reported alongside | **above the persistence baseline, re-measured with `bench/token_stability_probe.py` on the model's population.** r46 reads **85.67%** over its 12 val episodes on R1; that figure is the bar only on that population. Quote r46, do not restate it | **F-11** - "dynamics model consumes interleaved frame and action tokens, predicts next token", accepted when held-out accuracy beats the persistence baseline scored like-for-like on the same population, with the marginal-frequency baseline reported alongside. **Restated 2026-09-22** from "beats marginal-frequency baseline by 3x". Its description is still at risk - see "Before item 1" |
 | 2 | One full next frame from `ctx` frames plus one action, fixed step count | **exact**, no fallback path | **F-12** - as quoted above. All 64 positions decoded every step |
 | 3 | Rollout at `ctx` 4, 8 and 15 from one checkpoint | **runs** | **F-13** (S) - "configurable context length at load time". Item 2's gotcha is why this is an argument and not a config edit |
 | 4 | Frames until the frame-to-frame continuity verdict fires | **>= 200** | **Q-3** - the coherence horizon. The verdict bounds per-step change in `link_angle`, `link_extent` and each block's `bbox` centroid, calibrated so that **zero windows of ground-truth frames fire** - the same acceptance shape **F-9** uses, F-9 being "frame validator reports block count, arm pose plausibility, palette adherence", accepted at zero false positives on ground-truth frames. Calibrate on **reconstructions, not renders**; `bench/q3_blind_probe.py` is the regression test and must fire on 100% of 300-step substitutions and 0% of clean reconstructions |
@@ -430,29 +470,66 @@ not new requirements, and none of them moves a bar.**
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Q-6** - object permanence, the memory result. Tier S: the project ships without it and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and `NUM-DATA-F7` is the event rate it scores over |
 | 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **R-3** and **R-1**. r49 settles R-3 at 14.4-15.0 M; R-1 is **unmeasured** for this model and item 4 takes it |
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **E-1** and **E-4** - a rerun matching within `NUM-BAR-E4`. Greedy decoding makes this exact rather than statistical; a temperature decision would change this row's shape |
-| 10 | Train-val loss gap; share of predictions the copy baseline also gets right | **reported** | not requirements - the overfitting and triviality canaries. The first is item 4's headline instrument; the second is what keeps row 1 honest whatever F-11 ends up saying |
+| 10 | Train-val loss gap; share of predictions the copy baseline also gets right | **reported** | not requirements - the overfitting and triviality canaries. The first is item 4's headline instrument; the second is what keeps row 1 honest now that its bar *is* a baseline - a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what says so |
 
 Rows 1 to 6 and 8 to 9 are the pass/fail candidates; 7 is S-tier and reported;
-10 is reported. Row 1's bar is blocked on the open decision below and the row
-cannot be finalised without it.
+10 is reported. Row 1's bar is F-11's restated one, and it is **materially
+harder than the requirement originally promised**: r46 records the
+zero-parameter copy baseline as far above 3x the marginal top-1, so a model that
+predicts every cell unchanged passed the old wording and fails this one. **That
+comparison is asserted, not measured** - neither r46 nor
+`bench/token_stability_probe.py` computes the marginal top-1 - so row 1's
+marginal-frequency column is where it first gets a number.
 
 ---
 
-## Open decisions this plan does not take
+## Decisions: one taken, seven open, one waiting on a measurement
 
 Each one changes an item above, so each is named rather than quietly resolved.
 
-**1. F-11's acceptance test, and it is escalated rather than decided here.**
-F-11 asks the dynamics model to beat a marginal-frequency baseline by 3x.
-`runs.jsonl` r46 recorded, for Phase 2 and deliberately not acted on, that
-**copying the previous frame's token at the same cell scores 85.67%** on the R1
-checkpoint Phase 2 inherits, over 460,032 held-out cell-transitions from 12 val
-episodes - far above 3x the marginal top-1, **at zero parameters**. The options:
-leave F-11 as written and report the copy baseline beside it as a canary; restate
-F-11 against the persistence baseline; or restate it against a baseline that is
-neither. The evidence for all three is r46 and it is the same evidence; what
-differs is what the phase's M-tier row is then claiming. **This decision is not
-this plan's to take and no side is taken.**
+**1. F-11's acceptance test - DECIDED 2026-09-18: restated against the
+persistence baseline, and `world_model_requirements.md` carries it as of
+2026-09-22.** F-11 had asked the dynamics model to beat a marginal-frequency
+baseline by 3x. `runs.jsonl` r46 recorded, for Phase 2 and deliberately not
+acted on, that **copying the previous frame's token at the same cell scores
+85.67%** on the R1 checkpoint Phase 2 inherits, over 460,032 held-out
+cell-transitions from 12 val episodes, **at zero parameters** - and records that
+as far above 3x the marginal top-1, which is asserted rather than measured. That
+baseline is now the bar, and gate row 1 is written against it.
+
+**The rationale, recorded because the bar moved on it: an acceptance test a
+zero-parameter baseline already passes cannot show the model learned dynamics.**
+Beating the marginal frequency by 3x asks only that the model know which codes
+are common; beating persistence asks it to know when a token *changes*, which is
+the only part of the sequence that carries the physics. Note what this costs:
+it is a **materially harder bar than the requirements document originally
+promised**. A model that predicts every cell as unchanged scores the baseline
+itself, and now fails.
+
+**Three constraints on quoting it.** Quote r46 for the figure rather than
+restating it from memory: r49 exists for that reason and says so in its own
+words, recording sizing "computed in an earlier session and never written down"
+so that a plan is written against numbers instead of recollections. **No `NUM-`
+id is minted for it**, so r46 stays the citation until
+registering one is done as its own deliberate act. And the comparison is
+**like-for-like or it is nothing**: the requirement re-measures the baseline with
+`bench/token_stability_probe.py` on the same held-out population the model is
+scored on, so r46's 85.67% is the bar only when that population is r46's 12 val
+episodes. Otherwise the row compares two different statistics and reports the
+difference as skill. The baseline also belongs to the **tokenizer checkpoint**,
+not to F-11 - r46 reads 85.67% on R1, 93.22% on r1c and 77.28% on R2 - so a
+checkpoint promoted above R1 means re-running the probe, never reusing R1's
+figure.
+
+**Where it is written down.** `world_model_requirements.md` restated F-11 on
+2026-09-22 with the dated paragraph under its Models table and an F-11 row in
+"Requirements at risk", so the requirement and this plan agree; where their
+wording differs, the requirement wins. The one piece still missing is the
+verification-log row naming the acceptance procedure, which cannot be written
+until gate row 1 exists in code. **No Phase 2 F-11 verdict exists, and none is
+quoted here.**
+
+**The seven below stay open and untaken, and one more waits on a measurement.**
 
 **2. Sequence layout and position encoding** - r49 records these as the two
 choices already called irreversible, and prices them rather than taking them:
@@ -486,6 +563,11 @@ mitigation before that signature appears.
 **8. What P-7 means for a windowed epoch** - item 4 states the three readings and
 takes none.
 
+**9. Strictly-causal against block-causal attention - waiting on the
+measurement ordered 2026-09-22**, and taken by it rather than by argument. "Before
+item 1" says what it changes. Until it has run, F-11's description stands as
+written and the items above assume strictly-causal attention.
+
 ---
 
 ## Gotchas, and how you would notice
@@ -493,6 +575,7 @@ takes none.
 | Gotcha | What breaks | How you notice |
 |---|---|---|
 | **A one-step action misalignment** | Every checkpoint conditions each frame on the wrong action, and Q-4 scores the wrong thing | **You do not**, from agreement: 93.9% against 95.6%, and the **wrong** reading scores higher, with both clearing Q-4's bar. Only the phase assert catches it - all 13,242 action changes sit at `step_idx % action_hold_steps == 0`. Assert it, and assert that a shift of one breaks it |
+| **Scoring gate row 1 against r46's 85.67% on another population, or on another tokenizer** | The row compares two statistics and reports the difference as skill | The row names episodes other than r46's 12 val ones, or a checkpoint other than R1. Re-measure the baseline with `bench/token_stability_probe.py` on the model's own population and checkpoint; r46's figure is the bar only on its own |
 | Putting the context length in `data.ctx` for F-13 | `data_hash` moves, `load_shards` refuses the 300,000 frames and `load_run` refuses the R1 checkpoint | Loudly, on the next run - which is the good case. The bad case is a session spent editing the register instead of passing an argument |
 | A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so E-4 has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` is in this state today, as a constant in `bench/dyn_size_probe.py` |
 | Calibrating Q-3's continuity verdict on **renders** | The verdict is tuned in the wrong regime and fires on ordinary decoder output | The same two-regime trap that cost Phase 1's build-order item 6 its obvious recipe: renders sit at `NUM-VAL-WORSTDIST` from the palette, reconstructions at `NUM-VAL-RECONDIST`. Calibrate on reconstructions |
@@ -527,7 +610,7 @@ the machine it was written on.
 | Data against capacity | **19.5 M** cache tokens against a Chinchilla-optimal **291.9 M**, **15.0x under**; one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - r49 | **the phase's risk is overfitting, not throughput**, and the three answers stay open |
 | Token cache size | **38.4 MB** - r49 | the whole cache fits in VRAM many times over; nothing about the data path needs engineering |
 | The inherited checkpoint | `20260829-005439-r1`, `NUM-TOK-R1-60` held-out PSNR at `NUM-TOK-ENT-R1` token entropy | the tokenizer is fixed, and so are the 512 codes and the 64-token grid |
-| The zero-parameter baseline | **85.67%** token persistence on R1, over **460,032** transitions from 12 val episodes, **396,013** of them quiet-field - r46 | F-11's open decision. **Evidence, not a verdict** |
+| The zero-parameter baseline | **85.67%** token persistence on R1, over **460,032** transitions from 12 val episodes, **396,013** of them quiet-field - r46 | **F-11's restated bar on r46's population**, and gate row 1. Quote r46 for it; on any other population, re-measure with `bench/token_stability_probe.py` |
 | Token instability on R1 | **8.86%** of transitions flip with no change in the cell's own 15x15 field, **53.21%** of all flips - r46 | context for a rollout that looks noisy. r46 is explicit that **nothing has measured what spurious flips cost a dynamics model**, in either direction, and that Phase 2 evidence either way is a recorded trigger to reopen the tokenizer choice |
 | The split | `NUM-DATA-SPLIT` train/val episodes, `NUM-DATA-VALFRAMES` held-out frames of `NUM-DATA-FRAMES` total, at `NUM-DATA-HASH64` | reuse `data.is_val`; the tokenizer's val set and Phase 2's are the same set by construction |
 | Action alignment | same-record **93.9%** against next-record **95.6%**, and all **13,242** action changes at phase 0 - verification log, the alignment row | item 1. The agreement figures are there to prove agreement cannot settle it |
@@ -553,5 +636,9 @@ measurement was taken - there is no dataset and no checkpoint on the machine thi
 was written on, so every number above is quoted from the record rather than
 earned here. **No `NUM-` id is minted**: registering a number is a separate,
 deliberate act, and until then r46 and r49 are what to quote. **No bar is
-moved.** Phases 3 and 4 stay undrafted, which is "profile before changing
-anything" applied to planning.
+moved here.** F-11's acceptance test was raised, not lowered, and
+`world_model_requirements.md` restated it on 2026-09-22; gate row 1 is written
+against that. Moving a bar *down* because a run missed it is the failure mode
+this project's discipline exists to prevent, and nothing here does that - no run
+has happened. Phases 3 and 4 stay undrafted,
+which is "profile before changing anything" applied to planning.

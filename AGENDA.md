@@ -368,12 +368,18 @@ proposals against the requirements that already exist, not new requirements.
 Inherits R1 (named above), the fixed 512-code budget and the 64-token path. All
 three are settled and the reversal trigger is one-directional.
 
-**Two things to settle before the first run.** The sequence layout and the
-position encoding are irreversible, and `runs.jsonl` r49 prices them as **not**
-a capacity choice - four variants inside 4% of parameters. And **F-11's
-acceptance test is an open decision**: r46 measured copying the previous frame's
-token at the same cell scoring far above 3x the marginal top-1 on the checkpoint
-Phase 2 inherits, at zero parameters.
+**First, before item 1:** the strictly-causal against block-causal measurement
+ordered 2026-09-22. It has not run, and it decides whether F-11's description
+still stands - see the F-11 risk row in `world_model_requirements.md`.
+
+**To settle before the first run:** the sequence layout and the position
+encoding are irreversible, and `runs.jsonl` r49 prices them as **not** a
+capacity choice - four variants inside 4% of parameters.
+
+**F-11's acceptance test is restated against the persistence baseline** -
+decided 2026-09-18, in `world_model_requirements.md` since 2026-09-22 - and the
+plan's gate row 1 is written against it. An acceptance test a zero-parameter
+baseline already passes cannot show the model learned dynamics.
 
 **The risk is data, not compute** - r49: 15.0x under Chinchilla-optimal, and one
 epoch draws 13.8x the dataset from window overlap alone. Manage overfitting, not
