@@ -358,11 +358,34 @@ graphs stay the headline win rather than table stakes. The fork table in
 
 ---
 
+## Phase 2: the dynamics model. Budgeted at 2 weeks
+
+**Structural plan: `phase2_structural_plan.md`.** What each file owns, the build
+order with named APIs, done-when per item, the gotchas, and the numbers already
+taken so the first item does not re-derive them. Its proposed gate rows are
+proposals against the requirements that already exist, not new requirements.
+
+Inherits R1 (named above), the fixed 512-code budget and the 64-token path. All
+three are settled and the reversal trigger is one-directional.
+
+**Two things to settle before the first run.** The sequence layout and the
+position encoding are irreversible, and `runs.jsonl` r49 prices them as **not**
+a capacity choice - four variants inside 4% of parameters. And **F-11's
+acceptance test is an open decision**: r46 measured copying the previous frame's
+token at the same cell scoring far above 3x the marginal top-1 on the checkpoint
+Phase 2 inherits, at zero parameters.
+
+**The risk is data, not compute** - r49: 15.0x under Chinchilla-optimal, and one
+epoch draws 13.8x the dataset from window overlap alone. Manage overfitting, not
+throughput.
+
+---
+
 ## Deferred - do not start
 
-Phases 2 through 4. Phase 2's numbers wait on the Phase 1 PSNR; Phase 4's whole
-plan derives from the Phase 3 profile, which does not exist yet. Draft a phase's
-structural plan when you reach it, not before.
+Phases 3 and 4. Phase 4's whole plan derives from the Phase 3 profile, which
+does not exist yet. Draft a phase's structural plan when you reach it, not
+before.
 
 Connected-component labelling, parallel generation, `--replay` mode, and the
 single-pass render each have an explicit trigger recorded in the architecture
