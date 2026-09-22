@@ -372,9 +372,11 @@ three are settled and the reversal trigger is one-directional.
 ordered 2026-09-22. It has not run, and it decides whether F-11's description
 still stands - see the F-11 risk row in `world_model_requirements.md`.
 
-**To settle before the first run:** the sequence layout and the position
-encoding are irreversible, and `runs.jsonl` r49 prices them as **not** a
-capacity choice - four variants inside 4% of parameters.
+**Decided 2026-09-21**, with rationale in the plan: RoPE and the no-shift
+interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
+64 tokens, same record, with the phase assertion as the acceptance test; an
+untied output head; greedy rollout; shared window addressing. Exposure bias
+stays open.
 
 **F-11's acceptance test is restated against the persistence baseline** -
 decided 2026-09-18, in `world_model_requirements.md` since 2026-09-22 - and the
@@ -383,7 +385,9 @@ baseline already passes cannot show the model learned dynamics.
 
 **The risk is data, not compute** - r49: 15.0x under Chinchilla-optimal, and one
 epoch draws 13.8x the dataset from window overlap alone. Manage overfitting, not
-throughput.
+throughput: the first run measures the train/val gap before any remedy is
+chosen, and stops at 10 epochs or two epochs after held-out loss has risen two
+epochs running, whichever comes first.
 
 ---
 
