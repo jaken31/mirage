@@ -252,7 +252,7 @@ The status column now carries what moved.
 
 | | finding | status |
 |---|---|---|
-| A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in r46 as evidence; the restatement itself is *not* decided |
+| A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in r46 as evidence, **and acted on**: decided 2026-09-18, and F-11's acceptance test is restated against persistence in `world_model_requirements.md` on 2026-09-22. The marginal top-1 half of the comparison was never measured |
 | B | `GroupNorm` couples tokens globally | **recorded and superseded** by r46, which measured it properly |
 | C | `bench/patch_probe.py:60` sets `RF = 22`; the true conv field is **15** | **recorded in r46, NOT FIXED.** See below |
 | D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 in r48, and acted on**: Q-3's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
@@ -283,7 +283,7 @@ what follows is only the reminder that they exist:
 | # | decision | note |
 |---|---|---|
 | 2 | data volume: 500 episodes or regenerate 3x / 5x | gated on the `data_hash` provenance story |
-| 3 | restate F-11 against the persistence baseline | evidence now recorded in r46; the decision is not taken |
+| ~~3~~ | ~~restate F-11 against the persistence baseline~~ | **closed 2026-09-18**, and restated in `world_model_requirements.md` on 2026-09-22. What is still open is F-11's description, "predicts next token", which waits on the strictly-causal against block-causal measurement - see the F-11 risk row there |
 | 4 | sequence layout and position encoding | **irreversible.** RoPE is the lazy correct answer |
 | ~~5~~ | ~~Q-3's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded in r48 and Q-3 now terminates on frame-to-frame continuity rather than on F-9's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see the Q-3 risk row in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
 | 6 | rollout sampling: greedy vs temperature | sim is deterministic (E-1), greedy is the strong default |
