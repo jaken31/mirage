@@ -26,7 +26,7 @@ This file is the current-state view over that log. The split that keeps it hones
 |---|---|---|
 | **Log** | `runs.jsonl`, the verification log in `world_model_architecture.md` | yes - it *is* the evidence |
 | **Register** | this file | yes - exactly once, and it says where from |
-| **Live** | `AGENDA.md`, both structural plans, `CLAUDE.md`, `README.md`, the derived explainers | **measured or derived values: no** - cite the name and the `NUM-` id. **Chosen bars: yes**, with the id beside them |
+| **Live** | `AGENDA.md`, the phase structural plans, `CLAUDE.md`, `README.md`, the derived explainers | **measured or derived values: no** - cite the name and the `NUM-` id. **Chosen bars: yes**, with the id beside them |
 | **Frozen** | `phase0_report.md`, `phase1_item5_report.md`, `phase1_progress_report.md`, `tokenizer_figures.md`, `writeup_part1.md` | yes - they are dated snapshots, and preserving what was believed at the time is their whole job |
 
 > `writeup_part1.md` is frozen for an unusual reason: it is written for readers

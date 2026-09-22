@@ -358,11 +358,44 @@ graphs stay the headline win rather than table stakes. The fork table in
 
 ---
 
+## Phase 2: the dynamics model. Budgeted at 2 weeks
+
+**Structural plan: `phase2_structural_plan.md`.** What each file owns, the build
+order with named APIs, done-when per item, the gotchas, and the numbers already
+taken so the first item does not re-derive them. Its proposed gate rows are
+proposals against the requirements that already exist, not new requirements.
+
+Inherits R1 (named above), the fixed 512-code budget and the 64-token path. All
+three are settled and the reversal trigger is one-directional.
+
+**First, before item 1:** the strictly-causal against block-causal measurement
+ordered 2026-09-22. It has not run, and it decides whether F-11's description
+still stands - see the F-11 risk row in `world_model_requirements.md`.
+
+**Decided 2026-09-21**, with rationale in the plan: RoPE and the no-shift
+interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
+64 tokens, same record, with the phase assertion as the acceptance test; an
+untied output head; greedy rollout; shared window addressing. Exposure bias
+stays open.
+
+**F-11's acceptance test is restated against the persistence baseline** -
+decided 2026-09-18, in `world_model_requirements.md` since 2026-09-22 - and the
+plan's gate row 1 is written against it. An acceptance test a zero-parameter
+baseline already passes cannot show the model learned dynamics.
+
+**The risk is data, not compute** - r49: 15.0x under Chinchilla-optimal, and one
+epoch draws 13.8x the dataset from window overlap alone. Manage overfitting, not
+throughput: the first run measures the train/val gap before any remedy is
+chosen, and stops at 10 epochs or two epochs after held-out loss has risen two
+epochs running, whichever comes first.
+
+---
+
 ## Deferred - do not start
 
-Phases 2 through 4. Phase 2's numbers wait on the Phase 1 PSNR; Phase 4's whole
-plan derives from the Phase 3 profile, which does not exist yet. Draft a phase's
-structural plan when you reach it, not before.
+Phases 3 and 4. Phase 4's whole plan derives from the Phase 3 profile, which
+does not exist yet. Draft a phase's structural plan when you reach it, not
+before.
 
 Connected-component labelling, parallel generation, `--replay` mode, and the
 single-pass render each have an explicit trigger recorded in the architecture
