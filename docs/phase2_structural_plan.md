@@ -80,7 +80,7 @@ decoded frames are compared against ground-truth ones.
 | `mirage/configs/base.json`, `dynamics` section | the shape knobs that must sit inside `dynamics_hash` | the training knobs, which travel in the checkpoint's `knobs` dict as Phase 1's do |
 | `mirage/config.py` | the `dynamics` key set and its validators | anything model-shaped. It gains keys in item 2 and nothing else |
 | `mirage/fsq.py` | the inverse of `FSQ.codes_to_indices`, which does not exist yet (item 5) | the rollout. The token-to-pixel path belongs beside the pixel-to-token path, not in a second copy |
-| `mirage/data.py` | the window index arithmetic, *if* item 1 takes the shared option | anything token-shaped. It reads the shard format and knows nothing about codes |
+| `mirage/data.py` | the window index arithmetic, shared with `WindowSampler` by the decision in item 1 | anything token-shaped. It reads the shard format and knows nothing about codes |
 | `mirage/validator.py` | the per-frame measurements Q-3's continuity verdict is built from | the verdict itself. Phase 0's rule stands: the validator emits measurements and the verdict is a threshold expression in config |
 | `runs.jsonl` and the verification log | one row per run, and one verification row per claim | - |
 
@@ -136,7 +136,9 @@ listed here so they are found in one place:
 - **how a frame's positions are fed in training.** A frame cannot be both the
   input and the target of its own block, so block-causal needs a different
   arrangement of inputs and targets. What that arrangement is belongs to the
-  measurement's own row, not to this plan.
+  measurement's own row, not to this plan. Decision 2's alignment - both tokens
+  read at the same record index, and the phase assertion - holds under either
+  mask.
 
 The order records "at a fixed step budget" and no more. The budget, the score
 and the population are for the measurement to state in its own `runs.jsonl`
@@ -151,7 +153,8 @@ checkpoint, every rollout and every gate number below is stated in terms of this
 layout. `runs.jsonl` r49 exists so that the choice is not made by accident - it
 prices four variants of the model and finds them **14,396,544 to 14,967,552
 parameters, a spread of 571,008**, under 4%, so **the irreversible choice is not
-a capacity choice** and has to be made on its merits.
+a capacity choice**. It was made on its merits, as decision 2 below: **RoPE, and
+the no-shift interleaving.**
 
 The calls, all of which exist:
 
@@ -170,62 +173,91 @@ It is a pure function of `episode_id`, which is what makes the tokenizer's val
 set and Phase 2's the same set by construction rather than by coincidence -
 `NUM-DATA-SPLIT` episodes, `NUM-DATA-VALFRAMES` held-out frames.
 
-**The alignment is a recorded fact, not a free choice, and a sweep inverts it.**
-`mirage/data.py`'s module header and the alignment row in the verification log
-at the end of `world_model_architecture.md` both state it: `sim/main.cpp` picks
-the action, writes `ctrl`, calls `mj_step`, then reads truth, so within one
-record
+**The layout, by decision 2.** Each frame step is **65 positions** - r49's 64
+tokens plus one action - in this order:
+
+    action[t], then frame t's 64 tokens        both read at record index t
+
+The one action token that conditions a frame sits immediately before that
+frame's 64 positions, and both come from the same record, so the layout needs
+**no index shift against the record**. Under strictly-causal attention every
+position of frame `t` then sees `action[t]`. This is the recorded alignment, not
+a free choice: `mirage/data.py`'s module header and the alignment row in the
+verification log at the end of `world_model_architecture.md` both state it.
+`sim/main.cpp` picks the action, writes `ctrl`, calls `mj_step`, then reads
+truth, so within one record
 
     qpos[t] - qpos[t-1]  is the result of  action[t]      <- the same record
 
-Therefore the action token that conditions frame `t` is `action[t]`, and
-whichever of the two interleavings is chosen, **exactly one of them needs an
-index shift against the record**. This cannot be settled by scoring: an action is
-held for `sim.action_hold_steps` frames, so a one-step shift leaves 14 of every
-15 frames unchanged, and the measured agreement is **93.9% same-record against
-95.6% next-record** - **the wrong reading scores higher**, because shifting hands
-each delta the previous, already-settled action instead of the fresh one whose
-transient Q-4 cannot win, and both clear Q-4's bar. What does settle it is
-**phase**: `Policy::step` redraws only when its hold expires, so all **13,242**
-action changes sit at `step_idx % action_hold_steps == 0`, and the negative
-control - shifting by one - introduces phase 1.
+**Agreement statistics must not be used to confirm it, because the wrong reading
+scores higher.** An action is held for `sim.action_hold_steps` frames, so a
+one-step shift leaves 14 of every 15 frames unchanged, and the measured agreement
+is **93.9% same-record against 95.6% next-record**. Shifting hands each delta the
+previous, already-settled action instead of the fresh one whose transient Q-4
+cannot win, and both readings clear Q-4's bar. What does settle it is **phase**,
+and the phase assertion is **mandatory - it is this item's acceptance test**.
+`Policy::step` redraws only when its hold expires, so all **13,242** action
+changes sit at `step_idx % action_hold_steps == 0`, and the negative control -
+shifting by one - introduces phase 1.
 
-**Two options for the window index arithmetic, and they are a real choice.**
+**How many frames a window holds is the one layout number r49 priced two
+ways.** r49 prices a sequence at `ctx x 65` = 975 positions, but counts its
+epoch in `WindowSampler` windows, and those hold **`ctx + 1`** frames - the
+context plus the frame it predicts. `WindowSampler.__init__` sets
+`self.window = ctx + 1`, and r49's 276,705 train windows are that count. Sharing
+the addressing, below, makes a Phase 2 window the sampler's window, and under
+teacher forcing its last frame is the one predicted from a full `ctx` of
+context, which is what F-13's rollout at 15 asks for. **Derived, not measured:**
+that sequence is 16 x 65 = **1,040** positions at `ctx` 15. Under RoPE the
+parameter count does not depend on sequence length, so r49's counts stand. Its
+tokens per epoch, step time and epoch time were all priced at 975 positions a
+window, and at 1,040 all three are higher by an amount r49 did not measure -
+re-take them on the first run. **Recommended: `ctx + 1`.** The alternative is to
+train on `ctx`-frame windows and match r49's pricing, at the cost of never
+training the full-context prediction F-13 scores. It is named here rather than
+taken silently, and whichever is built, the first run's row records it.
 
-- **Share it.** `data.WindowSampler` already owns episode-aware indexing: the
-  cumulative start positions, the split filter, the refusal of any episode
-  shorter than the window, and `__getitem__` as a pure function of the index so
-  that a shuffle and a resumed run address the same window by the same number.
-  Factor that addressing into something `dynamics.py` can call, leave
-  `WindowSampler` using it, and assert the two agree on every window's
-  (episode, offset). **This is what the project's own precedent asks for** -
-  `preload` lives in `data.py` rather than `fsq.py` because "a copy in two files
-  is the same class of bug as two validator implementations", and
-  `split_episodes` was factored out for exactly this reason.
-- **Copy it.** `dynamics.py` recomputes its own cumulative offsets over token
-  rows. Cheaper to write, touches no file that two passed gates depend on, and
-  it is the option that keeps `mirage/data.py` closed.
-
-**Recommended: share it**, because the failure mode of the copy is a cumulative
+**The window index arithmetic is shared, not copied - DECIDED 2026-09-21.**
+`data.WindowSampler` already owns episode-aware indexing: the cumulative start
+positions, the split filter, the refusal of any episode shorter than the window,
+and `__getitem__` as a pure function of the index so that a shuffle and a
+resumed run address the same window by the same number. Factor that addressing
+into something `dynamics.py` can call, leave `WindowSampler` using it, and
+**assert that the shared addressing and `WindowSampler` agree on every window's
+(episode, offset)**. This is the project's own precedent - `preload` lives in
+`data.py` rather than `fsq.py` because "a copy in two files is the same class of
+bug as two validator implementations", and `split_episodes` was factored out for
+exactly this reason. The rejected alternative was a copy in `dynamics.py`,
+cheaper to write and leaving `data.py` closed. Its failure mode is a cumulative
 frame offset that is off by one, which the architecture doc already calls "an
-off-by-one factory" in the one place it was allowed (and refused: the token cache
-is per-shard for precisely this reason). But note honestly what share costs:
-`data.py` is 702 lines, its `_self_check` is F-8's acceptance test - "shard writer
-emits packed frames and actions", accepted when the numpy round trip matches the
-C++ buffer byte for byte - and any edit there is an edit to a file two gates
-rest on. Nothing about the sampler's *indexing* touches the meta decode F-8
-checks, which is the reason to believe the cost is small.
+off-by-one factory" in the one place it was allowed (and refused: the token
+cache is per-shard for precisely this reason).
 
-**Working when:** the action stream read back out of an assembled window changes
-only where `step_idx % sim.action_hold_steps == 0`, and a deliberately shifted
-copy fails that same assertion - a control that must read a known value, which
-is the discipline r46's zero reading rests on, and the one that would have caught
-the `RF = 22` constant before an autograd measurement had to. Also: each
+**What sharing costs, recorded honestly: it edits `mirage/data.py`.** That file
+is 702 lines, and its `_self_check` is F-8's acceptance test - "shard writer
+emits packed frames and actions", accepted when the numpy round trip matches the
+C++ buffer byte for byte - so any edit there is an edit to a file a passed gate
+rests on. **The cost is believed small** because the edit moves indexing and
+nothing else. The meta decode F-8 checks, the structured dtype and the row flip
+in `__getitem__` are all untouched, and `_self_check` runs unchanged afterwards
+on both the generated set and the fixture. If it does not pass unchanged, the
+edit reached further than indexing.
+
+**Working when - and the first sentence is the acceptance test.** Every action
+change in the action stream the windows are assembled from sits at
+`step_idx % sim.action_hold_steps == 0` - over the generated set, the alignment
+row's 13,242 of them - and a deliberately shifted copy **fails that same
+assertion**. No agreement figure enters this test. A control that must read a
+known value is the discipline r46's zero reading rests on, and the one that
+would have caught the `RF = 22` constant before an autograd measurement had to.
+With no dataset, the same pair runs on the committed fixture, whose 3 action
+changes `python -m mirage.data` already asserts at phase 0. Also: the shared
+addressing and `WindowSampler` agree on every window's (episode, offset); each
 window's token rows equal the cache rows for the frames `WindowSampler` would
-have returned at the same index; no window straddles an
-`episode_id` boundary; `len(tokens) == shard.frames` for every shard in the
-manifest; and the val episode set is `data.is_val`'s, compared against it rather
-than reimplemented.
+have returned at the same index; no window straddles an `episode_id` boundary;
+`len(tokens) == shard.frames` for every shard in the manifest; the val episode
+set is `data.is_val`'s, compared against it rather than reimplemented; and
+`python -m mirage.data` still passes.
 
 ### 2. `dynamics_hash` covers every shape knob, or E-4 and E-5 have a hole
 
@@ -238,8 +270,10 @@ hash, change, number, conclusion, one entry per run" - are both satisfied by
 construction only if the hash names the thing that changed. Today the `dynamics`
 section holds `d_model` and `n_layers` and nothing else, so **`n_heads` is in no
 hash at all**: it lives as `N_HEADS = 6` in `bench/dyn_size_probe.py`, whose own
-comment says "not in config". The same is true of whatever item 1 decides about
-layout and position encoding.
+comment says "not in config". The same is true of what decisions 2 and 3 fixed -
+RoPE and the untied head - and of the mask the measurement before item 1
+selects: each has to be named in the `dynamics` section, or two checkpoints that
+differ in it log the same hash.
 
 Two lines of consequence, both verifiable by reading `mirage/config.py`:
 
@@ -274,11 +308,14 @@ rather than writing a new one.
 `d_model` 384, 8 layers, 6 heads, MLP ratio 4, pre-norm blocks, a causal mask,
 vocab **521 in and 512 out** (512 codes plus the 9 actions in, codes only out),
 and **15 frames x (64 + 1) = 975 positions** - all from r49, which measured the
-parameter count for each of the four layout variants. **R-3** - "dynamics model
-parameters <= 20M bf16" - passes at every one of them, 14.4 to 15.0 M, and the
-requirement's own fallback says never above 40M, so capacity is not the pressure
-here. `NUM-TOK-PARAMS-R1` is the tokenizer's count for comparison: the dynamics
-model is about 19x it.
+parameter count for each of the four layout variants (item 1 has why a training
+window is 16 frames, not 15). **Decisions 2 and 3 take RoPE with an untied output
+head, which r49 records as 14,593,152** (`rope_untied`) - the variant r49's
+Chinchilla figure is computed against, and the parameter layout it timed.
+**R-3** - "dynamics model parameters <= 20M bf16" - passes at every one of the
+four, 14.4 to 15.0 M, and the requirement's own fallback says never above 40M,
+so capacity is not the pressure here. `NUM-TOK-PARAMS-R1` is the tokenizer's
+count for comparison: the dynamics model is about 19x it.
 
 Three choices that are not stylistic:
 
@@ -290,7 +327,9 @@ Three choices that are not stylistic:
   entries per layer, and r49's throughput was measured through
   `nn.MultiheadAttention`, so its figures describe the materializing path. Whether
   SDPA is faster here, and by how much, is **unmeasured**. Take the measurement on
-  the first run rather than assuming either sign.
+  the first run rather than assuming either sign. **RoPE's own cost is unmeasured
+  too**: the probe's RoPE variant is `pos=None`, no position signal at all, which
+  is right for counting parameters and times no rotation.
 - **Score the loss on frame-token positions only.** The action at inference comes
   from the operator - **F-14** is "control loop reads keyboard and drives the
   model with MuJoCo not running" - so a next-token loss over action positions
@@ -300,15 +339,19 @@ Three choices that are not stylistic:
   matmul and is explicitly not the implementation.
 - **Keep the causality claim asserted, not assumed.** A causal mask that is
   subtly wrong trains a model that reads the answer and then fails only at
-  rollout, hours later.
+  rollout, hours later. The measurement before item 1 selects the mask; the
+  assert below is written for strictly-causal.
 
 **Working when:** `python -m mirage.dynamics` self-checks with **no dataset and
 no checkpoint**, the way `mirage.config`, `mirage.logging` and `mirage.fsq`
-already do - the parameter count reproduces r49's figure for the variant item 1
-chose, exactly; altering a token at position `k` leaves every logit at positions
-`< k` bit-identical and changes at least one at `k` - the strictly-causal form,
-with the block-causal one under "Before item 1"; and the sequence assembled
-for one window round-trips to the same token rows item 1 asserted.
+already do - it prints the parameter count and the first run's row records it,
+and the count equals r49's `rope_untied` 14,593,152 exactly while `dynamics.py`
+keeps the probe's modules, attention biases included. Any difference is a module
+difference to name in that row, not to round away. Also: altering a token at
+position `k` leaves every logit at positions `< k` bit-identical and changes at
+least one at `k` - the strictly-causal form, with the block-causal one under
+"Before item 1"; and the sequence assembled for one window round-trips to the
+same token rows item 1 asserted.
 
 ### 4. The training loop, and the instrument for the risk that actually exists
 
@@ -319,8 +362,9 @@ r49 measures **221.6 ms/step in bf16 against 622.4 in fp32 at batch 16, 2.81x**,
 for **1.06 h/epoch against 2.99 h**. Nothing in Phase 2 rests on a sub-tenth-dB
 comparison, and the architecture doc's own condition for bf16 - "the 15M-parameter
 dynamics model at context 1024, where it is necessary" - is the model being built.
-Read that 1024 as the round number it is: the measured layout is 975 positions
-(r49), and 1024 has never been a measurement of anything here.
+Read that 1024 as the round number it is: r49 priced 975 positions, item 1
+derives 1,040 for the sampler's window, and 1024 has never been a measurement of
+anything here.
 
 **Quote r49's throughput as a lower bound and say so every time.**
 `bench/gpu_probe.py` ran alongside and returned **compute FAIL**: the SMs held
@@ -341,12 +385,32 @@ r49: the cache carries **19.5 M tokens** against a Chinchilla-optimal
 held-out loss every epoch from the first, and treat the gap as the phase's
 headline canary the way the tokenizer's train-val PSNR gap is row 8 of its gate.
 
-**r49 prices the shortfall and decides nothing about it.** Three answers are
-open - more data, a smaller model, heavier regularisation - and the row says so
-explicitly. Picking one before the gap is measured would be choosing a remedy for
-a magnitude nobody has yet seen; note that more data is also entangled with the
-`data_hash` provenance story, since regenerating the set moves the hash and
-orphans both the checkpoint and the cache.
+**r49 prices the shortfall and decides nothing about it; decision 4, taken
+2026-09-21, is that the first run measures the train/val gap before any remedy
+is chosen.** Picking one of the three - more data, a smaller model, heavier
+regularisation - before the gap is measured would be choosing a remedy for a
+magnitude nobody has yet seen. They are not equal in what they cost, and the
+difference is recorded now so it is not rediscovered then: **more data is the
+remedy entangled with `data_hash` provenance**, since regenerating the set moves
+the hash and orphans both the checkpoint and the token cache - `fsq_eval.load_run`
+refuses R1 at a moved hash, and the manifest carries the old one - while a
+smaller model and heavier regularisation are not.
+
+**The first run's stopping rule - decision 4a, taken 2026-09-21: an epoch cap or
+a divergence trip, whichever fires first.**
+
+- **The cap is 10 epochs.** At r49's 1.06 h/epoch - the figure r49 calls
+  pessimistic, because its throughput is a lower bound - that is one overnight
+  window. Derived, not measured: 10.6 h of training steps at r49's 975 positions
+  a window, before the per-epoch held-out pass, which r49 did not time.
+- **The trip is held-out loss rising for two consecutive epochs.** When it
+  fires, the run continues a further two epochs and then stops, because
+  decision 4 wants the **magnitude** of the gap and not merely where it turns.
+  Whichever fires first still governs, so the cap bounds those two epochs too.
+- **Stopping is a decision point, not the end of the run.** The per-epoch
+  resumable checkpoint and `--resume` by run id, below, mean a run stopped by
+  either rule continues from its last epoch if the gap it recorded asks for
+  more. Neither rule has to be right the first time; it has to be recorded.
 
 Operational shape, all of it precedent rather than invention:
 
@@ -373,20 +437,27 @@ Operational shape, all of it precedent rather than invention:
   16 was the probe's choice rather than a measured optimum. Measure both on the
   first run, at the batch actually used.
 
-**One requirement needs its terms stated before it can be scored, and this plan
-does not restate it. P-7** - "full 300k-frame epoch <= 30 min", tier S - names a
-300,000-frame pass. A dynamics epoch as r49 defines it is 276,705 **overlapping
-windows**, 13.8x the dataset in tokens, and prices at 1.06 h. Those are two
-different objects, and the honest options are to score P-7 against a
-300,000-frame equivalent, to score it against the windowed epoch, or to record it
-as not applicable to Phase 2. **No bar moves either way**: naming an ambiguity is
-not the same act as moving a threshold, and moving one because a run missed it is
-the failure mode this project's discipline exists to prevent.
+**P-7 is scored against a 300,000-frame equivalent - decision 8, taken
+2026-09-21.** P-7 - "full 300k-frame epoch <= 30 min", tier S - names a
+300,000-frame pass, while a dynamics epoch as r49 defines it is 276,705
+**overlapping windows**, 13.8x the dataset in tokens. Those are two different
+objects, and the decision is which one P-7 is read against. **It is a
+scoring-method decision only, and no bar moves**: `NUM-BAR-P7` stays where it
+is, and moving a bar because a run missed it is the failure mode this project's
+discipline exists to prevent. What is timed is the train loop working through
+the dataset's 300,000 frames once, and the row that measures it states how it
+counts a frame inside a window, because that conversion is where a verdict could
+be manufactured. **The equivalent figure is unmeasured.** It is deliberately not
+derived from the windowed epoch's 1.06 h, which rests on a throughput lower
+bound, leaves out the held-out pass, times no rotation and was priced at 975
+positions a window. Scaling it would imply a verdict nobody measured.
 
 **Working when:** a one-epoch run writes a resumable checkpoint and a jsonl
 carrying `dynamics_hash`; `--resume` continues it with no visible discontinuity
-in the loss curve; the val loss is in the log from epoch 1; and peak VRAM and the
-GPU clock state are recorded next to the step time.
+in the loss curve; the val loss is in the log from epoch 1; the stopping rule
+stops where decision 4a says, and the run's row records which rule fired and at
+which epoch; and peak VRAM and the GPU clock state are recorded next to the step
+time.
 
 ### 5. The token-to-pixel path, which does not exist yet
 
@@ -432,22 +503,22 @@ action, fixed step count, no fallback path" - fixes the shape of one step: all 6
 token positions are decoded, every time, with no early exit. Any parallel decode
 schedule is Phase 4's ladder, not this.
 
-**Greedy is the default and the alternative is open.** The simulator is
-deterministic - **E-1**, "deterministic sim given a seed", defined as same seed
-and action sequence give bit-identical frames - so the target distribution is a
-point mass and greedy decoding is the strong default; it also makes a rollout
-exactly reproducible from a checkpoint plus a seed clip, which is what lets E-4
-compare two runs at all. Temperature sampling is the alternative, and what would
-decide for it is evidence that greedy decoding collapses - a rollout that freezes
-or falls into a short loop rather than one that drifts. Not chosen here.
+**Greedy - decision 5, taken 2026-09-21.** The simulator is deterministic -
+**E-1**, "deterministic sim given a seed", defined as same seed and action
+sequence give bit-identical frames - so the target distribution is a point mass
+and greedy decoding is the strong default. It also makes a rollout exactly
+reproducible from a checkpoint plus a seed clip, which is what lets E-4 compare
+two runs at all, and it keeps gate row 9 an exact-reproduction row rather than a
+statistical one. **The revisit trigger stays in place:** evidence that greedy
+decoding collapses - a rollout that freezes or falls into a short loop, not one
+that merely drifts. That is what would reopen temperature sampling.
 
-**F-13's interaction with item 1's irreversible choice is the one operational
-difference between the two position encodings**, and it is worth stating because
-F-13 is scored from one checkpoint: with learned positions a shorter context has
-to index the same absolute position table, and nothing past the trained 975
-positions exists at all; with RoPE both directions are free. That is not an
-argument that settles item 1 by itself, but it is a cost that belongs on the
-table when it is settled.
+**F-13 is why decision 2 took RoPE**, and it is worth stating here because F-13
+is scored from one checkpoint. With learned positions a shorter context has to
+index the same absolute position table, and nothing past the trained length
+exists at all; with RoPE both directions are free. A rollout at `ctx` 15 grows
+to the same `ctx + 1` frames item 1 recommends training on, so the longest
+rollout sequence is one the model has trained at.
 
 ### The proposed gate - one command
 
@@ -468,8 +539,8 @@ requirements, and none of them moves a bar.** Row 1 is written against F-11 as
 | 5 | Action-following agreement, and the simulator's own agreement on the same subset | **>= 90% of the ground-truth term, both numbers reported** | **Q-4** - agreement is `sign(theta_t+1 - theta_t)` against the commanded sign, on an **action-balanced** subset drawn from the val split. An absolute bar there fails a model that is exactly right, which is why the bar is relative. `bench/hold_probe.py` measures the ground-truth term - **re-measure it, see the gotcha** |
 | 6 | Link-length drift over a 200-step rollout, per link, and the simulator's own drift | **<= 1.1x the ground-truth term, per link, both numbers reported** | **Q-5** - the statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. Ground truth reads 23.0% on link0 and 44.2% on link1, so a perfect model fails any absolute bar. `bench/link_drift_probe.py` measures the ground-truth term. **Do not re-attempt the deprojection** - r50 records it as measured and refuted |
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Q-6** - object permanence, the memory result. Tier S: the project ships without it and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and `NUM-DATA-F7` is the event rate it scores over |
-| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **R-3** and **R-1**. r49 settles R-3 at 14.4-15.0 M; R-1 is **unmeasured** for this model and item 4 takes it |
-| 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **E-1** and **E-4** - a rerun matching within `NUM-BAR-E4`. Greedy decoding makes this exact rather than statistical; a temperature decision would change this row's shape |
+| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **R-3** and **R-1**. r49 settles R-3: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. R-1 is **unmeasured** for this model and item 4 takes it |
+| 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **E-1** and **E-4** - a rerun matching within `NUM-BAR-E4`. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
 | 10 | Train-val loss gap; share of predictions the copy baseline also gets right | **reported** | not requirements - the overfitting and triviality canaries. The first is item 4's headline instrument; the second is what keeps row 1 honest now that its bar *is* a baseline - a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what says so |
 
 Rows 1 to 6 and 8 to 9 are the pass/fail candidates; 7 is S-tier and reported;
@@ -483,9 +554,11 @@ marginal-frequency column is where it first gets a number.
 
 ---
 
-## Decisions: one taken, seven open, one waiting on a measurement
+## Decisions: eight taken, one open, one on its trigger, one waiting on a measurement
 
 Each one changes an item above, so each is named rather than quietly resolved.
+Decision 1 was taken 2026-09-18. The other seven were taken 2026-09-21, after a
+walkthrough of this plan's draft, and each is written down with its rationale.
 
 **1. F-11's acceptance test - DECIDED 2026-09-18: restated against the
 persistence baseline, and `world_model_requirements.md` carries it as of
@@ -529,39 +602,78 @@ verification-log row naming the acceptance procedure, which cannot be written
 until gate row 1 exists in code. **No Phase 2 F-11 verdict exists, and none is
 quoted here.**
 
-**The seven below stay open and untaken, and one more waits on a measurement.**
+**2. Sequence layout and position encoding - DECIDED 2026-09-21: RoPE, and the
+no-shift interleaving.** The irreversible one. **RoPE**, because it keeps
+F-13's shorter-context rollout free in both directions, and because r49 shows
+the four variants span under 4% of parameters, so this is not a capacity trade.
+**The interleaving is the no-shift reading of the recorded alignment**: the one
+action token that conditions a frame immediately precedes that frame's 64 token
+positions, and both are read at the same record index. That is the convention
+`mirage/data.py`'s module header already states - `qpos[t] - qpos[t-1]` is the
+result of `action[t]`, same record - and it is consistent with r49's 65
+positions per frame step. **The phase assertion is mandatory and is item 1's
+acceptance test**: all 13,242 action changes must sit at
+`step_idx % sim.action_hold_steps == 0`, and a deliberately shifted copy must
+fail that same assertion. **Agreement statistics must not be used to confirm
+the alignment**, because the wrong reading scores higher - 95.6% against
+93.9% - and both clear Q-4's bar. Two things this decision does not settle:
+the window's frame count, which item 1 names, and the mask, which decision 9's
+measurement selects and which may change how a frame's positions are fed but not
+which record they are read from.
 
-**2. Sequence layout and position encoding** - r49 records these as the two
-choices already called irreversible, and prices them rather than taking them:
-four variants, 571,008 parameters apart, so **not a capacity choice**. Item 1's
-alignment fact constrains the layout, and F-13 costs the two position encodings
-differently. Item 1 takes it.
+**Item 1's window index arithmetic - DECIDED 2026-09-21: shared, not copied.**
+The plan's own recommendation and the project's precedent. The shared
+addressing and `WindowSampler` must agree on every window's (episode, offset).
+It edits `mirage/data.py`, whose `_self_check` is F-8's acceptance test, and the
+cost is believed small because the edit moves indexing and nothing F-8 checks.
+Item 1 has the detail.
 
-**3. Tied against untied output embedding** - the other axis of the same table,
-same 4% spread. Note the caution in `bench/dyn_size_probe.py`, the probe r49
-records: tying is "only sound because the frame codes are the first block of the
-vocabulary and the action tokens are appended after them", which is a property of
-item 1's vocabulary layout and not a free one.
+**3. Output embedding - DECIDED 2026-09-21: untied, two separate matrices.**
+Tying is only sound because the frame codes occupy the first block of the
+vocabulary with the action tokens appended after - `bench/dyn_size_probe.py`
+says so in its own comment - and that is a hidden coupling to the layout. The
+parameter cost stays inside the same sub-4% spread, and R-3 has headroom.
+**The count is on record**: r49 prices all four variants, and RoPE-and-untied
+is its `rope_untied`, **14,593,152**. An earlier draft of this plan quoted only
+the two endpoints, 14,396,544 for RoPE-and-tied and 14,967,552 for
+learned-and-untied, which made the chosen variant look unpriced. The first run
+still reports its own count, per item 3's done-when.
 
-**4. The answer to the Chinchilla shortfall** - more data, a smaller model, or
-heavier regularisation. r49 prices the gap at 15.0x and decides none of them.
-Item 4's position is that the first run measures the gap before anything answers
-it.
+**4. The answer to the Chinchilla shortfall - DECIDED 2026-09-21: measure the
+gap first.** Unchanged from item 4's position: the first run measures the
+train/val gap before any remedy is chosen. Recorded alongside it: **more data
+is the remedy entangled with `data_hash` provenance**, since regenerating the
+set moves the hash and orphans both the checkpoint and the token cache, while a
+smaller model and heavier regularisation are not.
 
-**5. Greedy against temperature sampling at rollout** - item 6's default is
-greedy, on E-1's determinism, and the trigger for revisiting is named there.
+**4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
+otherwise leaves open. An epoch cap or a divergence trip, whichever fires first:
+the cap is 10 epochs, one overnight window at r49's 1.06 h/epoch; the trip is
+held-out loss rising for two consecutive epochs, after which the run continues a
+further two epochs before stopping, because decision 4 wants the magnitude of
+the gap and not merely the location of the turn. Item 4 states it in full,
+beside the per-epoch resumable checkpoint and `--resume` by run id that make
+stopping a decision point rather than the end of the run.
 
-**6. Whether `dynamics_eval.py` splits out** - the same 500-line trigger that
-split `fsq_eval.py`, applied when it fires and not before.
+**5. Rollout decoding - DECIDED 2026-09-21: greedy.** The revisit trigger in
+item 6 stays in place: a rollout that freezes or falls into a short loop, not
+one that merely drifts. Greedy keeps gate row 9 an exact-reproduction row rather
+than a statistical one.
 
-**7. Exposure bias: mitigate now, or name a trigger** - teacher forcing trains on
-ground-truth context and the rollout feeds the model its own output. The cheap
-position is to name the trigger (a coherence horizon that collapses well before
-Q-3's 200 while held-out next-token accuracy looks healthy) rather than to buy a
-mitigation before that signature appears.
+**6. Whether `dynamics_eval.py` splits out - governed by its trigger, not taken
+now.** The same 500-line trigger that split `fsq_eval.py` out of `fsq.py`,
+applied when it fires and not before.
 
-**8. What P-7 means for a windowed epoch** - item 4 states the three readings and
-takes none.
+**7. Exposure bias: mitigate now, or name a trigger - OPEN, and not taken.**
+Teacher forcing trains on ground-truth context and the rollout feeds the model
+its own output. The cheap position is to name the trigger (a coherence horizon
+that collapses well before Q-3's 200 while held-out next-token accuracy looks
+healthy) rather than to buy a mitigation before that signature appears.
+
+**8. What P-7 means for a windowed epoch - DECIDED 2026-09-21: scored against a
+300,000-frame equivalent.** A scoring-method decision only; `NUM-BAR-P7` does
+not move. The equivalent figure is **unmeasured**, and item 4 says why it is
+not derived from the windowed epoch's 1.06 h.
 
 **9. Strictly-causal against block-causal attention - waiting on the
 measurement ordered 2026-09-22**, and taken by it rather than by argument. "Before
@@ -576,6 +688,7 @@ written and the items above assume strictly-causal attention.
 |---|---|---|
 | **A one-step action misalignment** | Every checkpoint conditions each frame on the wrong action, and Q-4 scores the wrong thing | **You do not**, from agreement: 93.9% against 95.6%, and the **wrong** reading scores higher, with both clearing Q-4's bar. Only the phase assert catches it - all 13,242 action changes sit at `step_idx % action_hold_steps == 0`. Assert it, and assert that a shift of one breaks it |
 | **Scoring gate row 1 against r46's 85.67% on another population, or on another tokenizer** | The row compares two statistics and reports the difference as skill | The row names episodes other than r46's 12 val ones, or a checkpoint other than R1. Re-measure the baseline with `bench/token_stability_probe.py` on the model's own population and checkpoint; r46's figure is the bar only on its own |
+| **Quoting r49's 975 positions as the training sequence** | Tokens per epoch, step time and epoch time are all understated, and a schedule built on them runs long | r49 prices `ctx x 65`, while `WindowSampler` holds `ctx + 1` frames - 16 at `ctx` 15 - and r49's own window count is the sampler's. Item 1 names the choice; re-take the timings at the sequence actually built |
 | Putting the context length in `data.ctx` for F-13 | `data_hash` moves, `load_shards` refuses the 300,000 frames and `load_run` refuses the R1 checkpoint | Loudly, on the next run - which is the good case. The bad case is a session spent editing the register instead of passing an argument |
 | A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so E-4 has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` is in this state today, as a constant in `bench/dyn_size_probe.py` |
 | Calibrating Q-3's continuity verdict on **renders** | The verdict is tuned in the wrong regime and fires on ordinary decoder output | The same two-regime trap that cost Phase 1's build-order item 6 its obvious recipe: renders sit at `NUM-VAL-WORSTDIST` from the palette, reconstructions at `NUM-VAL-RECONDIST`. Calibrate on reconstructions |
@@ -604,10 +717,10 @@ the machine it was written on.
 | Measure | Number | What it settles |
 |---|---|---|
 | Model shape | `d_model` 384, 8 layers, 6 heads, MLP 4x - r49 | item 3 does not choose these; they were specified and are now priced |
-| Sequence | 15 frames x (64 + 1) = **975** positions, vocab **521** in / **512** out - r49 | item 1's arithmetic, and the 975 that caps a learned position table |
-| Parameters | **14,396,544** (RoPE + tied) to **14,967,552** (learned + untied), spread **571,008** - r49 | **the irreversible layout choice is not a capacity choice**, and R-3 passes at all four |
-| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - r49 | bf16 for item 4. **A lower bound**: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against `NUM-HW-FP16` |
-| Data against capacity | **19.5 M** cache tokens against a Chinchilla-optimal **291.9 M**, **15.0x under**; one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - r49 | **the phase's risk is overfitting, not throughput**, and the three answers stay open |
+| Sequence | 15 frames x (64 + 1) = **975** positions, vocab **521** in / **512** out - r49 | the 65 positions per frame step decision 2 lays out. **975 is `ctx x 65`, and the sampler's window is `ctx + 1` frames** - item 1 - so read it as r49's pricing, not as the training sequence |
+| Parameters | **14,396,544** RoPE + tied, **14,593,152** RoPE + untied, **14,770,944** learned + tied, **14,967,552** learned + untied; spread **571,008** - r49 | **the irreversible layout choice is not a capacity choice**, and R-3 passes at all four. Decisions 2 and 3 take **RoPE + untied** |
+| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - r49 | bf16 for item 4, and decision 4a's cap. **A lower bound**: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against `NUM-HW-FP16`. Timed on the RoPE + untied parameter layout with no rotation, through `nn.MultiheadAttention`, at 975 positions a window |
+| Data against capacity | **19.5 M** cache tokens against a Chinchilla-optimal **291.9 M**, **15.0x under**; one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - r49 | **the phase's risk is overfitting, not throughput**. Decision 4: the first run measures the gap before a remedy is chosen. The epoch's token figures are priced at 975 positions a window - item 1 |
 | Token cache size | **38.4 MB** - r49 | the whole cache fits in VRAM many times over; nothing about the data path needs engineering |
 | The inherited checkpoint | `20260829-005439-r1`, `NUM-TOK-R1-60` held-out PSNR at `NUM-TOK-ENT-R1` token entropy | the tokenizer is fixed, and so are the 512 codes and the 64-token grid |
 | The zero-parameter baseline | **85.67%** token persistence on R1, over **460,032** transitions from 12 val episodes, **396,013** of them quiet-field - r46 | **F-11's restated bar on r46's population**, and gate row 1. Quote r46 for it; on any other population, re-measure with `bench/token_stability_probe.py` |
@@ -620,8 +733,9 @@ the machine it was written on.
 | Q-3's terminator | F-9 fires on **0.00%** of 300-step substitutions against **100%** on the noise control - r48 | the continuity verdict replaces it, and the probe stays as its regression test |
 | Run-to-run noise | `NUM-PERF-NOISE`, and it is the **tokenizer's** 1-epoch figure | **unmeasured for a dynamics rung.** Do not call a margin "inside the noise" here; no seed has been repeated on this model |
 | Peak training VRAM | **unmeasured** for this model - r49 recorded none | item 4 takes it, at the batch actually used. Batch 16 is the probe's choice, not an optimum |
-| SDPA against materialized attention | **unmeasured** - r49 timed `nn.MultiheadAttention` | item 3 measures it rather than assuming a sign |
-| Rollout throughput, and any P-row | **unmeasured**, and deliberately - **P-1** to **P-5** are the interactive rows (sustained frame rate, p99 frame time, input-to-display latency, the p99/p50 jitter ratio, and the eager-to-engine speedup), which belong to Phase 3's baseline and Phase 4's ladder | Phase 2 produces a checkpoint, not a frame rate. `NUM-BAR-P7` is the only P-row this phase touches, and item 4 says what is ambiguous about it |
+| SDPA against materialized attention, and RoPE's rotation | **unmeasured** - r49 timed `nn.MultiheadAttention` and applied no rotation | item 3 measures both rather than assuming a sign |
+| P-7's 300,000-frame equivalent | **unmeasured** | decision 8 fixes how P-7 is scored, not what it reads. Not derived from r49's windowed epoch |
+| Rollout throughput, and any P-row | **unmeasured**, and deliberately - **P-1** to **P-5** are the interactive rows (sustained frame rate, p99 frame time, input-to-display latency, the p99/p50 jitter ratio, and the eager-to-engine speedup), which belong to Phase 3's baseline and Phase 4's ladder | Phase 2 produces a checkpoint, not a frame rate. `NUM-BAR-P7` is the only P-row this phase touches, and item 4 says how it is scored |
 
 Record the GPU power state next to every timing. A timing without it is not a
 number - and gate compute numbers on **SM clock plus power draw**, bandwidth on
@@ -640,5 +754,8 @@ moved here.** F-11's acceptance test was raised, not lowered, and
 `world_model_requirements.md` restated it on 2026-09-22; gate row 1 is written
 against that. Moving a bar *down* because a run missed it is the failure mode
 this project's discipline exists to prevent, and nothing here does that - no run
-has happened. Phases 3 and 4 stay undrafted,
-which is "profile before changing anything" applied to planning.
+has happened. **The decisions above are recorded here, not taken here**: they
+were taken 2026-09-18 and 2026-09-21, and the one new call this plan makes -
+`ctx + 1` frames a window, in item 1 - is written as a recommendation with its
+alternative. Phases 3 and 4 stay undrafted, which is "profile before changing
+anything" applied to planning.
