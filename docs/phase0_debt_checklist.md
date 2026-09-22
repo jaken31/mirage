@@ -106,7 +106,7 @@ episode used **2 distinct actions across 600 steps**.
 
 **Why it is debt.** An action-conditioned model learns what an action *does*
 largely from windows where the action changes. Nearly three in five windows carry
-no such event. If F-11 (beat the marginal-frequency baseline by 3x) or Q-4
+no such event. If F-11 (acceptance test in `world_model_requirements.md`) or Q-4
 underperforms, this is a leading candidate cause - and by then it is a dataset
 problem found after two phases of training on it.
 
