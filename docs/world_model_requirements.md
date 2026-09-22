@@ -37,9 +37,25 @@ changed what is counted, not the bar.
 | ID | Tier | Requirement | Acceptance test |
 |---|---|---|---|
 | F-10 | M | FSQ tokenizer encodes a frame to an 8x8 grid over 512 levels and decodes back | Meets Q-1 |
-| F-11 | M | Dynamics model consumes interleaved frame and action tokens, predicts next token | Held-out accuracy beats marginal-frequency baseline by 3x |
+| F-11 | M | Dynamics model consumes interleaved frame and action tokens, predicts next token | Held-out accuracy beats the **persistence baseline** - copying the previous frame's token at the same cell - which `runs.jsonl` r46 measures at **85.67%** on the R1 checkpoint. Scored over the population r46 measured, the 12 held-out episodes `bench/token_stability_probe.py` reads, with the marginal-frequency baseline reported alongside |
 | F-12 | M | Generates a full next frame from previous frames plus one action, fixed step count | No fallback path |
 | F-13 | S | Configurable context length at load time | Rollout runs at 4, 8, 15 frames from one checkpoint |
+
+**F-11 was restated 2026-09-22**, on the decision taken 2026-09-18 to test it
+against the persistence baseline instead of the marginal frequency. It had been
+"held-out accuracy beats marginal-frequency baseline by 3x", and that text is
+superseded. `runs.jsonl` r46 measured the zero-parameter copy of the previous
+frame at **85.67%** over 460,032 held-out cell-transitions from 12 val episodes,
+on the R1 checkpoint Phase 2 inherits, and records it as far above 3x the
+marginal top-1. An acceptance test a zero-parameter baseline passes cannot show
+the model learned dynamics: beating the marginal frequency asks only
+that the model know which codes are common, while beating persistence asks it to
+know when a token changes, which is the only part of the sequence that carries
+the physics. **The comparison with the old bar is asserted, not measured** -
+neither r46 nor `bench/token_stability_probe.py` computes the marginal top-1, so
+the first F-11 run that reports that baseline alongside is where the comparison
+gets a number. The tier and the description are unchanged, and no margin over
+persistence is set: the bar is the baseline itself.
 
 ### Inference and control
 
@@ -166,4 +182,5 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | **Q-4** | **Was measured 2026-08-28 to sit above its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene or `action_hold_steps` changes, and a Q-4 row quoting only the model's number is unfalsifiable | Report both numbers or the row does not count. `bench/hold_probe.py` produces the ground-truth term |
 | **Q-3** | **Was measured 2026-08-30 to terminate on a verdict blind to dynamics failure, and its terminator has been replaced** - see the row above. Residual risk: the continuity bound is calibrated on ground-truth frames, which are perfectly rendered, while Q-3's inputs are decoder output - the same two-regime trap that cost build-order item 6 its obvious recipe | Calibrate on **reconstructions**, not renders. Keep `bench/q3_blind_probe.py` as the regression test: a verdict that stops firing on the 300-step substitution has silently gone blind again |
 | **Q-5** | **Was measured 2026-08-30 to sit far below its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene, the camera or the resolution changes, and a Q-5 row quoting only the model's number is unfalsifiable. The 1.1x factor is a judgement, not a measurement - nothing has established how much worse than the simulator a *bad* model reads on this statistic, so the bar may not discriminate | Report both numbers or the row does not count; `bench/link_drift_probe.py` produces the ground-truth term. Before Phase 3 quotes a Q-5 verdict, measure the statistic on a deliberately broken rollout - if it does not separate from the simulator's own reading, Q-5 has no discriminating power and should be retired rather than re-tuned. **Do not re-attempt the deprojection**: r50 records it as measured and refuted |
+| **F-11** | **Was restated 2026-09-22 against the persistence baseline** - see the paragraph under the Models table. **Its description is still at risk**: "predicts next token" is pending the measurement of strictly-causal against block-causal attention at a fixed step budget, ordered 2026-09-22 to run before Phase 2's first build item, the sequence layout. It has not run. Block-causal lets the tokens of one frame attend to each other, so the model would predict a frame's tokens together rather than each from the ones before it, and "predicts next token" would stop describing it. Residual risk: the baseline belongs to the tokenizer checkpoint, not to F-11 - r46 reads 85.67% on R1, 93.22% on r1c and 77.28% on R2 - so it moves whenever the tokenizer does | If block-causal is selected, restate the description in a second, separately dated amendment rather than editing this one. If strictly-causal is selected, the description stands. Re-run `bench/token_stability_probe.py` on any new tokenizer checkpoint and score against that figure, not against r46's R1 figure |
 | P-6 | Two risks now. A software rasterizer instead of the GPU, ~50x slower; and `mjr_readPixels` fixed per-call cost under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms collapse to the single-pass render, near ~30 ms hand-roll a WGL pbuffer context |
