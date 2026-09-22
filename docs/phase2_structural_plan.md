@@ -55,8 +55,8 @@ and is not built here.
 R1's token cache on disk (`runs/20260829-005439-r1/tokens/shard_NNN.npy` plus its
 `manifest.json`) and the shard meta records' `action` column -> one window of
 `ctx` frames interleaved with their actions -> `Dynamics` (embed, pre-norm
-blocks, causal mask) -> logits over the 512 codes at every frame-token position
--> cross-entropy. After training: roll out autoregressively from a seed clip,
+blocks, causal mask) -> logits over the 512 codes at every position whose
+target is a frame token -> cross-entropy. After training: roll out autoregressively from a seed clip,
 decode each predicted token grid through R1's decoder, and score the rollout on
 the decoded frames.
 
@@ -330,7 +330,14 @@ Three choices that are not stylistic:
   the first run rather than assuming either sign. **RoPE's own cost is unmeasured
   too**: the probe's RoPE variant is `pos=None`, no position signal at all, which
   is right for counting parameters and times no rotation.
-- **Score the loss on frame-token positions only.** The action at inference comes
+- **Score the loss only at positions whose target is a frame token.** This is a
+  next-token loss, so the position that predicts a token is the one before it.
+  Under decision 2's layout that is action[t]'s position and the first 63
+  positions of frame t; the last position of frame t predicts action[t+1] and is
+  masked out, so **no target is ever an action token**. Scoring "the frame-token
+  positions themselves" would drop one frame target and keep one action target
+  per frame, and under r49's clamp action ids 512-520 would silently train as
+  code 511. The action at inference comes
   from the operator - **F-14** is "control loop reads keyboard and drives the
   model with MuJoCo not running" - so a next-token loss over action positions
   optimises a distribution the engine never samples, and spends capacity that
@@ -400,9 +407,12 @@ smaller model and heavier regularisation are not.
 a divergence trip, whichever fires first.**
 
 - **The cap is 10 epochs.** At r49's 1.06 h/epoch - the figure r49 calls
-  pessimistic, because its throughput is a lower bound - that is one overnight
-  window. Derived, not measured: 10.6 h of training steps at r49's 975 positions
-  a window, before the per-epoch held-out pass, which r49 did not time.
+  pessimistic, because its throughput is a lower bound, which makes its time an
+  upper bound at 975 positions a window only - that is one overnight window at
+  r49's 975-position figure. Derived, not measured: 10.6 h of training steps at
+  975 positions a window, before the per-epoch held-out pass, which r49 did not
+  time. At the 1,040 positions item 1 recommends the epoch time is unmeasured,
+  and r49's figure does not bound it.
 - **The trip is held-out loss rising for two consecutive epochs.** When it
   fires, the run continues a further two epochs and then stops, because
   decision 4 wants the **magnitude** of the gap and not merely where it turns.
@@ -648,7 +658,8 @@ smaller model and heavier regularisation are not.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first:
-the cap is 10 epochs, one overnight window at r49's 1.06 h/epoch; the trip is
+the cap is 10 epochs, one overnight window at r49's 1.06 h/epoch at 975
+positions a window (the time at 1,040 is unmeasured); the trip is
 held-out loss rising for two consecutive epochs, after which the run continues a
 further two epochs before stopping, because decision 4 wants the magnitude of
 the gap and not merely the location of the turn. Item 4 states it in full,
@@ -719,7 +730,7 @@ the machine it was written on.
 | Model shape | `d_model` 384, 8 layers, 6 heads, MLP 4x - r49 | item 3 does not choose these; they were specified and are now priced |
 | Sequence | 15 frames x (64 + 1) = **975** positions, vocab **521** in / **512** out - r49 | the 65 positions per frame step decision 2 lays out. **975 is `ctx x 65`, and the sampler's window is `ctx + 1` frames** - item 1 - so read it as r49's pricing, not as the training sequence |
 | Parameters | **14,396,544** RoPE + tied, **14,593,152** RoPE + untied, **14,770,944** learned + tied, **14,967,552** learned + untied; spread **571,008** - r49 | **the irreversible layout choice is not a capacity choice**, and R-3 passes at all four. Decisions 2 and 3 take **RoPE + untied** |
-| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - r49 | bf16 for item 4, and decision 4a's cap. **A lower bound**: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against `NUM-HW-FP16`. Timed on the RoPE + untied parameter layout with no rotation, through `nn.MultiheadAttention`, at 975 positions a window |
+| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - r49 | bf16 for item 4, and decision 4a's cap. **A lower bound on throughput, so an upper bound on time at 975 positions a window only**, and not a bound at item 1's 1,040: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against `NUM-HW-FP16`. Timed on the RoPE + untied parameter layout with no rotation, through `nn.MultiheadAttention`, at 975 positions a window |
 | Data against capacity | **19.5 M** cache tokens against a Chinchilla-optimal **291.9 M**, **15.0x under**; one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - r49 | **the phase's risk is overfitting, not throughput**. Decision 4: the first run measures the gap before a remedy is chosen. The epoch's token figures are priced at 975 positions a window - item 1 |
 | Token cache size | **38.4 MB** - r49 | the whole cache fits in VRAM many times over; nothing about the data path needs engineering |
 | The inherited checkpoint | `20260829-005439-r1`, `NUM-TOK-R1-60` held-out PSNR at `NUM-TOK-ENT-R1` token entropy | the tokenizer is fixed, and so are the 512 codes and the 64-token grid |
