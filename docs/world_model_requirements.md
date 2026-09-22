@@ -37,7 +37,7 @@ changed what is counted, not the bar.
 | ID | Tier | Requirement | Acceptance test |
 |---|---|---|---|
 | F-10 | M | FSQ tokenizer encodes a frame to an 8x8 grid over 512 levels and decodes back | Meets Q-1 |
-| F-11 | M | Dynamics model consumes interleaved frame and action tokens, predicts next token | Held-out accuracy beats the **persistence baseline** - copying the previous frame's token at the same cell - which `runs.jsonl` r46 measures at **85.67%** on the R1 checkpoint. Scored over the population r46 measured, the 12 held-out episodes `bench/token_stability_probe.py` reads, with the marginal-frequency baseline reported alongside |
+| F-11 | M | Dynamics model consumes interleaved frame and action tokens, predicts next token | Held-out accuracy beats the **persistence baseline** - copying the previous frame's token at the same cell - scored like-for-like on the same held-out population as the model, re-measured with `bench/token_stability_probe.py` on that population. `runs.jsonl` r46 measures it at **85.67%** over its 12 val episodes on the R1 checkpoint. The marginal-frequency baseline is reported alongside |
 | F-12 | M | Generates a full next frame from previous frames plus one action, fixed step count | No fallback path |
 | F-13 | S | Configurable context length at load time | Rollout runs at 4, 8, 15 frames from one checkpoint |
 
