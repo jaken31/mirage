@@ -46,7 +46,7 @@ than a digit.
 
 History shows where the risk sits. **Every figure that went stale was measured or
 derived**: the k-means floor moved three times, the bar derived from it moved
-three times, F-7 was restated, and `data_hash` moved twice. **No chosen bar has
+three times, the occlusion floor was restated, and `data_hash` moved twice. **No chosen bar has
 ever moved.** 30 dB, 70%, 3% and 20 GB are the same today as the day they were
 written, because changing one is a deliberate decision, not a number that drifts.
 So measured and derived values are the ones to re-check when this file changes.
@@ -112,12 +112,12 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-DATA-SIZE64` | **3.686 GB** | On disk | r23 | current |
 | `NUM-DATA-VALFRAMES` | **16,200** | Held-out frames | r30 | current |
 | `NUM-DATA-SPLIT` | **473 / 27** | Train / val episodes of 500, split by hashed episode id | r33 | current |
-| `NUM-DATA-COLOURS` | **7** | F-2 distinct byte triples over the whole set - a union, not per frame | r23 | current |
+| `NUM-DATA-COLOURS` | **7** | Flat-render distinct byte triples over the whole set - a union, not per frame | r23 | current |
 | `NUM-DATA-F6` | **16.63%** | Contact rate. Read the masked byte, not the raw one | r23 | current |
 | `NUM-DATA-F7` | **5.35%** | Recoverable occlusion - blocks that return | r26 | current |
-| `NUM-DATA-F5RATIO` | **2.15** | F-5 flatness ratio at the shipped physics | r20 | current |
+| `NUM-DATA-F5RATIO` | **2.15** | Data-policy flatness ratio at the shipped physics | r20 | current |
 | `NUM-DATA-GENFPS` | **4,980 fps** | Full regeneration, 60.2 s for the set | r29 | current |
-| `NUM-DATA-Q4CEIL` | **83.1%** | Ground truth's own action-agreement score, i.e. **Q-4 sits above its own ceiling** | r20 | current |
+| `NUM-DATA-Q4CEIL` | **83.1%** | Ground truth's own action-agreement score, i.e. **the absolute action-following bar sits above its own ceiling** | r20 | current |
 
 ## Dataset - the 96x96 fork
 
@@ -167,7 +167,7 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-VAL-TAU` | **32.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash`. **An interior optimum, not a compromise**: at a threshold pinned to the clean maximum, blended-futures detection runs 23% at tau 8 and 87% here, while gaussian-noise detection collapses to 0.3% by tau 64 once the ball is wider than the perturbation | r18, r23, r42 | current, **recalibrated on decoder output** |
 | `NUM-VAL-WORSTDIST` | **0.75 RGB units** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero. **Digit collision: `NUM-TOK-LEAK` is also 0.75 and is dB of PSNR, not colour distance.** It has already caused one misreading - see `mathematics_notes.md` section 1 | r18, r29 | current |
 | `NUM-VAL-HEADROOM` | **43x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. Slack over *renders* only - against `NUM-VAL-RECONDIST` the same tau has no slack at all, which is the whole finding | r42 | derived |
-| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
+| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the frame validator's acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
 | `NUM-VAL-FRACMAX` | **8.5449% of a frame** | `validator.offpalette_frac_max` - the largest off-palette *share* a reconstruction may carry before the frame is a fault. **Exactly `NUM-VAL-PXMAX` / 4,096**, so at 64x64 the verdict is bit-identical to the pixel count it replaced; the point of the change is that the same number is meaningful at any resolution. 1.11x `NUM-VAL-RECONFP`, a deliberately thin margin: 512 px would drop blur detection from 100% to 1.1% | r42, r43 | current |
 | `NUM-VAL-PXMAX` | **350 px** | The same bar as a pixel count, at 64x64 only. `validator.offpalette_px_max` **no longer exists** - it was replaced by `NUM-VAL-FRACMAX` on 2026-08-29 because a count needs one calibrated value per resolution. Kept as an id because item 6's whole table is quoted in pixels | r42 | **superseded by `NUM-VAL-FRACMAX`**, still correct at 64x64 |
 | `NUM-VAL-PCTL` | **refuted** | A *quantile of palette distance* was the first candidate for a resolution-free verdict, and it is the one this project would have shipped on the argument alone. Measured, it fails: at the best quantile of the ladder, gaussian noise at sigma 16 is caught **0.1%** of the time against `NUM-VAL-FRACMAX`'s 100%. A quantile is a *tail* statistic and the failures that matter are *bulk* | r43 | **refuted - do not revive without reading r43** |
@@ -181,7 +181,7 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-TOK-FLOOR512` | **28.27 dB** | k-means++ 512 codes, **fit on train episodes, scored on val**, at 64x64 | r33 | current |
 | `NUM-TOK-FLOOR512-96` | **29.97 dB** | The same, at 96x96, same 179,200-patch budget. **Higher, not lower**: an 8x8 patch covers 2.25x less scene, so `NUM-D96-FLATPATCH` of patches are one flat colour and a per-patch codebook finds them easier. Makes gate row 2's bar **+0.03 dB** at 96x96, i.e. nearly vacuous | r43 | current |
 | `NUM-D96-FLATPATCH` | **73.09%** | Share of 8x8 patches that are a single flat colour at 96x96, against **63.47%** at 64x64. **One cause, two opposite consequences**: it raises `NUM-TOK-FLOOR512-96` and it is why `NUM-TOK-ENT-R1-96` falls below `NUM-BAR-Q2` | r43 | current |
-| `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first Q-2 shrink step | r33 | current |
+| `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first codebook shrink step | r33 | current |
 | `NUM-TOK-FLOOR1024` | **29.39 dB** | Same, 1024 codes - **still misses `NUM-BAR-Q1`** | r33 | current |
 | `NUM-TOK-LIVE512` | **486 of 512** | Centroids alive on held-out patches | r33 | current |
 | `NUM-TOK-LEAK` | **0.75 dB** | Whole-set floor minus held-out floor - the split leak. **Digit collision: `NUM-VAL-WORSTDIST` is also 0.75 and is RGB colour distance, not dB.** Unrelated quantities, no shared derivation - check the unit before quoting either | r33 | current |
@@ -208,7 +208,7 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-TOK-SKEW-96` | **2.922 bits** of the 4.018 short | Marginal skew at 96x96 against **1.440** at 64x64 - the entropy loss is skew, not collapse. **0 of 512 codes are unused** and 422 carry mass > 1e-4, so the shrink ladder addresses skew rather than dead codes | r44 | current |
 | `NUM-TOK-MARGSUM-96` | **6.078 bits = 67.5%** | Sum of the three channel marginals at 96x96. **`H_joint` can never exceed it**, so this is a hard ceiling on any method that only *decorrelates* channels - attention included - and it sits **below `NUM-BAR-Q2`**. An identity, not an estimate: it is why the R2 rung at 96x96 was never run | r45 | derived |
 | `NUM-TOK-SHRINK240-UB` | **63.0%** | Upper bound on `[8,6,5]` = 240 codes at 96x96, being `NUM-TOK-ENT-R1-96`'s bits over `log2(240)`. Coarsening only destroys information, so no re-binning beats it - and it is **below `NUM-BAR-Q2`**, which kills the shrink ladder's **first step** model-independently | r45 | derived |
-| `NUM-TOK-BITSFRAME-96` | **717.4 bits/frame** | 144 tokens x `NUM-TOK-ENT-R1-96`, against **426.9** at 64x64 - **1.68x**. Recorded because Q-2's stated purpose is that Phase 2 not inherit a shrunken vocabulary, and by that measure 96x96 delivers more. **The bar was NOT moved**; this is an observation, and `NUM-BAR-Q2` stands as written | r45 | derived, **observation only** |
+| `NUM-TOK-BITSFRAME-96` | **717.4 bits/frame** | 144 tokens x `NUM-TOK-ENT-R1-96`, against **426.9** at 64x64 - **1.68x**. Recorded because the token entropy bar's stated purpose is that Phase 2 not inherit a shrunken vocabulary, and by that measure 96x96 delivers more. **The bar was NOT moved**; this is an observation, and `NUM-BAR-Q2` stands as written | r45 | derived, **observation only** |
 | `NUM-TOK-PARAMS-R1` | **744,966** | R1 parameter count | r32 | current |
 | `NUM-TOK-PARAMS-R2` | **1,008,646** | R2 parameter count | r32 | current |
 | `NUM-TOK-EPOCH64` | **87.6 s** | One clean 64x64 epoch, 2,217 steps at batch 128 | r32 | current |
@@ -240,12 +240,12 @@ legitimately wherever a doc explains the refutation that retired them.
 |---|---|---|
 | `NUM-TOK-FLOOR512` | 26.39 -> 29.02 -> **28.27 dB** | 26.39 was random k-means init and had no provenance row; k-means++ beat it by 2.6 dB; then 29.02 turned out to be fit *and* scored on a sample straddling the split, worth another 0.75. r27, r33 |
 | `NUM-BAR-ROW2` | +3.6 -> +0.98 -> **+1.73 dB** | Purely a consequence of the row above. Three published values, each correct arithmetic on a stale input. **This is the incident this file exists to prevent.** |
-| `NUM-DATA-F7` | 19.83% -> **5.35%** | The old counter scored any frame with zero visible pixels. 73% of it was blocks that never return, which Q-6 cannot score object permanence on. r25, r26 |
+| `NUM-DATA-F7` | 19.83% -> **5.35%** | The old counter scored any frame with zero visible pixels. 73% of it was blocks that never return, which object permanence cannot be scored on. r25, r26 |
 | `NUM-DATA-HASH64` | `0259947e` -> `219ab0af` -> **`18a76531`** | Original physics; then the `gear 6 / damping 1.5` scene change; then CRLF normalised out of the hash. Do not quote a figure taken before 2026-08-28. r20, r22, r23 |
 | `NUM-HW-FP16` | 3.0 -> **27.6 TFLOP/s** | A chassis cooling fix moved the enforced power limit 55 -> 100 W. The throttle *flags* read `Not Active` the whole time it was capped; the evidence was in the counters. r4 |
-| `NUM-TOK-LIVE512` | 150 -> **486 of 512** | An initialisation artifact. This was the entire evidence base for the Q-2 collapse risk, and it is gone. r27, r33 |
+| `NUM-TOK-LIVE512` | 150 -> **486 of 512** | An initialisation artifact. This was the entire evidence base for the token-entropy collapse risk, and it is gone. r27, r33 |
 | `NUM-TOK-FLAT` | 19.96% -> **20.28%** | Re-measured after the regeneration. Confirms rather than refutes. r27 |
-| `NUM-VAL-TAU` | 8.0 -> **32.0** | 8.0 was calibrated on renders, whose worst pixel sits at `NUM-VAL-WORSTDIST`. Q-3 measures decoder output, whose worst sits at `NUM-VAL-RECONDIST`. Chosen by detection rate at zero false positives, not by clearing the worst distance - clearing it needs ~160 and gives up the palette constraint entirely. r42 |
+| `NUM-VAL-TAU` | 8.0 -> **32.0** | 8.0 was calibrated on renders, whose worst pixel sits at `NUM-VAL-WORSTDIST`. The coherence horizon measures decoder output, whose worst sits at `NUM-VAL-RECONDIST`. Chosen by detection rate at zero false positives, not by clearing the worst distance - clearing it needs ~160 and gives up the palette constraint entirely. r42 |
 | `NUM-VAL-HEADROOM` | 11x -> **43x** | Arithmetic on the row above, and a reminder that the slack is over renders only. r42 |
 | `NUM-TOK-Q2CEIL` | 94.4% -> **94.25%** | Same re-measurement. r27 |
 

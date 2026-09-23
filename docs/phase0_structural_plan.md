@@ -71,7 +71,7 @@ the build failing:
 | `/Zi` plus linker `/DEBUG` | without debug info MSVC emits `C5072`, which `/WX` makes fatal, and an ASan report without symbols is useless anyway |
 | post-build copy of `clang_rt.asan_dynamic-x86_64.dll` | MSVC links the ASan runtime dynamically whatever the CRT setting, and the DLL is on `PATH` only inside a Developer prompt. Derived from `CMAKE_CXX_COMPILER`'s directory, so no MSVC version is hardcoded |
 
-**Settled 2026-08-26: the sanitizer requirement (E-3) is ASan-clean only.** MSVC
+**Settled 2026-08-26: the sanitizer requirement is ASan-clean only.** MSVC
 has no UBSan, and the clang-cl configuration was rejected. The one UBSan class that
 matters here - signed overflow on shard byte offsets - is handled by 64-bit
 offsets plus a bounds assert at the write site, which lands in `shard_writer`
@@ -97,7 +97,7 @@ Four things it must carry, all measured rather than stylistic:
    its 640x480 default.
 4. Two arm links in different colours, three blocks in three more. The current
    count is ~7 including background and table, against the flat-render ceiling of
-   24 colours (F-2).
+   24 colours.
 
 The `rgba` attributes are the palette's only home. The validator reads them with
 `xml.etree.ElementTree`; nothing duplicates the list into config JSON.
@@ -114,7 +114,7 @@ with the hash tree rooted at `data_hash`, and `Shapes` for the tensor dimensions
 every later phase derives from. Roughly 20 lines for the hash tree.
 
 `data_hash` covers `canon(sim)`, `canon(data)`, and the scene XML's bytes. The
-XML must be inside it, or bench reproducibility (E-4) has a hole: a bench number
+XML must be inside it, or bench reproducibility has a hole: a bench number
 from a different scene is not comparable. `validator_hash` branches off `data_hash` rather than off
 `dynamics_hash`, so re-tuning a threshold does not invalidate a checkpoint whose
 rollouts never changed.
@@ -225,7 +225,7 @@ rather than assumed.
 Doc page: **NumPy → `np.memmap`, structured dtypes**.
 
 **Working when:** the byte-compare against a known C++-written buffer passes
-(the round-trip requirement, F-8), and a few thousand sampled windows all report a
+(the round-trip requirement), and a few thousand sampled windows all report a
 single `episode_id`.
 
 ### 8. `mirage/validator.py`
@@ -254,7 +254,7 @@ collides with the occluded case. The same PCA gives `link_extent` and
 
 Both modes are required: `measure_with_truth(frame, meta)` for Phase 0 and
 `measure_pixels_only(frame)` for later phases. The validator requirement's "zero
-false positives" (F-9) *is* the threshold sweep of mode 2 against mode 1. Without
+false positives" *is* the threshold sweep of mode 2 against mode 1. Without
 both modes there is no way to test it.
 
 Doc page: none. NumPy plus stdlib `xml.etree.ElementTree` for reading the palette
@@ -276,13 +276,13 @@ corrected against what actually happened - marked below.
 | Gotcha | What breaks | How you notice |
 |---|---|---|
 | The offscreen buffer size defaults to 640x480 | You render into the wrong region, or get a clipped image | Pictures are the wrong size or partly black. Set `offwidth`/`offheight` in the XML `<visual><global>` block. `GlContext` now checks the two against each other and aborts, so this cannot reach a data run |
-| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. **Settled: nothing in `sim/` flips it and the blob stays bottom-up; the flip lives in `WindowSampler`**, so `Shard.pixels` stays raw and the round-trip check (F-8) has something byte-exact to compare |
+| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. **Settled: nothing in `sim/` flips it and the blob stays bottom-up; the flip lives in `WindowSampler`**, so `Shard.pixels` stays raw and the round-trip check has something byte-exact to compare |
 | Forgetting `mjr_setBuffer` | You render to the hidden window instead of the buffer | Readback returns garbage or blank |
 | `mjRND_IDCOLOR` without `mjRND_SEGMENT` | The colour-coded pass isn't colour-coded | Counts come out nonsensical |
 | **Corrected.** Visualization decorations left on | Contact dots and joint axes add colours | They are already off - `mjv_defaultOption` leaves every decoration cleared, so call it and change nothing. **Do not zero the flag array to be sure:** that also clears `mjVIS_STATIC` and every worldbody geom stops drawing |
 | A GL context belongs to one thread | Threads cannot share it | If you ever parallelise, use processes. This is why shards are the unit of both determinism and parallelism |
 | `rand()` instead of a seeded generator | Determinism silently gone | The generate-twice-and-compare check fails, and only that check would catch it |
-| **Corrected - does not apply.** Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | MSVC ships **no leak detection at all**, so there is no suppression file to write. On this toolchain the sanitizer requirement (E-3) is ASan only |
+| **Corrected - does not apply.** Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | MSVC ships **no leak detection at all**, so there is no suppression file to write. On this toolchain the sanitizer requirement is ASan only |
 
 ### Found by running Phase 0
 
@@ -316,7 +316,7 @@ Both from Python, before any C++ exists, because they can change what you build:
 2. **`mj_step` time alone**, to know the remaining headroom. **Done** - 10.5-10.8
    us median driven, p99 32-60 us, `bench/step_probe.py`. Render plus readback
    leaves ~1850 of the 2000 us frame, so this was the only day-1 number that could
-   still break the 500 fps generation bar (P-6). It came in 131-176x under. It is
+   still break the 500 fps generation bar. It came in 131-176x under. It is
    CPU work, so no GPU clock gate applies to it.
 
 Record the GPU clock state next to each; a timing without it is not a number.

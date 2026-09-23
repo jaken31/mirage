@@ -36,7 +36,7 @@ zero would rule the work out. That did not happen, and attention makes it worse.
 **Option 2 ran, as rung `r1c`.** Channel-only encoder normalisation drives the
 spurious-flip rate to **exactly 0 of 396,013** quiet-field transitions. So the
 mechanism this survey identified is not just real; it is the *entire* cause. The
-cost is the part no source predicted: **token entropy (Q-2) falls 74.1% ->
+cost is the part no source predicted: **token entropy falls 74.1% ->
 54.6%**, failing the 70% bar, for only 0.282 dB of PSNR. **So Phase 2 stayed on
 R1** - see `world_model_architecture.md`, "Phase 2 inherits R1", and
 `handoff_tokenizer_decision.md` for the reasoning.
@@ -87,9 +87,9 @@ cell's gradient support is the whole 64x64 frame; with the norm's forward
 neutralised to identity it is exactly 225 pixels. Section (a) reproduces that
 result and extends it across every normalisation option.
 
-The gate this all serves is **Q-3**, coherence horizon of at least 200 frames
-before the F-9 validator fails, with **Q-5** (link-length drift over a 200-step
-rollout) and **Q-6** (object permanence through occlusion) alongside it. The
+The gate this all serves is the **coherence horizon** of at least 200 frames
+before the frame validator fails, with **link-length drift** over a 200-step
+rollout and **object permanence** through occlusion alongside it. The
 dynamics model is a decoder-only transformer over interleaved
 `[action, 64 frame tokens]` sequences.
 
