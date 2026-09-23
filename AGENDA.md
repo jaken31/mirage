@@ -376,8 +376,8 @@ the four things it changes. Item 1 is next.
 **Decided 2026-09-21**, with rationale in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, same record, with the phase assertion as the acceptance test; an
-untied output head; greedy rollout; shared window addressing. Exposure bias
-stays open.
+untied output head; greedy rollout; shared window addressing. Exposure bias was
+decided 2026-09-23: no mitigation now, with a named trigger and remedy order.
 
 **F-11's acceptance test is restated against the persistence baseline** -
 decided 2026-09-18, in `world_model_requirements.md` since 2026-09-22 - and the
