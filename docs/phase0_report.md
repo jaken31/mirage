@@ -60,9 +60,9 @@ Verified on disk this session by reading all seven sidecars and stat-ing the blo
 | Frames | **300,000** (43,200 x 3 shards + 42,600 x 4) |
 | Episodes | **500**, ids 0..499, each exactly 600 steps, none split across a shard |
 | Resolution | 64 x 64 x 3, `uint8` |
-| Pixel bytes | **3,686,400,000** = 3.686 GB, against the 20 GB dataset ceiling (R-4) |
+| Pixel bytes | **3,686,400,000** = 3.686 GB, against the 20 GB dataset ceiling |
 | Meta bytes | 13,800,000 = 13.8 MB - **0.374% of pixel bytes** |
-| Wall clock | **45.1-50.1 s at 5,987-6,653 fps** - 12-13x over the 500 fps generation floor (P-6) |
+| Wall clock | **45.1-50.1 s at 5,987-6,653 fps** - 12-13x over the 500 fps generation floor |
 | `data_hash` | `18a76531...`, identical across all 7 sidecars |
 | `git_sha` | `8735d7f`, identical across all 7 sidecars |
 
@@ -87,11 +87,11 @@ table:
 
 | Field | Type | Consumer |
 |---|---|---|
-| `action` | `u8` | F-5 histogram, training targets, Q-4 commanded direction |
-| `qpos[2]` | `f32 x2` | calibration reference for pixel-measured link angles (Q-4, Q-5) |
-| `block_xy[3][2]` | `f32 x6` | Q-6 position error |
-| `visible_px[3]` | `u16 x3` | F-7 occlusion rate, Q-6 occlusion events |
-| `contact_mask` bits 0..6 | `u8` | F-6 contact rate - bit *i* is "block *i* touches the arm" |
+| `action` | `u8` | action-balance histogram, training targets, action-following's commanded direction |
+| `qpos[2]` | `f32 x2` | calibration reference for pixel-measured link angles (action-following, arm plausibility) |
+| `block_xy[3][2]` | `f32 x6` | object-permanence position error |
+| `visible_px[3]` | `u16 x3` | occlusion rate, object-permanence occlusion events |
+| `contact_mask` bits 0..6 | `u8` | contact rate - bit *i* is "block *i* touches the arm" |
 | `contact_mask` bit 7 | (same byte) | scripted-vs-random: which half of the 50/50 policy mix produced this episode |
 | `episode_id` | `u32` | prevents a training window spanning a reset |
 | `step_idx` | `u16` | same |
@@ -115,7 +115,7 @@ Two more non-obvious choices worth restating:
 
 - **Counts, not booleans.** `visible_px` stores pixel counts rather than
   `is_occluded`. A boolean bakes a threshold into the dataset; counts let the
-  occlusion rate (F-7) and object permanence (Q-6) be re-derived at any threshold
+  occlusion rate and object permanence be re-derived at any threshold
   without regenerating 3.7 GB.
 - **`episode_id` + `step_idx` are mandatory.** At ctx=15 a window straddling a
   reset is pure noise, and without these fields the loader cannot detect it. The
@@ -141,18 +141,18 @@ All figures over the **full 300k set** unless marked otherwise.
 | E-3 | ASan clean on the generation run | zero reports | clean, both build types | pass |
 | E-2 | Clean build from scratch | documented in README, verified once | **both build types built and run from an empty directory 2026-08-28**; recipe and four measured gotchas in `README.md`, "Build" | pass |
 
-**The round-trip and validator checks (F-8, F-9) run without the dataset.**
+**The round-trip and validator checks run without the dataset.**
 `python -m mirage.data` and `python -m mirage.validator` fall back to a committed
 40-frame fixture (`mirage/fixtures/`, 4.9 KB packed, real writer output) when
 `data/shards` is empty, so both acceptance tests run in a fresh clone. The three
 dataset-scale checks they cannot honestly make there - contact rate, occlusion
 rate and the episode-level train/val split - are skipped and say so.
 
-**The occlusion requirement (F-7) was restated on 2026-08-28, and its number fell
+**The occlusion requirement was restated on 2026-08-28, and its number fell
 19.83% -> 5.35%.** The old counter took any frame where a block read zero pixels.
 `bench/occlusion_probe.py` measured that **73% of that was blocks that never came
 back** - gone, not occluded. An occlusion that never ends is not one object
-permanence (Q-6) can ask a model to recover from. The requirement now counts recoverable occlusion only and still
+permanence can ask a model to recover from. The requirement now counts recoverable occlusion only and still
 passes, at 1.8x the floor rather than the 6.6x the old number implied. The
 recorded *cause* of the bias was also wrong: **no block has ever left the table**,
 0 frames of 900,000, on a table whose half-extent is 1.2 m against an arm that
@@ -212,7 +212,7 @@ scene/arm_blocks.xml ------+--> mirage/config.py --> data_hash (sha256)
                                           v
                     mirage/validator.py   measure_with_truth (mode 1, Phase 0)
                                           measure_pixels_only (mode 2, Phases 2-4)
-                                          sweep --> F-9 threshold calibration
+                                          sweep --> validator threshold calibration
 ```
 
 ### 3.2 The C++/Python boundary: a standalone binary, no bindings
@@ -220,7 +220,7 @@ scene/arm_blocks.xml ------+--> mirage/config.py --> data_hash (sha256)
 `mirage_sim` is an executable that writes files. Python only ever reads files.
 No pybind11.
 
-The deciding argument is the sanitizer requirement (**E-3**): ASan through a Python
+The deciding argument is the **sanitizer requirement**: ASan through a Python
 extension module needs the ASan runtime preloaded before the interpreter starts,
 plus a suppression file for interpreter internals. ASan on a standalone binary is just running the binary. It
 also makes "delete the simulator" literal - after Phase 0, **nothing in `mirage/`
@@ -271,7 +271,7 @@ record stores the index as a `u8`.
 
 **The mix is per-episode, not per-frame.** A scripted reach needs consecutive
 steps to complete; flipping a coin per frame destroys the property the mix exists
-for. The near-uniform action histogram (F-5) still holds in aggregate, because the
+for. The near-uniform action histogram still holds in aggregate, because the
 random half carries it.
 
 Two config changes fell out of measurement here:
@@ -301,7 +301,7 @@ data_hash = sha256(canon(sim) + canon(data) + arm_blocks.xml)
   '-- validator_hash = sha256(data_hash + canon(validator))
 ```
 
-The scene XML must be inside `data_hash`, or bench reproducibility (E-4) has a
+The scene XML must be inside `data_hash`, or bench reproducibility has a
 hole: a bench number from a different scene is not comparable. `validator_hash`
 **branches off** rather than chaining, so re-tuning a threshold does not
 invalidate the tokenizer, and retraining the tokenizer does not invalidate the
@@ -335,7 +335,7 @@ Two gotchas that cost real time and are worth carrying forward:
   return `np.array(...)` to force the copy.
 - **The blob is bottom-up** - `mjr_readPixels`' origin is bottom-left and nothing
   in `sim/` flips it. The flip lives **in the sampler**, not in `Shard.pixels`,
-  which stays raw so the round-trip check (F-8) has something byte-exact to
+  which stays raw so the round-trip check has something byte-exact to
   compare. Read frames any
   other way and `link_angle` comes out mirrored.
 
@@ -352,14 +352,14 @@ defined in config rather than in code.
 | `px_count[color]` | colour | missing / dissolved objects |
 | `bbox[color]` | colour | position, extent |
 | `compactness[color]` | colour | fragmentation, smearing |
-| `link_extent[2]` | link | Q-5 drift |
-| `link_angle[2]` | link | **Q-4 action-following** |
-| `offpalette_px` | frame | palette violation (F-9) |
-| `n_unique_colors` | frame | F-2's 24-colour bar, mode 1 only |
+| `link_extent[2]` | link | link-length drift (arm plausibility) |
+| `link_angle[2]` | link | **action-following** |
+| `offpalette_px` | frame | palette violation |
+| `n_unique_colors` | frame | the flat-render 24-colour bar, mode 1 only |
 
-This buys three things. The coherence horizon (Q-3) can be recomputed without
+This buys three things. The coherence horizon can be recomputed without
 re-running rollouts (~3 MB of stored vectors). Connected-component labelling never
-becomes a commitment. And **action-following (Q-4) needs no inverse dynamics
+becomes a commitment. And **action-following needs no inverse dynamics
 model (IDM)**: actions are joint deltas in `{-1,0,+1}`, and the PCA that produces
 `link_extent` gives `link_angle` for free, so action-following is
 `sign(theta_t+1 - theta_t)` against the commanded sign. That is *better* than an
@@ -367,7 +367,7 @@ IDM, which would carry an unmeasured generalization gap from ground-truth frames
 to generated ones.
 
 **Why colour counting and not connected components (CC)** - the argument is
-correctness, not effort. The occlusion floor (F-7) *requires* full occlusion in
+correctness, not effort. The occlusion floor *requires* full occlusion in
 >= 3% of frames, so partial occlusion is common. An arm crossing a block splits it into two
 disconnected same-colour blobs, and CC reports that as **two blocks** - a phantom
 object. Colour counting is immune by construction. `compactness` uses a **PCA
@@ -389,9 +389,9 @@ held up; every claim without one was eventually wrong.
 | Gate every benchmark on `pstate == P0` | **Refuted.** pstate follows the *memory* clock domain; correct compute-bound work reads P4 while the SMs sit at 86% of max drawing 99 W of a 100 W cap. The rule would have rejected every valid compute number this machine can produce |
 | `castshadow="false"` disables shadows on geoms | Not a geom attribute at all - MuJoCo's compiler rejects it. The real requirement is an **ambient-only headlight**, which took the colour count from 28 to 6 |
 | `sim.steps_per_episode = 200` | 0.4 s of sim time; the arm cannot cross to a block. Scripted arrival 13% vs 44% at 600 steps |
-| `reach_noise_prob` is the knob for action balance (F-5) | **Wrong knob.** Whole-action replacement is dominated at every setting by the Jacobian deadband, and by per-digit corruption once the deadband is on |
+| `reach_noise_prob` is the knob for action balance | **Wrong knob.** Whole-action replacement is dominated at every setting by the Jacobian deadband, and by per-digit corruption once the deadband is on |
 | `rgba * 255` lands on exact byte values | It does not, and not by a modellable rule - 0.65 rounds *up* to 166, 0.90 rounds *down* to 229. With a byte-rounded palette, exact equality calls **4 of 7 entries missing on a flawless frame.** Nearest-palette-by-argmin is load-bearing, not a nicety |
-| The palette is exactly the XML's `rgba` attributes | It needs **a seventh entry the XML cannot name**: 14.1% of every frame is the black void past the far table edge, the framebuffer clear colour. Without it `offpalette_px` reads ~578 px on a perfect frame and F-9 can never reach zero false positives |
+| The palette is exactly the XML's `rgba` attributes | It needs **a seventh entry the XML cannot name**: 14.1% of every frame is the black void past the far table edge, the framebuffer clear colour. Without it `offpalette_px` reads ~578 px on a perfect frame and the validator can never reach zero false positives |
 | Thermal state is visible in the throttle flags | The flags read `Not Active` through a 45 W cap. The evidence was in `nvidia-smi -q -d PERFORMANCE` **counters**. A chassis cooling fix moved the enforced limit 55 -> 100 W and fp16 matmul **3.0 -> 27.6 TFLOP/s - 9x from cooling alone** |
 | WSL2 will work for rendering | `dxgkrnl` ioctl fails at every boot, no `/dev/dri` node, Mesa falls back to `llvmpipe` (CPU, ~50x too slow). Moved the whole project to native Windows |
 
@@ -413,13 +413,13 @@ call - wait for the trigger.
 
 | Not built | Why | Trigger that would build it |
 |---|---|---|
-| Parallel generation | 11.2x margin over P-6 | P-6 missed. Fallback is N processes, shard *i* seeded `base + i` |
+| Parallel generation | 11.2x margin over the 500 fps generation floor | Generation throughput below that floor. Fallback is N processes, shard *i* seeded `base + i` |
 | Hand-rolled WGL pbuffer | readback is 25 us, not 30 ms | readback near ~30 ms/call |
 | Single-pass palette render | two passes cost 7.6% of budget | readback above ~0.5 ms/call. Held in reserve, ~10-min switch |
 | Connected-component labelling | colour counting is immune to the phantom-object failure | a Phase 2 diagnostic on already-failing frames |
-| `--replay` mode | F-4 is tested by generating twice and `cmp`-ing | - |
-| pybind11 | E-3, and "delete the simulator" stays literal | - |
-| An IDM for Q-4 | geometric measurement has no generalization gap | - |
+| `--replay` mode | Determinism is tested by generating twice and `cmp`-ing | - |
+| pybind11 | the sanitizer requirement, and "delete the simulator" stays literal | - |
+| An IDM for action-following | geometric measurement has no generalization gap | - |
 | scipy | nothing in the shipped design needs it | the CC diagnostic above |
 | clang-cl for UBSan | its one relevant class is closed by 64-bit offsets | UB suspected in code ASan does not cover |
 | Version integers in config | seven hand-bumped ints across seven sections will rot | - |
@@ -435,12 +435,12 @@ call - wait for the trigger.
 
 | Item | State |
 |---|---|
-| **Validator thresholds not written into config** | `python -m mirage.validator` *prints* the set with zero false positives. The documented build order recalibrates against Phase 1 tokenizer reconstructions before anything is written, because ground-truth frames are perfectly rendered while the coherence horizon's (Q-3) inputs carry decoder artifacts. Writing a Phase-0-only number into `validator_hash` now would be a guess |
+| **Validator thresholds not written into config** | `python -m mirage.validator` *prints* the set with zero false positives. The documented build order recalibrates against Phase 1 tokenizer reconstructions before anything is written, because ground-truth frames are perfectly rendered while the coherence horizon's inputs carry decoder artifacts. Writing a Phase-0-only number into `validator_hash` now would be a guess |
 | **`px_count` ruled out as a per-frame threshold** | The smallest `px_count` on a block that ground truth calls *visible* is **1 px with margin 0**, because the occlusion floor makes partial occlusion common. The viable verdict today is `offpalette_px` alone at tau 8, which has **11x headroom** over render rounding |
-| **`sim.action_hold_steps = 20` is a guess** | Estimated from `inertia / damping` (~15 steps) and rounded up. **Q-4's 90% depends on it**: for about one settling time after each sign flip the joint is still moving the old way. Replace with a sweep - log commanded sign against `sign(delta theta)` and find where agreement crosses 90% |
-| **E-4's 5% not demonstrated for `mj_step`** | The series had not plateaued after 6 runs. Needs a quiescent-machine protocol |
+| **`sim.action_hold_steps = 20` is a guess** | Estimated from `inertia / damping` (~15 steps) and rounded up. **Action-following's 90% depends on it**: for about one settling time after each sign flip the joint is still moving the old way. Replace with a sweep - log commanded sign against `sign(delta theta)` and find where agreement crosses 90% |
+| **Bench reproducibility's 5% not demonstrated for `mj_step`** | The series had not plateaued after 6 runs. Needs a quiescent-machine protocol |
 | ~~**F-7 carries one known bias**~~ | **Closed 2026-08-28.** Measured, the cause refuted - no block has ever left the table - and the requirement restated to count recoverable occlusion only, 5.35%. `bench/occlusion_probe.py` |
-| **F-5 compliance cost is partly unmeasured** | The deadband + noise settings cost arrival 44% -> 35.7%. Whether that cost any *contact* is reasoned about but not measured |
+| **Action-balance compliance cost is partly unmeasured** | The deadband + noise settings cost arrival 44% -> 35.7%. Whether that cost any *contact* is reasoned about but not measured |
 | **Phase 1 structural plan not written** | Can be drafted now - only the shard format gated it, and that format is read as well as written. Phases 2 and 4 are **not** draftable: Phase 2's numbers wait on the tokenizer PSNR, Phase 4's whole plan derives from the Phase 3 profile |
 
 ---
@@ -462,12 +462,12 @@ Each module carries its own runnable check - no test framework, no fixtures:
 | Check | Covers |
 |---|---|
 | `policy_self_check` | all 9 actions decode to distinct `ctrl` and re-encode to the same index |
-| `policy_dry_run` | F-4 (aborts on divergence), F-5 (prints a verdict) |
-| `truth_dry_run` | three fatal id-colour checks, prints F-6/F-7 |
+| `policy_dry_run` | determinism (aborts on divergence), action balance (prints a verdict) |
+| `truth_dry_run` | three fatal id-colour checks, prints the contact and occlusion rates |
 | `shard_writer_self_check` | layout, the overflow predicate at `INT64_MAX`, sidecar absent before `commit()` |
 | `python -m mirage.config` | hash tree, key/value validation |
-| `python -m mirage.data` | **F-8** - every meta field decodes twice, once through the structured dtype and once through an independent `struct.unpack` |
-| `python -m mirage.validator` | **F-9** sweep, F-2 over the full set |
+| `python -m mirage.data` | **the round-trip check** - every meta field decodes twice, once through the structured dtype and once through an independent `struct.unpack` |
+| `python -m mirage.validator` | **validator** sweep, the 24-colour palette bar over the full set |
 
 The `struct.unpack` double-decode in `data.py` is not belt-and-braces. **Every way
 of getting a structured dtype wrong still reads back cleanly** - wrong field order,
@@ -504,7 +504,7 @@ Two gates to remember when taking any number on this machine:
    APIs, done-when per file, gotchas. Same shape as `phase0_structural_plan.md`.
    Draftable now; only the shard format gated it.
 2. **Phase 1: the FSQ tokenizer.** 64x64 to an 8x8 grid over 512 codes. The PSNR
-   bar (Q-1) wants >= 30 dB held out.
+   bar wants >= 30 dB held out.
 3. **Recalibrate the validator** against Phase 1 reconstructions, then write the
    thresholds into config. Phase 1 produces those reconstructions anyway for its
    PSNR.

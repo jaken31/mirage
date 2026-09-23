@@ -29,15 +29,15 @@ Phase 1 starts:
   renders, not a noisier one: decoded pixels sit up to 154.9 RGB units from the
   palette, rendered ones at most 0.75. Changing either threshold moves
   `validator_hash`, which is the whole reason they were moved out of code - **so
-  calibrate once.** Retuning mid-phase splits coherence-horizon (Q-3) results
+  calibrate once.** Retuning mid-phase splits coherence-horizon results
   into buckets that cannot be compared, and the margin over the worst clean
   reconstruction (314 off-palette pixels) is deliberately thin.
 - **The meta record's `contact_mask` is two fields.** Bits 0..6 are block
   contact; bit 7 is scripted-vs-random. `mirage.data.contact_bits` and `.scripted`
-  exist. Read the raw byte instead, and the contact rate (F-6) reads over 50%.
+  exist. Read the raw byte instead, and the contact rate reads over 50%.
 - **`python -m mirage.data` and `python -m mirage.validator` run without a
   dataset**, falling back to a committed 40-frame fixture. A fresh clone or a new
-  worktree can check the round-trip and validator requirements (F-8, F-9) before
+  worktree can check the round-trip and validator requirements before
   generating anything.
 
 Nothing from Phase 0 is pending. The validator threshold calibration, the last
@@ -92,7 +92,7 @@ Outcomes are in `phase1_progress_report.md` (items 1-4) and
 >   restatement was correct arithmetic on a stale input. **If the floor moves
 >   again, this moves with it**, and every doc holding a copy is wrong that day.
 > - **"1,024 codes clear Q-1 outright" is dead.** Held out, 1,024 codes reach only
->   29.39 dB and still miss the 30.0 dB PSNR bar (Q-1). Read the useful way, that
+>   29.39 dB and still miss the 30.0 dB PSNR bar. Read the useful way, that
 >   **removes the main reason to regret the fixed 512-code budget** the Phase 2
 >   handoff imposes.
 > - **The entropy-collapse evidence is gone.** 486 of 512 centroids stay live on
@@ -122,12 +122,12 @@ row misses.
 
 | # | Measure | Bar | What the requirement actually says |
 |---|---|---|---|
-| 1 | Held-out PSNR, uint8, over the 16,200 val frames | **>= 30.0 dB** | **Q-1** - "tokenizer reconstruction PSNR, held-out, at 64x64". The tokenizer must round-trip a frame it never trained on this well, or every later phase is learning from mush |
+| 1 | Held-out PSNR, uint8, over the 16,200 val frames | **>= 30.0 dB** | **The reconstruction bar** - "tokenizer reconstruction PSNR, held-out, at 64x64". The tokenizer must round-trip a frame it never trained on this well, or every later phase is learning from mush |
 | 2 | That PSNR minus the k-means-512 floor on the same frames | **>= +1.73 dB** - which *is* 30.0 dB minus the 28.27 dB floor, and moves whenever the floor does | **Not a requirement of its own.** It asks one question: is the conv context earning its keep over a codebook that sees each patch in isolation |
-| 3 | Token entropy / `log2(codebook)`, all 300,000 frames | **>= 70%** | **Q-2** - "token entropy vs uniform over 512 codes". The codebook must not collapse onto a handful of entries, or the 512-code budget is a fiction and Phase 2 inherits a smaller vocabulary than it was promised |
+| 3 | Token entropy / `log2(codebook)`, all 300,000 frames | **>= 70%** | **The entropy bar** - "token entropy vs uniform over 512 codes". The codebook must not collapse onto a handful of entries, or the 512-code budget is a fiction and Phase 2 inherits a smaller vocabulary than it was promised |
 | 4 | Token cache rows == `shard.frames`, every shard | **exact** | Not a numbered requirement - the Phase 2 handoff indexes tokens by frame, so an off-by-one here is silent and corrupts everything downstream |
-| 5 | Re-encode from one checkpoint twice | **bit-identical** | **E-1** - "deterministic sim given a seed", defined as *same as F-4*: same seed and action sequence give bit-identical frames. Encoding is inference, so no backward pass and no cuDNN nondeterminism |
-| 6 | Validator palette sweep (F-9) against reconstructions, at tau 32.0 | **<= 8.5449% of a frame off-palette** | **F-9** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives*. Item 6 recalibrated it for decoder output, where "zero off-palette pixels" cannot be reached - every clean reconstruction has some, 314 px on the worst. The ground-truth half of the sweep runs alongside as an alignment assert |
+| 5 | Re-encode from one checkpoint twice | **bit-identical** | **Determinism** - "deterministic sim given a seed", defined as the same thing as the simulator's "deterministic given a seed": same seed and action sequence give bit-identical frames. Encoding is inference, so no backward pass and no cuDNN nondeterminism |
+| 6 | Validator palette sweep against reconstructions, at tau 32.0 | **<= 8.5449% of a frame off-palette** | **The frame validator** - "frame validator reports block count, arm pose plausibility, palette adherence", accepted at *zero false positives*. Item 6 recalibrated it for decoder output, where "zero off-palette pixels" cannot be reached - every clean reconstruction has some, 314 px on the worst. The ground-truth half of the sweep runs alongside as an alignment assert |
 | 7 | Edge-pixel PSNR vs flat-pixel PSNR | reported | Not a requirement - **this is the 64/144 fork**, and the numbers are 26.928 dB edge / 43.807 flat on R1 and 27.043 / 43.151 on R2 |
 | 8 | Train-val PSNR gap; live codes at mass > 1e-4 | reported | Not a requirement - early warnings for overfitting and collapse |
 
@@ -151,15 +151,15 @@ frames" first.
    **Regenerate `mirage/fixtures/` too if the `sim` section moves at all** - the
    fixture carries its own `data_hash`, and `load_shards` will refuse it
 2. ~~`mirage/configs/base96.json`~~ **done 2026-08-28.** `data_hash` `35e5b862`,
-   8.294 GB, 144 tokens per frame - still inside the 20 GB dataset ceiling (R-4,
-   "dataset on disk, <= 20 GB"). Generation runs at 4,560 fps, and both earlier
+   8.294 GB, 144 tokens per frame - still inside the 20 GB dataset ceiling
+   ("dataset on disk, <= 20 GB"). Generation runs at 4,560 fps, and both earlier
    guesses were wrong; the pixel-count extrapolation was the worse of them, since
    2.25x the pixels cost only 9% more wall clock. **Generation is limited by
-   physics, not by pixels.** The contact rate (F-6, "arm-block contact events
-   exceed 5% of frames") is unchanged at 16.63%. Recoverable occlusion (F-7,
-   "block fully occluded in >= 3% of frames, counting only occlusion the block
-   recovers from") falls from 5.35% to 4.78%. The fork buys edge fidelity and
-   spends occlusion headroom
+   physics, not by pixels.** The contact rate ("arm-block contact events exceed
+   5% of frames") is unchanged at 16.63%. Recoverable occlusion ("block fully
+   occluded in >= 3% of frames, counting only occlusion the block recovers
+   from") falls from 5.35% to 4.78%. The fork buys edge fidelity and spends
+   occlusion headroom
 3. ~~`mirage/data.py` - `preload`~~ **done 2026-08-28.** Palette indices plus the
    byte LUT, lossless and asserted to be: 1.162 GB (64x64) and 2.616 GB (96x96)
    for the train split, with one 7-entry LUT serving both resolutions. It takes
@@ -198,7 +198,7 @@ frames" first.
    verification log. **`--resume` was itself broken on CUDA and had never once
    been executed** until it was fixed and tested on 2026-08-29 (the `runs.jsonl`
    row "--resume was broken on CUDA and had never once been executed")
-6. ~~Validator (F-9) recalibration against reconstructions~~ **done 2026-08-29.**
+6. ~~Validator recalibration against reconstructions~~ **done 2026-08-29.**
    tau (32.0) and a new off-palette share limit (8.5449% of a frame) are in
    `configs/base.json`; `validator_hash` moved and `data_hash` did not. **The
    obvious recipe was wrong.** Raising tau past the worst decoded pixel (154.9 RGB
@@ -266,7 +266,7 @@ thermal throttling took one run to 99.2 s/epoch, and Modern Standby put a
 > it is the failure this project's rules exist to prevent.
 >
 > **Consequences, all of them good for the schedule.** Diagonal decoding (DiagD)
-> stays in reserve, the fused Triton block (F-16) does not promote to M, and CUDA
+> stays in reserve, the fused Triton block does not promote to M, and CUDA
 > graphs stay a win rather than table stakes. Phase 2 is budgeted against the
 > 64-token path. **No further tokenizer runs are planned**, and the 96x96 arm is a
 > result rather than a failed attempt.
@@ -275,7 +275,7 @@ thermal throttling took one run to 99.2 s/epoch, and Modern Standby put a
 
 ## Phase 1's two risks, and the lever for each
 
-**The PSNR bar (Q-1, "tokenizer reconstruction PSNR, held-out, at 64x64,
+**The PSNR bar ("tokenizer reconstruction PSNR, held-out, at 64x64,
 >= 30 dB") was a real risk - narrower than this file was written around, but
 wider than the figure on the morning of 2026-08-28 said.** A k-means codebook of
 512 entries over real 8x8 patches, fit on the train episodes and scored on the
@@ -305,18 +305,17 @@ significant. What it does is put the noise two orders of magnitude below that
 margin rather than nowhere, which is a different sentence from the one this
 paragraph could write before.
 
-**It is not a determinism (E-1) or gate row 5 failure**: both are claims about the
+**It is not a determinism or gate row 5 failure**: both are claims about the
 simulator and about encoding from a fixed checkpoint, neither of which runs a
-backward pass, and both still hold. Against bench reproducibility (**E-4**,
-"every bench number reproducible from a config hash", accepted when a rerun
-matches within 5%) it passes with three orders of magnitude to spare. It stopped
-mattering for the gate anyway, because the margins got large: a margin above a dB
-is safe under any plausible noise, where the sub-0.1 dB miss it replaced was not.
-And **row 2 is now row 1 minus a constant**, since the eval measures against the
-recorded 28.27 dB floor rather than refitting, so the two rows can no longer
-disagree at all.
+backward pass, and both still hold. Against bench reproducibility ("every bench
+number reproducible from a config hash", accepted when a rerun matches within 5%)
+it passes with three orders of magnitude to spare. It stopped mattering for the
+gate anyway, because the margins got large: a margin above a dB is safe under any
+plausible noise, where the sub-0.1 dB miss it replaced was not. And **row 2 is
+now row 1 minus a constant**, since the eval measures against the recorded 28.27
+dB floor rather than refitting, so the two rows can no longer disagree at all.
 
-**The entropy bar (Q-2, "token entropy vs uniform over 512 codes, >= 70%") lost
+**The entropy bar ("token entropy vs uniform over 512 codes, >= 70%") lost
 its evidence on 2026-08-28, and is now an open question rather than a
 prediction.** The data does not force low entropy: only 20.28% of interior cells
 have a fully flat receptive field, so the provable ceiling is 94.25% of uniform,
@@ -364,9 +363,9 @@ entropy bar, not on PSNR - see the resolution box above. This section pointed at
 the right lever and had no way to see its cost.
 
 The consequences of the 144-token path are all now **avoided**: DiagD stays in
-reserve rather than becoming required, F-16 does not promote to **M**, and CUDA
-graphs stay the headline win rather than table stakes. The fork table in
-`world_model_architecture.md` has the arithmetic.
+reserve rather than becoming required, the fused Triton block does not promote
+to **M**, and CUDA graphs stay the headline win rather than table stakes. The
+fork table in `world_model_architecture.md` has the arithmetic.
 
 ---
 
@@ -384,8 +383,8 @@ one way.
 
 **The mask is decided: block-causal**, by the measurement ordered 2026-09-22
 (`bench/mask_probe.py`, 2026-09-23). The dynamics requirement's description
-(F-11) carries a second, dated amendment in `world_model_requirements.md`, and
-the plan's "Before item 1" lists the four things it changes. Item 1 is next.
+carries a second, dated amendment in `world_model_requirements.md`, and the plan's
+"Before item 1" lists the four things it changes. Item 1 is next.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
@@ -394,10 +393,11 @@ test; an untied output head; greedy rollout; shared window addressing. Exposure
 bias was decided 2026-09-23: no mitigation now, with a named trigger and remedy
 order.
 
-**F-11's acceptance test is restated against the persistence baseline** -
-decided 2026-09-18, and in `world_model_requirements.md` since 2026-09-22 - and
-the plan's gate row 1 is written against it. An acceptance test that a
-zero-parameter baseline already passes cannot show the model learned dynamics.
+**The dynamics model's acceptance test is restated against the persistence
+baseline** - decided 2026-09-18, and in `world_model_requirements.md` since
+2026-09-22 - and the plan's gate row 1 is written against it. An acceptance test
+that a zero-parameter baseline already passes cannot show the model learned
+dynamics.
 
 **The risk is data, not compute** (`bench/dyn_size_probe.py`): the model is 15.0x
 under Chinchilla-optimal, and one epoch draws 13.8x the dataset from window

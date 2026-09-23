@@ -42,8 +42,8 @@ than read off a table.
 
 | | R1 `20260829-005439-r1` | R2 `20260828-230015-r2` |
 |---|---|---|
-| held-out PSNR (Q-1) | 31.095 dB | **31.182** |
-| token entropy (Q-2) | 74.1% | **77.6%** |
+| held-out PSNR | 31.095 dB | **31.182** |
+| token entropy | 74.1% | **77.6%** |
 | tokens stable across batch size | **yes, structurally** | ~2 in 100,000 move |
 | spurious token flips | **8.86%** | 18.75% |
 | parameters | **744,966** | 1,008,646 |
@@ -51,7 +51,7 @@ than read off a table.
 - R2's PSNR win is **+0.087 dB for +263,680 parameters**, about a sixth of the
   architecture doc's own "within ~0.5 dB means tied" threshold. **A measured
   non-lever.** Do not re-argue this on quality.
-- **The deciding argument is determinism (E-1).** R2's encoder attention makes
+- **The deciding argument is determinism.** R2's encoder attention makes
   tokens depend on batch size, and **Phase 3 encodes a seed clip at batch 1**.
   R1 structurally cannot have that problem.
 - Stability is the third argument, and points the same way.
@@ -63,7 +63,7 @@ This is the part worth understanding, because the surface reading is wrong.
 r1c comes within **0.282 dB** of R1 while using **26% fewer bits per frame**
 (314.2 against 426.9). Judged on quality per bit, it is the better tokenizer, and
 it has not collapsed - 463 codes live, zero unused. **It was still rejected**,
-because it fails the entropy bar (Q-2) at 54.6% against 70%.
+because it fails the entropy bar at 54.6% against 70%.
 
 **The tempting move - "the entropy bar measures the wrong thing for a dynamics
 model" - was considered and rejected on purpose.** Lower token entropy makes an
@@ -111,8 +111,8 @@ one thing changed.
 | | R1 (GroupNorm) | R2 (+attention) | r1c (channel-only) |
 |---|---|---|---|
 | support | 4,096 px | 4,096 px | 225 px |
-| PSNR (Q-1) | 31.095 dB | 31.182 | 30.813 |
-| entropy (Q-2) | 74.1% | 77.6% | **54.6% FAIL** |
+| PSNR | 31.095 dB | 31.182 | 30.813 |
+| entropy | 74.1% | 77.6% | **54.6% FAIL** |
 | bits per frame | 426.9 | 447.2 | 314.2 |
 | persistence | 85.67% | 77.28% | **93.22%** |
 | P(flip given quiet field) | 8.86% | 18.75% | **0.00%** |
@@ -245,9 +245,9 @@ passing. **D, E and F had no `runs.jsonl` row, no verification-log entry, and no
 register id.** By this project's own rules they could not be quoted until
 reproduced or recorded.
 
-**All three were re-run and recorded on 2026-08-30** - as the link-drift, Q-3
+**All three were re-run and recorded on 2026-08-30** - as the link-drift, coherence-horizon
 blind-probe and dynamics-sizing rows of `runs.jsonl`, plus a fourth row when the
-Q-5 repair was refuted. **Two of the three came back with different numbers**,
+link-drift repair was refuted. **Two of the three came back with different numbers**,
 which is the argument for this table rather than against it: a recollection that
 is 2.2x out on one figure and 1.3x out the other way on its neighbour would have
 been quoted as fact by whoever wrote the Phase 2 plan. The status column now
@@ -255,11 +255,11 @@ carries what moved.
 
 | | finding | status |
 |---|---|---|
-| A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in the token-stability row as evidence, **and acted on**: decided 2026-09-18, and F-11's acceptance test is restated against persistence in `world_model_requirements.md` on 2026-09-22. The marginal top-1 half of the comparison was never measured |
+| A | The next-token accuracy bar of 3x the marginal baseline is beaten by a zero-parameter persistence baseline | **recorded** in the token-stability row as evidence, **and acted on**: decided 2026-09-18, and that acceptance test is restated against persistence in `world_model_requirements.md` on 2026-09-22. The marginal top-1 half of the comparison was never measured |
 | B | `GroupNorm` couples tokens globally | **recorded and superseded** by the token-stability row, which measured it properly |
 | C | `bench/patch_probe.py:60` sets `RF = 22`; the true conv field is **15** | **recorded in the token-stability row, NOT FIXED.** See below |
-| D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 (`bench/q3_blind_probe.py`), and acted on**: Q-3's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
-| E | Q-5's 10% link-drift bar fails the simulator's own frames (35.6% mean) | **recorded 2026-08-30 (`bench/link_drift_probe.py`), and acted on**: Q-5 is now relative, Q-4's treatment. **The number moved** - 44.2% on link1 and 23.0% on link0, not one 35.6% figure; the recollection appears to have averaged two links that fail for different reasons. A later row additionally refutes the obvious repair |
+| D | The coherence horizon cannot see dynamics failure; the frame validator fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 (`bench/q3_blind_probe.py`), and acted on**: the horizon's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
+| E | The 10% link-drift bar fails the simulator's own frames (35.6% mean) | **recorded 2026-08-30 (`bench/link_drift_probe.py`), and acted on**: link drift is now scored relative to the simulator, the treatment action-following got. **The number moved** - 44.2% on link1 and 23.0% on link0, not one 35.6% figure; the recollection appears to have averaged two links that fail for different reasons. A later row additionally refutes the obvious repair |
 | F | Phase 2 sizing: 14,592,384 params, 975-token sequence, 38.4 MB cache, ~16x under Chinchilla, fp32 6.6 h/epoch vs bf16 49 min | **recorded 2026-08-30 (`bench/dyn_size_probe.py`), and THREE OF ITS NUMBERS MOVED.** Params 14,593,152 for RoPE+untied (the recollection is 768 short, and the four layout variants span only 571,008 in total). Chinchilla shortfall 15.0x, not ~16x. **The epoch times were wrong in both directions**: fp32 is 2.99 h, not 6.6, and bf16 is 1.06 h, not 49 min. Sequence length and cache size reproduce exactly. Nothing depended on the two wrong ones |
 
 **No register entry was created for anything this session.** Registering is a
@@ -287,10 +287,10 @@ what follows is only the reminder that they exist:
 | # | decision | note |
 |---|---|---|
 | 2 | data volume: 500 episodes or regenerate 3x / 5x | gated on the `data_hash` provenance story |
-| ~~3~~ | ~~restate F-11 against the persistence baseline~~ | **closed 2026-09-18**, and restated in `world_model_requirements.md` on 2026-09-22. What is still open is F-11's description, "predicts next token", which waits on the strictly-causal against block-causal measurement - see the F-11 risk row there |
+| ~~3~~ | ~~restate the next-token accuracy bar against the persistence baseline~~ | **closed 2026-09-18**, and restated in `world_model_requirements.md` on 2026-09-22. What is still open is the dynamics model's description, "predicts next token", which waits on the strictly-causal against block-causal measurement - see its row under "Requirements at risk" there |
 | 4 | sequence layout and position encoding | **irreversible.** RoPE is the lazy correct answer |
-| ~~5~~ | ~~Q-3's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded (`bench/q3_blind_probe.py`), and Q-3 now terminates on frame-to-frame continuity rather than on F-9's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see the Q-3 risk row in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
-| 6 | rollout sampling: greedy vs temperature | sim is deterministic (E-1), greedy is the strong default |
+| ~~5~~ | ~~the coherence horizon's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded (`bench/q3_blind_probe.py`), and the coherence horizon now terminates on frame-to-frame continuity rather than on the frame validator's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see its row under "Requirements at risk" in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
+| 6 | rollout sampling: greedy vs temperature | sim is deterministic, greedy is the strong default |
 | 7 | file split `dynamics.py` / `dynamics_eval.py` | do **not** start `engine.py` (Phase 3) |
 | 8 | exposure bias: mitigate now or name a trigger | |
 
