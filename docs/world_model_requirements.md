@@ -17,7 +17,7 @@ quality, `E` engineering.
 |---|---|---|---|
 | F-1 | M | MuJoCo scene: 2-link planar arm, 3 pushable blocks, fixed camera | Scene loads, arm reaches all blocks |
 | F-2 | M | Flat-render config enforced: ambient-only light, no shadows, box geoms, no textures, offsamples=0 | Rendered frame has <= 24 unique RGB values |
-| F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer | `glGetString(GL_RENDERER)` names neither `GDI Generic` nor `Microsoft Basic Render Driver`. This is a deny-list, not an allow-list on "RTX 5060", because an allow-list would fail on any other machine that is perfectly fine. Asserted at context creation |
+| F-3 | M | C++ harness renders offscreen on **GPU hardware**, never a software rasterizer. **On Linux, on the NVIDIA GPU only** | `glGetString(GL_RENDERER)` names neither `GDI Generic` nor `Microsoft Basic Render Driver` (nor, on Linux, `llvmpipe` or `softpipe`). On Linux it must also contain `NVIDIA`: a hybrid laptop's integrated GPU is real hardware and renders different frames under the same `data_hash` (`runs.jsonl` r55), and the Intel path now aborts at context creation (r56). Windows keeps the deny-list alone. Neither check names "RTX 5060": an allow-list on one model would fail on any other machine that is perfectly fine. Asserted at context creation |
 | F-4 | M | Deterministic given a seed | Same seed and action sequence give bit-identical frames |
 | F-5 | M | Data policy: 50/50 random joint deltas and scripted noisy reach | Over >= 2,000 episodes at the configured length: every one of the 9 actions holds **>= 5% of frames**, and **max bin / min bin <= 2.5**. `policy_dry_run` reports both |
 | F-6 | M | Arm-block contact events exceed 5% of frames | Contact counter over a full run |
