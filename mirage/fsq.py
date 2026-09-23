@@ -1,37 +1,38 @@
-"""The tokenizer: FSQ quantizer, conv encoder/decoder, train loop, PSNR eval.
+"""The tokenizer: FSQ quantizer, conv encoder/decoder, training loop, PSNR eval.
 
 An *autoencoder*. The encoder squeezes a 64x64 RGB frame to an 8x8 grid of
 `len(levels)` numbers per cell; the decoder rebuilds the frame from that grid.
 FSQ (finite scalar quantization) makes the grid discrete by rounding each number
 to one of a fixed set of levels, so `prod(levels)` is the vocabulary and there is
-no learned dictionary to collapse. Rounding has zero gradient everywhere, so the
-backward pass uses a straight-through estimator - it pretends the rounding was
+no learned dictionary that could collapse. Rounding has zero gradient, so the
+backward pass uses a straight-through estimator: it acts as if the rounding were
 not there.
 
-Built in the order `docs/phase1_structural_plan.md` section 5 names:
+Contents, in the order of `docs/phase1_structural_plan.md` section 5:
 
-- **5a** `FSQ` - the quantizer, and `codes_to_indices`.
-- **5b** `Tokenizer` - encoder, optional 8x8 self-attention, decoder.
-- **5c** `train` - MSE, AdamW, cosine schedule, held-out PSNR.
-- **5d** `RUNGS` - R0, R1 and R2 as one flag pair each.
-- **5e** and the gate table live in `fsq_eval.py`, split out when this file
-  passed the 500 lines the plan names as the trigger. The division is by when
-  the code runs: this file builds and trains, that one reads an artifact.
+- `FSQ` - the quantizer, and `codes_to_indices`.
+- `Tokenizer` - encoder, optional 8x8 self-attention, decoder.
+- `train` - MSE loss, AdamW, cosine schedule, held-out PSNR.
+- `RUNGS` - the experiment ladder. Each "rung" is one training run that
+  differs from the others by one or two flags: R0 (no quantization), R1
+  (quantized), R2 (R1 plus attention), and two normalisation variants.
+- Token caching and the pass/fail "gate table" live in `fsq_eval.py`. This
+  file builds and trains; that one reads a trained run.
 
-R3 is deliberately not a rung: "residual blocks, wider channels, or the levels
-ladder" is three different runs, and which one it means is decided by R2's number
-rather than in advance.
+There is no R3 rung on purpose: it could mean residual blocks, wider channels,
+or different levels, which are three different runs, and R2's result decides
+which one is needed.
 
-    python -m mirage.fsq              # 5a/5b self-check, touches no data
+    python -m mirage.fsq              # self-check, touches no data
     python -m mirage.fsq --run r0     # continuous bottleneck - the ceiling
     python -m mirage.fsq --run r1     # FSQ [8,8,8], no attention
     python -m mirage.fsq --run r2     # R1 plus attention on the 8x8 grid
     python -m mirage.fsq --tokens ID  # encode all 300,000 frames from that run
     python -m mirage.fsq --eval ID    # the gate table
 
-PSNR is `10*log10(255^2 / MSE)` on **uint8** reconstructions, not on the raw
-float output. The float number is ~0.01 dB better and the pipeline never delivers
-it, so it is not the number.
+PSNR (peak signal-to-noise ratio) is `10*log10(255^2 / MSE)` on **uint8**
+reconstructions, not the raw float output. The float value is ~0.01 dB better,
+but the pipeline never produces floats, so it is not the number that counts.
 """
 
 import argparse
@@ -53,39 +54,37 @@ from mirage.logging import Run
 ROOT = Path(__file__).resolve().parent.parent
 PEAK = 255.0
 
-# Q-1's bar, and the floor gate row 2 charges a rung against. The floor is
-# k-means++ at 512 codes fit on the 473 train episodes and scored on the 27 val
-# ones - the same treatment a tokenizer gets - measured 2026-08-28 by
-# `bench/patch_probe.py`. The 29.02 dB still quoted in older prose was fit *and*
-# scored on a sample that straddled the split; 0.75 dB of that difference is the
-# leak and 0.86 dB is the advantage of scoring a codebook on its own patches.
+# The reconstruction target: held-out PSNR of at least 30 dB.
 PSNR_BAR_DB = 30.0
 
-# **Keyed by resolution, because the floor is a property of the frames.** Gate
-# row 2 charges a rung against the floor measured at *that rung's* resolution;
-# charging a 96x96 rung against the 64x64 floor compares two different questions
-# and the answer looks like a free win. Not in `config.json`: it is a
-# measurement, not a knob, and adding a key to the `tokenizer` section would move
-# `tokenizer_hash` and orphan every checkpoint already on disk.
+# The baseline a tokenizer must beat: a plain 512-entry k-means codebook over
+# 8x8 pixel patches, fit on the training episodes and scored on the held-out
+# ones, the same treatment a tokenizer gets (`bench/patch_probe.py`). Scoring
+# it on a sample that mixed the two splits once gave a misleadingly higher
+# number.
+#
+# **Keyed by resolution, because the baseline depends on the frames.** A rung is
+# compared with the baseline at *its own* resolution; comparing a 96x96 rung
+# with the 64x64 baseline would look like a free win. Not in `config.json`: it is
+# a measurement, not a setting, and a new key in the `tokenizer` section would
+# change `tokenizer_hash` and orphan every checkpoint on disk.
 KMEANS_FLOOR_DB: dict[tuple[int, int], float] = {
     (64, 64): 28.27,
-    # Measured 2026-08-29, same probe, same 179,200-patch budget. **Higher than
-    # the 64x64 floor by 1.70 dB, not lower** - an 8x8 patch covers 2.25x less
-    # of the scene at 96x96, so 73.09% of patches are a single flat colour
-    # against 63.47% at 64x64, and a per-patch codebook finds the frames easier.
-    # The consequence is that row 2's bar here is only +0.03 dB: at 96x96 the
-    # k-means baseline very nearly clears Q-1 on its own, so row 2 stops being
-    # an informative row and row 1 carries the whole question.
+    # Same probe, same 179,200-patch budget. **Higher than at 64x64, not
+    # lower**: an 8x8 patch covers 2.25x less of the scene at 96x96, so 73% of
+    # patches are one flat colour (against 63% at 64x64) and a patch codebook
+    # finds the frames easier. So at 96x96 the baseline alone almost reaches
+    # 30 dB, the "beat the baseline" row says little, and the plain 30 dB row
+    # carries the whole question.
     (96, 96): 29.97,
 }
 
 
 def kmeans_floor_db(cfg: "config.Config") -> float:
-    """The recorded held-out k-means-512 floor for this config's resolution.
+    """The recorded held-out k-means-512 baseline for this config's resolution.
 
-    Raises rather than extrapolating. An area-scaled guess is exactly the class
-    of number this project keeps having to retract - see the F-9 pixel budget in
-    `configs/base96.json`.
+    Raises instead of extrapolating. Numbers guessed by scaling with image area
+    are exactly the kind this project has repeatedly had to retract.
     """
     size = tuple(cfg.shapes.image_size)
     if size not in KMEANS_FLOOR_DB:
@@ -95,35 +94,34 @@ def kmeans_floor_db(cfg: "config.Config") -> float:
             f"held-out 512-centroid uint8 PSNR here - do not scale the 64x64 one")
     return KMEANS_FLOOR_DB[size]
 
-# One rung is one question, and the only thing that varies is these two flags.
-# R3 is deliberately absent: it is "residual blocks, wider channels, or the
-# levels ladder", which is three different runs and is only defined once R2's
-# number says which one is needed.
+# Each rung answers one question, and only these flags vary between them. No
+# R3 on purpose; see the module docstring.
 RUNGS = {
     "r0": dict(quantize=False, attention=False),  # the architecture's ceiling
     "r1": dict(quantize=True, attention=False),   # what quantization costs
     "r2": dict(quantize=True, attention=True),    # what joint coding buys
-    # R1 with the encoder's spatial statistics removed. GroupNorm normalises over
-    # (channel group, H, W), so every token already depends on every pixel of the
-    # frame - measured by autograd on the R1 encoder: gradient support 4,096 px
-    # with it, exactly 15x15 with it monkeypatched to identity. That is the
-    # mechanism behind spurious token flips (a token changing while its own 15x15
-    # conv field did not), and this rung is the control that prices removing it.
+    # R1 without whole-image statistics in the encoder. GroupNorm normalises over
+    # (channel group, H, W), so every token depends on every pixel of the frame:
+    # measured with autograd, one token's gradient reaches all 4,096 px with it
+    # and exactly 15x15 without it. That explains spurious token changes (a token
+    # changing although its own 15x15 patch did not), and this rung measures what
+    # removing it costs.
     "r1c": dict(quantize=True, attention=False, encoder_norm="channel"),
-    # The middle of that curve, and there is only one point on it. A KxK
-    # normalisation window adds (K-1) at each stage's own resolution, so the
-    # support is 15 + 2*(K-1)*(4+2+1) px: K=3 gives 43x43 = 1,849 and K=5
-    # already gives 71, past the 64-pixel frame. Measured, and it agrees.
+    # Halfway between the two, and it is the only in-between point available. A
+    # KxK normalisation window widens each stage's reach by (K-1) at that
+    # stage's resolution, so a token sees 15 + 2*(K-1)*(4+2+1) px: K=3 gives
+    # 43x43 = 1,849, and K=5 gives 71, already wider than the 64-px frame.
+    # Measured, and it agrees.
     "r1w3": dict(quantize=True, attention=False, encoder_norm="local3"),
 }
 
-# GroupNorm needs a divisor of every channel count it is handed. 8 divides 64,
-# 128 and 256, and the exact value has never mattered in a conv autoencoder this
-# small - it is a named constant so it is not eight magic 8s.
+# GroupNorm's group count must divide every channel count. 8 divides 64, 128
+# and 256, and the exact value does not matter for a network this small. Named
+# so it is not eight unexplained 8s.
 GN_GROUPS = 8
 
 
-# ------------------------------------------------------------------- 5a. FSQ
+# ----------------------------------------------------------------------- FSQ
 
 class FSQ(nn.Module):
     """Finite scalar quantization, one levels count per latent channel.
@@ -134,27 +132,27 @@ class FSQ(nn.Module):
         bound(z) = tanh(z + shift) * half_l - offset
         q        = round(bound(z)) via straight-through, then / (levels // 2)
 
-    `eps` widens the bound just past the outermost level so the `tanh` asymptote
-    does not sit exactly on it; `offset` and `shift` re-centre an even levels
-    count, whose levels straddle zero rather than including it.
+    `eps` widens the range slightly past the outermost level so the `tanh`
+    limit does not sit exactly on it. `offset` and `shift` re-centre an even
+    level count, whose levels sit either side of zero instead of including it.
 
-    **No auxiliary loss.** No commitment, no codebook loss, no EMA, no dead-code
-    restart. FSQ has no dictionary to maintain, and adding one of those undoes
-    the reason it was chosen over VQ - a Q-2 improvement would no longer
-    distinguish "the vocabulary is well used" from "the loss propped it up". If
-    Q-2 misses, shrink the vocabulary instead.
+    **No extra losses.** No commitment loss, codebook loss, moving averages or
+    dead-code resets. FSQ has no dictionary to maintain, and adding one of these
+    would undo why it was chosen over VQ (vector quantization): better codebook
+    usage could no longer be told apart from "the extra loss propped it up". If
+    codebook usage is too low, shrink the vocabulary instead.
 
-    The straight-through gradient is **not 1.0**: the STE bypasses only the
-    rounding, so the `tanh` derivative survives into the backward pass. At zero
-    it is 0.858 for [8,8,8], 1.001 for [5,5,5] and 0.668 for [4,4,4] - a levels
-    change silently rescales the effective bottleneck learning rate by up to
-    1.5x, which is why every levels comparison runs at two LRs. `_self_check`
-    reproduces those three numbers.
+    The straight-through gradient is **not 1.0**: it skips only the rounding, so
+    the `tanh` slope still applies. At zero it is 0.858 for [8,8,8], 1.001 for
+    [5,5,5] and 0.668 for [4,4,4]. So changing levels silently rescales the
+    bottleneck's effective learning rate by up to 1.5x, which is why every
+    levels comparison is run at two learning rates. `_self_check` reproduces
+    those three numbers.
     """
 
-    # Annotated at class level so the buffers below type as plain tensors.
-    # register_buffer is declared as returning None, so without these pyright
-    # reads every `self.half_l` as `Tensor | Module | None`.
+    # Declared here so type checkers treat the buffers below as plain tensors.
+    # Without these, pyright types every `self.half_l` as
+    # `Tensor | Module | None`.
     half_l: torch.Tensor
     offset: torch.Tensor
     shift: torch.Tensor
@@ -167,8 +165,8 @@ class FSQ(nn.Module):
         offset = torch.where(lv % 2 == 0, 0.5, 0.0)
         self.levels = [int(v) for v in levels]
         self.codebook_size = math.prod(self.levels)
-        # Buffers, not plain tensors: they have to follow .to(device) and land
-        # in the checkpoint, so a reloaded model quantizes identically.
+        # Buffers, not plain tensors: they must move with .to(device) and be
+        # saved in the checkpoint, so a reloaded model quantizes identically.
         self.register_buffer("half_l", half_l)
         self.register_buffer("offset", offset)
         self.register_buffer("shift", torch.atanh(offset / half_l))
@@ -188,29 +186,27 @@ class FSQ(nn.Module):
     def codes_to_indices(self, q: torch.Tensor) -> torch.Tensor:
         """(B, C, H, W) of `forward` outputs -> (B, H, W) ids in 0..codebook_size-1.
 
-        `forward` hands back `round(bound(z)) / (levels//2)`, a *normalised*
-        value in roughly [-1, 1], because that is what the decoder consumes. The
-        digit is recovered by undoing exactly that: `q * scale + scale` puts the
-        `levels[c]` grid points on `0..levels[c]-1`, and the mixed-radix sum
-        against the place values reads those digits off as one number - channel 0
-        is the ones place, channel 1 the `levels[0]`s place, and so on.
+        `forward` returns `round(bound(z)) / (levels//2)`, a value scaled to
+        roughly [-1, 1] because that is what the decoder takes. This undoes that
+        scaling: `q * scale + scale` maps the `levels[c]` values onto digits
+        `0..levels[c]-1`. The digits are then combined like a number in a mixed
+        base: channel 0 is the ones place, channel 1 the `levels[0]`s place, and
+        so on.
 
-        A bijection, and for free: every integer in `0..prod(levels)-1` has
-        exactly one mixed-radix expansion, so there is no dictionary and nothing
-        to collide. `_self_check` enumerates all `prod(levels)` code tuples and
-        asserts the ids come back as `arange` - cheap at 512, and it is the check
-        that catches a wrong un-shift. Without it a sign error emits negative
-        digits that wrap into wrong-but-valid ids and surface 300,000 frames
+        Every id in `0..prod(levels)-1` has exactly one such digit expansion, so
+        the mapping is one-to-one with no dictionary and no collisions.
+        `_self_check` runs every code combination and asserts the ids come back
+        as `arange`. That catches a wrong un-scaling, which would otherwise make
+        negative digits that wrap into wrong-but-valid ids, only noticed much
         later as a corrupt token cache.
 
-        The bound check is per channel, not against `max(levels)`: a mixed table
-        like [8,6,5] has three different digit ranges and a single bound would
-        wave through a digit 7 in the 6-level channel.
+        The range check is per channel, not against `max(levels)`: a mixed table
+        like [8,6,5] has three digit ranges, and a single bound would let a
+        digit 7 through in the 6-level channel.
 
-        Nothing is registered as a buffer here. The place values are rebuilt per
-        call - two tiny tensors against a conv forward, so free - because a new
-        buffer would change `state_dict` and make R0's existing checkpoint fail
-        a strict load for no gain.
+        The place values are rebuilt on every call instead of stored as a buffer
+        (two tiny tensors, so free). A new buffer would change `state_dict` and
+        make existing R0 checkpoints fail a strict load.
         """
         v = (1, -1, 1, 1)
         lv = torch.tensor(self.levels, device=q.device).view(v)
@@ -224,20 +220,20 @@ class FSQ(nn.Module):
         return (digits * basis).sum(1)
 
 
-# ---------------------------------------------------- 5b. encoder and decoder
+# -------------------------------------------------------- encoder and decoder
 
 class ChannelNorm(nn.Module):
-    """`GroupNorm`'s statistics taken **per pixel**: no spatial mixing at all.
+    """`GroupNorm` with statistics taken **per pixel**, so no mixing across space.
 
-    Same groups, same learned per-channel scale and shift, same eps - the only
-    change is that the mean and variance are over the group's channels at one
-    (h, w) rather than over the group's channels *and the whole feature map*.
-    So a cell's output stops depending on pixels outside its conv receptive
-    field, which is what rung `r1c` is testing.
+    Same groups, same learned per-channel scale and shift, same eps. The only
+    change: mean and variance are over the group's channels at one (h, w),
+    not over the group's channels *and the whole feature map*. So a cell's
+    output no longer depends on pixels outside its conv window, which is what
+    rung `r1c` tests.
 
-    ponytail: written out rather than reusing `F.group_norm`, because getting
-    per-pixel statistics out of that call needs a permute and a copy of the
-    activation. This is a view plus two reductions.
+    ponytail: written out instead of using `F.group_norm`, which would need a
+    permute and a copy of the activation to give per-pixel statistics. This is
+    a view plus two reductions.
     """
 
     def __init__(self, groups: int, ch: int, eps: float = 1e-5) -> None:
@@ -257,22 +253,22 @@ class ChannelNorm(nn.Module):
 
 
 class LocalNorm(nn.Module):
-    """The middle of the curve: statistics over a `window` x `window` patch.
+    """In between: statistics over a `window` x `window` patch around each pixel.
 
-    `ChannelNorm` and `GroupNorm` are this module's two endpoints - window 1 is
-    per-pixel statistics, a window covering the feature map is `GroupNorm` - so
-    this is one knob interpolating between rungs `r1c` and `r1`, not a third
-    mechanism. Rung `r1w3` sits on it.
+    `ChannelNorm` and `GroupNorm` are the two extremes (window 1 is per-pixel,
+    a window covering the whole map is `GroupNorm`), so this is one dial
+    between rungs `r1c` and `r1`, not a third idea. Rung `r1w3` uses it.
 
-    The box average is `avg_pool2d` at stride 1 with `count_include_pad=False`,
-    so a pixel at the edge normalises over the neighbours it actually has rather
-    than over zeros. Variance is `E[x^2] - E[x]^2` over the joint (the group's
-    channels x the window), the same population `GroupNorm` uses, restricted.
+    The patch average is `avg_pool2d` at stride 1 with
+    `count_include_pad=False`, so an edge pixel averages over the neighbours it
+    really has, not over zero padding. Variance is `E[x^2] - E[x]^2` over the
+    group's channels times the window: the same values `GroupNorm` uses, just
+    restricted to the patch.
 
-    ponytail: that variance can come out slightly negative in fp32 when the
-    window is nearly constant, which is exactly what this dataset's void band
-    is, so it is clamped at 0 before the eps. Without the clamp `rsqrt` returns
-    NaN and the run dies in its first epoch.
+    ponytail: in fp32 that variance can come out slightly negative when the
+    patch is nearly constant, which the black void band always is, so it is
+    clamped at 0 before adding eps. Without the clamp `rsqrt` returns NaN and
+    the run dies in its first epoch.
     """
 
     def __init__(self, groups: int, ch: int, window: int, eps: float = 1e-5) -> None:
@@ -292,9 +288,8 @@ class LocalNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w = x.shape
         g = x.view(b, self.groups, c // self.groups, h, w)
-        # Channel-mean within the group first, then the spatial box average.
-        # Two steps give the same joint mean and pool `groups` maps instead of
-        # all `c` of them.
+        # Average over the group's channels first, then over the patch. Same
+        # result as one joint average, but pools `groups` maps instead of `c`.
         m = self._box(g.mean(2))
         v = (self._box(g.pow(2).mean(2)) - m.pow(2)).clamp_min(0)
         g = (g - m.unsqueeze(2)) * (v + self.eps).rsqrt().unsqueeze(2)
@@ -325,9 +320,10 @@ def _stage(cin: int, cout: int, stride: int, norm: str = "group") -> nn.Sequenti
 def _up(cin: int, cout: int) -> nn.Sequential:
     """Nearest-neighbour upsample plus a 3x3 conv. **Never `ConvTranspose2d`.**
 
-    Transposed-conv checkerboarding presents as misplaced edges, and misplaced
-    edges are the exact signal that decides the 64-vs-144 resolution fork. A
-    checkerboard would send the project to 96x96 on a false diagnosis.
+    Transposed convolutions cause checkerboard artifacts that look like
+    misplaced edges, and misplaced edges are exactly the signal used to decide
+    whether to move from 64x64 (64 tokens) to 96x96 (144 tokens). A checkerboard
+    would send the project to 96x96 on a false diagnosis.
     """
     return nn.Sequential(
         nn.Upsample(scale_factor=2, mode="nearest"),
@@ -340,35 +336,28 @@ def _up(cin: int, cout: int) -> nn.Sequential:
 class GridAttention(nn.Module):
     """One single-head self-attention layer over the 8x8 latent grid.
 
-    64 positions, so the attention matrix is 64x64 and costs nothing. It is also
-    the only mechanism by which the 64 codes describe the frame *jointly* rather
-    than independently, and independently is measured: a 512-entry k-means
-    codebook over real 8x8 patches, fit on the train episodes and scored on the
-    val ones, reaches **28.27 dB** against the 30 dB Q-1 bar. The **1.73 dB** gap
-    is what context has to buy. (The 29.02 dB / 0.98 dB pair quoted elsewhere is
-    the same measurement fit *and* scored on a sample that straddled the split -
-    0.75 dB of leak. `bench/patch_probe.py` prints both.)
+    64 positions, so the attention matrix is 64x64 and costs nothing. It is the
+    only way the 64 codes can describe the frame *together* rather than each
+    patch on its own. Patches on their own were measured: the k-means patch
+    baseline (see `KMEANS_FLOOR_DB`) falls short of the 30 dB target by 1.73 dB,
+    and that gap is what shared context would have to close.
 
-    **REFUTED as a quality lever, VERIFIED as an entropy one** - measured
-    2026-08-29 with R1 and R2 both run to convergence at 60 epochs.
+    **Measured: it does not improve quality, but it does improve token usage**
+    (R1 and R2 both trained to convergence at 60 epochs).
 
-    The claim that used to sit here - that this layer's value shows up in gate
-    row 2 and not row 1, because the margin is inside a training run's noise -
-    was wrong three ways. It could not show up in row 2, which `evaluate` makes
-    row 1 minus a constant by charging against the recorded floor. It buys
-    **+0.087 dB** for **+263,680 parameters**, about a sixth of the plan's own
-    "within ~0.5 dB means tied" threshold, so it is a measured non-lever for
-    quality - and **R1 passes every gate row without it**. And that "training
-    run's noise" was never measured; no seed has been repeated to this day.
+    For quality it adds **+0.087 dB** for **+263,680 parameters**, about a sixth
+    of the plan's own "within ~0.5 dB means tied" rule, and **R1 passes every
+    gate row without it**. (An earlier claim here, that its value hid inside run
+    to run noise, was wrong; that noise had never been measured.)
 
-    Where it does show up is **row 3**: **+3.5 pp of token entropy** at
-    convergence, +8.2 pp at 15 epochs, by decorrelating the three FSQ digits -
-    redundancy falls 1.339 -> 0.781 bits when it is added at 15 epochs. Training
-    length is a *substitute* for it there, not a complement: without attention,
-    60 epochs reaches 0.890 bits on its own.
+    Where it helps is token entropy (how evenly the vocabulary is used): **+3.5
+    points** at convergence and +8.2 at 15 epochs, by making the three FSQ digits
+    less redundant (1.339 -> 0.781 bits of redundancy at 15 epochs). Longer
+    training does the same job instead: without attention, 60 epochs reaches
+    0.890 bits on its own.
 
-    It also costs an E-1 caveat R1 does not have: with attention, re-encoding a
-    shard at a different batch size changes ~2 tokens in 100,000. See
+    It also has a determinism caveat R1 does not: with attention, re-encoding a
+    shard at a different batch size changes about 2 tokens in 100,000. See
     `fsq_eval` and the verification log.
     """
 
@@ -381,26 +370,27 @@ class GridAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w = x.shape
         q, k, v = self.qkv(self.norm(x)).reshape(b, 3, c, h * w).unbind(1)
-        # (b, 1, hw, c): one head, so the head axis is a literal 1.
+        # (b, 1, hw, c): one head, so the head axis has size 1.
         heads = (t.transpose(1, 2).unsqueeze(1) for t in (q, k, v))
         a = F.scaled_dot_product_attention(*heads)
         return x + self.proj(a.squeeze(1).transpose(1, 2).reshape(b, c, h, w))
 
 
 class Tokenizer(nn.Module):
-    """3 -> 64 -> 128 -> 256 down, 1x1 to the latent, then the mirror back up.
+    """Channels 3 -> 64 -> 128 -> 256 going down, 1x1 conv to the latent, then mirrored back up.
 
-    Stride 8 forces exactly three stride-2 stages. `GroupNorm` + `SiLU`, no
-    residual blocks - residual blocks are the first capacity lever if a rung
-    falls short, not a starting assumption.
+    Stride 8 means exactly three stride-2 stages. `GroupNorm` + `SiLU`, no
+    residual blocks: those are the first thing to add if a rung falls short,
+    not a starting assumption.
 
-    The final conv is **linear**: no output activation and no clamp. `tanh` would
-    saturate on exactly the values this scene is made of, pure black void and
-    saturated blocks, and clamping removes the gradient that penalises overshoot.
-    Clamp only when materialising uint8.
+    The final conv is **linear**: no output activation and no clamp. `tanh`
+    would saturate on exactly the colours this scene is made of (pure black
+    void, saturated blocks), and clamping removes the gradient that punishes
+    overshoot. Clamp only when converting to uint8.
 
-    `quantize=False` is rung R0 - the same architecture with the bottleneck left
-    continuous, which measures the ceiling the quantizer is then charged against.
+    `quantize=False` is rung R0: the same network with no rounding in the
+    middle. It measures the best this architecture can do, which the quantized
+    rungs are then compared against.
     """
 
     def __init__(self, levels=(8, 8, 8), attention: bool = False,
@@ -431,10 +421,10 @@ class Tokenizer(nn.Module):
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """(B, 3, H, W) in [0, 1] -> (B, h, w) token ids, one per latent cell.
 
-        Refuses a continuous bottleneck rather than quantizing one on the way
-        past. An R0 model's latent was never trained against a rounding step, so
-        the ids it produces would be well-formed and meaningless - the failure
-        this guard exists to stop is a Phase 2 dataset that looks fine.
+        Refuses an unquantized (R0) model instead of rounding its output anyway.
+        R0 was never trained with rounding, so its ids would look valid and mean
+        nothing, giving a token dataset for the next phase that looks fine but
+        is not.
         """
         if not self.quantize:
             raise ValueError(
@@ -443,19 +433,19 @@ class Tokenizer(nn.Module):
         return self.fsq.codes_to_indices(self.fsq(self.encoder(x)))
 
 
-# -------------------------------------------------- 5c. loss, loop, and PSNR
+# ------------------------------------------------------ loss, loop, and PSNR
 
 def psnr_db(sse: float, values: int) -> float:
     return 10.0 * math.log10(PEAK * PEAK / (sse / values))
 
 
 def _batch(idx: np.ndarray, lut: torch.Tensor, rows: np.ndarray) -> torch.Tensor:
-    """Palette indices -> (B, 3, H, W) of 0..255 floats on the LUT's device.
+    """Palette indices -> (B, 3, H, W) of 0..255 floats on the lookup table's device.
 
-    The indices live in CPU RAM - 1.16 GB for the train split, against ~5 GB free
-    on an 8 GB card that is also holding activations - and one batch is 512 KB,
-    so the transfer is noise next to the step. The LUT expansion runs on the GPU
-    because it is a gather over 7 rows.
+    The indices stay in CPU RAM (1.16 GB for the training split, against ~5 GB
+    free on an 8 GB card that also holds activations). One batch is 512 KB, so
+    copying it is negligible next to a training step. Expanding indices to
+    colours runs on the GPU because it is a lookup into 7 rows.
     """
     rows_u8 = np.ascontiguousarray(idx[rows])
     b = torch.from_numpy(rows_u8).to(lut.device, non_blocking=True).long()
@@ -467,11 +457,11 @@ def reconstruction_psnr(model: nn.Module, idx: np.ndarray, lut: torch.Tensor,
                         batch: int = 256) -> tuple[float, float]:
     """(PSNR in dB on uint8, mean squared error in [0,1] units) over `idx`.
 
-    Rounded to uint8 before the error is taken, because that is what the pipeline
-    delivers and what item 6 will hand the validator. PSNR computed on the raw
-    float output reads ~0.01 dB better and the pipeline never produces it. The
-    float MSE comes back alongside only so the training loss and the gate number
-    can be read on one line.
+    Rounded to uint8 before measuring the error, because that is what the
+    pipeline delivers and what the validator sees. PSNR on the raw float output
+    reads ~0.01 dB better, but nothing downstream gets floats. The float MSE is
+    returned only so the training loss and the gate number can be compared
+    side by side.
     """
     was_training = model.training
     model.eval()
@@ -489,20 +479,19 @@ def reconstruction_psnr(model: nn.Module, idx: np.ndarray, lut: torch.Tensor,
 
 
 def _keep_awake() -> None:
-    """Ask Windows not to suspend the machine while a rung trains.
+    """Ask Windows not to put the machine to sleep while a rung trains.
 
-    A 60-epoch rung is ~90 min, and on 2026-08-29 this laptop entered Modern
-    Standby mid-run and froze epoch 8 for **49 minutes** - Windows event log
-    `Kernel-Power` 506 at 01:07:29 and 507 at 01:56:46, against a measured
-    3050.7 s epoch where every neighbour took 77-98 s. The wall clock keeps
-    counting through a suspend, so the run survives but every timing it reports
-    is void.
+    A 60-epoch rung takes about 90 min, and this laptop once went into standby
+    mid-run and froze one epoch for **49 minutes** (every other epoch took
+    77-98 s). The clock keeps running during sleep, so the run survives but all
+    its timings are meaningless.
 
-    `ES_CONTINUOUS | ES_SYSTEM_REQUIRED` is a *per-process* request that lapses
+    `ES_CONTINUOUS | ES_SYSTEM_REQUIRED` is a *per-process* request that ends
     when the process exits. It changes no user setting and no power plan.
 
-    ponytail: no-op off Windows, and a failure to get it is not worth losing a
-    run over - the run is still correct, only its wall clock is suspect.
+    ponytail: does nothing off Windows, and failing to get it is not worth
+    losing a run over: the results are still correct, only the timings are
+    suspect.
     """
     if sys.platform != "win32":
         return
@@ -519,28 +508,27 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
           lr_floor: float = 3e-5, weight_decay: float = 1e-4, warmup: float = 0.05,
           seed: int = 0, eval_frames: int = 4096, log_every: int = 100,
           device: str | None = None, resume: str | None = None) -> dict:
-    """One rung. Plain MSE, AdamW, cosine to `lr_floor` after linear warmup.
+    """Train one rung. Plain MSE, AdamW, cosine decay to `lr_floor` after linear warmup.
 
-    Plain MSE and nothing else: PSNR is a monotone function of MSE, so the loss
-    *is* the gate. Per-pixel 7-way cross-entropy was considered and loses - the
-    mean squared distance between two distinct palette entries is 47,814, so
-    classification needs ~99.6% pixel accuracy to clear 30 dB while regression
-    can hedge with a blend.
+    Plain MSE and nothing else: PSNR is a direct function of MSE, so the loss
+    *is* the pass/fail number. Per-pixel 7-way classification was considered
+    and loses: two different palette colours are on average 47,814 apart in
+    squared distance, so classification would need ~99.6% pixel accuracy to
+    reach 30 dB, while regression can hedge with a blend.
 
-    The hedging is a real hole: MSE rewards blurring edges, and 99.95% of the
-    k-means floor's error lives in the 36.53% of patches that are not flat. The
-    counterweight is item 6 - `offpalette_px` on reconstructions punishes exactly
-    the blur PSNR rewards, and the two cannot both be gamed. Neither number means
-    much alone.
+    That hedging is a real weakness: MSE rewards blurry edges, and almost all
+    of the k-means baseline's error (99.95%) is in the 37% of patches that are
+    not flat. The counterweight is the off-palette check on reconstructions,
+    which punishes exactly the blur PSNR rewards; the two cannot both be gamed.
+    Neither number means much alone.
 
-    **fp32, no autocast.** Under a million parameters and a few hundred MB of
-    activations at batch 128, so fp32 is free here, and it removes a class of
-    numerical doubt from the one number the whole phase turns on. Add autocast
-    only if a measured step time asks for it.
+    **fp32, no mixed precision.** Under a million parameters and a few hundred
+    MB of activations at batch 128, so fp32 costs little, and it removes one
+    source of numerical doubt from the number this phase depends on. Add mixed
+    precision only if a measured step time calls for it.
 
-    **It asked on 2026-08-29, and the answer is still no - for a reason that is
-    about comparability, not about speed.** bf16 autocast was measured on this
-    card at both resolutions, same model, same batch 128:
+    **Measured, and still no, for comparability rather than speed.** bf16
+    autocast on this card at both resolutions, same model, batch 128:
 
     | | fp32 | bf16 | 60-epoch rung |
     |---|---|---|---|
@@ -549,33 +537,31 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     | 96x96 R1 | 75.8 ms/step | 60.4 | 2.80 h -> 2.23 |
     | 96x96 R2 | 85.1 ms/step | 68.3 | 3.14 h -> 2.52 |
 
-    So 1.4-1.5x at 64x64 and only **1.25x at 96x96** - bf16 accelerates the
-    tensor-core matmuls and not the `nn.Upsample` / `GroupNorm` / `SiLU` chain,
-    which is bandwidth-bound, and the bigger image shifts the mix toward the part
-    it cannot help. TF32 alone is 1.07x and `cudnn.benchmark` is worth nothing
-    here, the shapes being fixed. **Not adopted**, because R1 and R2 at 60 epochs
-    differ by **0.087 dB** and are the comparison item 5 rests on; changing the
-    arithmetic underneath makes every later rung incomparable to both. Whoever
-    starts the 96x96 arm should decide it there, where a rung costs 3 h, and pay
-    for it by re-running one baseline rather than by assuming bf16 is neutral.
+    So 1.4-1.5x faster at 64x64 but only **1.25x at 96x96**: bf16 speeds up the
+    matrix multiplies, not the `nn.Upsample` / `GroupNorm` / `SiLU` chain, which
+    is limited by memory bandwidth, and bigger images spend more time there.
+    TF32 alone gives 1.07x, and `cudnn.benchmark` gives nothing since the shapes
+    are fixed. **Not adopted** because R1 and R2 at 60 epochs differ by only
+    **0.087 dB**, and changing the arithmetic would make every later rung
+    incomparable with both. Decide it when starting 96x96 work, where a rung
+    costs 3 h, and pay for it by re-running one baseline rather than assuming
+    bf16 changes nothing.
 
-    **What is *not* free to assume: this loop is not bit-reproducible.** Two
-    1-epoch r1 runs at seed 0, same machine, nothing else changed, read **25.66625
-    and 25.66792 dB** - 0.00167 dB apart, from nondeterministic cuDNN backward
-    reductions (`torch.use_deterministic_algorithms` is not set, and setting it
-    would cost throughput for a property nothing here needs). That is the first
-    measurement of a quantity `AGENDA.md` correctly flags as never taken. It is a
-    **1-epoch** figure and a lower bound on the 60-epoch spread, so it does not
-    by itself license calling 0.087 dB significant - but it does put the noise
-    two orders of magnitude below it rather than nowhere.
+    **Not safe to assume: this loop is not bit-reproducible.** Two 1-epoch r1
+    runs at seed 0, same machine, nothing changed, gave **25.66625 and 25.66792
+    dB**, 0.00167 dB apart, because cuDNN's backward pass is not deterministic
+    (`torch.use_deterministic_algorithms` is off, and turning it on would cost
+    speed for no benefit here). That is a **1-epoch** figure and only a lower
+    bound on the 60-epoch spread, so it does not prove 0.087 dB is significant,
+    but it puts the noise about 50x below it rather than unknown.
 
-    The measured data path, for the same reason: `_batch` is **0.47 ms of a 40 ms
-    step, 1.2%**. A pinned staging buffer takes it to 0.20 ms and buys nothing.
-    `non_blocking=True` in `_batch` is a documented no-op on pageable memory.
+    The data path is measured too: `_batch` is **0.47 ms of a 40 ms step
+    (1.2%)**. A pinned staging buffer brings it to 0.20 ms and gains nothing.
+    `non_blocking=True` in `_batch` does nothing on ordinary (unpinned) memory.
     Do not spend time there.
 
-    Every hyperparameter default is a *starting point, not a measurement* - the
-    plan says so explicitly and they are expected to move.
+    Every hyperparameter default is a *starting point, not a measurement*; they
+    are expected to change.
     """
     _keep_awake()
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -605,8 +591,8 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     warm = max(1, int(warmup * total))
 
     def lr_at(step: int) -> float:
-        """Linear warmup then cosine. The warmup is cheap insurance: a cold
-        start can drive the bottleneck `tanh` straight into saturation."""
+        """Linear warmup, then cosine decay. The warmup is cheap insurance: a
+        cold start can push the bottleneck `tanh` straight into saturation."""
         if step < warm:
             return lr * (step + 1) / warm
         p = (step - warm) / max(1, total - warm)
@@ -626,9 +612,8 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
           f"preload {load_s:.1f}s")
     print(f"  levels {list(levels)} quantize={quantize} attention={attention} on {dev}")
 
-    # A fixed train subsample, so the train-val gap compares two numbers
-    # measured the same way rather than a moving loss average against a
-    # full-split eval.
+    # A fixed training subsample, so the train-vs-val gap compares two numbers
+    # measured the same way, not a running loss average against a full eval.
     train_eval = np.sort(rng.choice(len(train_idx),
                                     size=min(eval_frames, len(train_idx)), replace=False))
 
@@ -636,24 +621,21 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     if resume is not None:
         ck = torch.load(ROOT / "runs" / resume / "model.pt", map_location=dev,
                         weights_only=False)
-        # Every knob that changes the computation being resumed. `lr_floor`,
-        # `warmup` and `weight_decay` were missing from this list until
-        # 2026-08-29, and all three are load-bearing: the first two are read by
-        # `lr_at` on every step and the third by AdamW, so resuming with a
-        # different one silently changed the schedule mid-run while the flag's
-        # own help text promised "every knob must match". Not reachable from the
-        # CLI, which exposes none of the three - but `train()` is called directly
-        # by anything driving a ladder from Python, which is how R1 and R2 ran.
+        # Every setting that changes the computation being resumed. All of them
+        # matter: `lr_floor` and `warmup` are read by `lr_at` every step and
+        # `weight_decay` by AdamW, so resuming with a different value would
+        # silently change the schedule mid-run. The CLI does not expose those
+        # three, but `train()` is also called directly from Python, which is how
+        # R1 and R2 were run.
         #
-        # `rung`, `device` and the derived entries (`params`, `steps_per_epoch`,
-        # the frame counts) are deliberately still unchecked: resuming onto a
-        # second machine is a case this has to keep allowing, and those differ
-        # without changing the computation.
-        # `encoder_norm` changes the architecture, so a mismatched resume would
-        # not even load. It is last on purpose: every checkpoint written before
-        # 2026-08-29 predates it and is refused by the `k in ck["knobs"]` assert
-        # below, which is the honest answer - none of them can be *shown* to
-        # match, and no run was in flight when it was added.
+        # `rung`, `device` and derived values (`params`, `steps_per_epoch`, the
+        # frame counts) are deliberately not checked: resuming on another machine
+        # must stay possible, and those can differ without changing the maths.
+        #
+        # `encoder_norm` changes the architecture, so a mismatch would not even
+        # load. Checkpoints older than this key are refused by the
+        # `k in ck["knobs"]` assert below, which is right: they cannot be *shown*
+        # to match.
         for k in ("levels", "attention", "quantize", "batch", "lr", "lr_floor",
                   "warmup", "weight_decay", "epochs", "seed", "encoder_norm"):
             assert k in ck["knobs"], (
@@ -666,18 +648,12 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         rng.bit_generator.state = ck["np_rng"]
-        # `.cpu()` is load-bearing, not defensive. `torch.load(map_location=dev)`
-        # above moves **every** tensor in the checkpoint to the GPU, the two RNG
-        # states included, and `set_rng_state` takes a CPU ByteTensor only - so
-        # both calls raised `TypeError: RNG state must be a torch.ByteTensor` and
-        # `--resume` could not survive its own first line on CUDA.
-        #
-        # Found 2026-08-29, by writing the first test that ever called it. The
-        # path was added after the `nn.Upsample` crash to make a mid-flight death
-        # cost one epoch instead of ninety minutes, was never exercised, and
-        # would have failed at the moment it was finally needed - the R1 60-epoch
-        # rerun started from scratch at epoch 0 rather than resuming the run that
-        # had just died at epoch 6.
+        # `.cpu()` is required. `torch.load(map_location=dev)` above moves
+        # **every** tensor in the checkpoint to the GPU, including both random
+        # states, and `set_rng_state` only takes a CPU ByteTensor. Without it,
+        # `--resume` on CUDA fails immediately with `TypeError: RNG state must be
+        # a torch.ByteTensor`. That bug went unnoticed until the first test that
+        # actually exercised resume.
         torch.set_rng_state(ck["torch_rng"].cpu())
         if ck["cuda_rng"] is not None and dev.type == "cuda":
             torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
@@ -713,17 +689,16 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
             print(f"  epoch {epoch + 1:>2}/{epochs}  val {val_db:6.3f} dB  "
                   f"train {tr_db:6.3f} dB  gap {tr_db - val_db:+.3f}  "
                   f"{time.perf_counter() - wall:6.1f}s")
-            # Overwrite every epoch, not only at the end, and carry enough to
-            # *resume* rather than only to evaluate. Two runs have now been lost
-            # mid-flight to the `nn.Upsample` frame-corruption crash recorded in
-            # the verification log, which is a native-layer fault this code
-            # cannot prevent - so the answer is to make it cost one epoch
-            # instead of ninety minutes. 4 MB and ~40 ms.
+            # Saved every epoch, not only at the end, with enough state to
+            # *resume*, not just evaluate. Two runs were lost mid-run to a native
+            # `nn.Upsample` crash (see the verification log) that this code cannot
+            # prevent, so the fix is to make a crash cost one epoch instead of
+            # ninety minutes. 4 MB and ~40 ms.
             #
-            # The RNG states are saved rather than the epoch reseeded, because
-            # reseeding per epoch would change the data order and make a resumed
-            # rung incomparable to the rungs already measured - and the whole
-            # point of R1 here is a 0.06 dB comparison against R2.
+            # The random states are saved instead of reseeding each epoch, because
+            # reseeding would change the data order and make a resumed rung
+            # incomparable with those already measured, and R1 vs R2 is a
+            # comparison of under 0.1 dB.
             torch.save({"state_dict": model.state_dict(), "knobs": knobs, **hashes,
                         "epoch": epoch, "opt": opt.state_dict(),
                         "np_rng": rng.bit_generator.state,
@@ -738,8 +713,8 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
         out = dict(knobs, run_id=run.run_id, val_psnr_db=val_db, train_psnr_db=tr_db,
                    gap_db=tr_db - val_db, val_mse01=val_mse,
                    train_s=round(time.perf_counter() - wall, 1), **hashes)
-        # `epoch` too, because the final record also matches a `val_psnr_db`
-        # filter and a reader that groups by epoch would trip over its absence.
+        # Include `epoch` too: the final record also has `val_psnr_db`, and a
+        # reader grouping those records by epoch would break without it.
         run.log({"final": True, "epoch": epochs - 1, **out})
         torch.save({"state_dict": model.state_dict(), "knobs": knobs, **hashes},
                    run.dir / "model.pt")
@@ -751,12 +726,12 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
 # ----------------------------------------------------------------- self-check
 
 def _self_check() -> None:
-    """5a and 5b without touching data, per the plan's working-when.
+    """Checks the quantizer and the network without touching any data.
 
-    The gradient row is the load-bearing one: 0.858 / 1.001 / 0.668 are recorded
-    measurements, and reproducing all three at once pins `eps`, `offset`, `shift`
-    and the normalisation simultaneously. `codes_to_indices` and its bijection
-    are not here - nothing needs them until R1.
+    The key check is the gradient: 0.858 / 1.001 / 0.668 are recorded
+    measurements, and reproducing all three at once pins down `eps`, `offset`,
+    `shift` and the scaling together. It also checks that `codes_to_indices`
+    is one-to-one and that `encode` behaves.
     """
     torch.manual_seed(0)
     z = torch.linspace(-25, 25, 20001)
@@ -768,12 +743,11 @@ def _self_check() -> None:
         for c, n in enumerate(levels):
             got = torch.unique(codes[:, c]).numel()
             assert got == n, f"levels {levels} dim {c}: {got} distinct values, expected {n}"
-        # The bijection 5a's working-when names. `unique` comes back sorted, so
-        # the cartesian product is every code tuple exactly once; the ids must
-        # then be 0..prod(levels)-1 with nothing missing and nothing doubled.
-        # Asserting on the *sorted* ids checks injective and onto together - a
-        # wrong place value would still produce prod(levels) values, just not
-        # those ones.
+        # codes_to_indices must be one-to-one. `unique` returns sorted values, so
+        # the cartesian product is every code combination exactly once, and the
+        # ids must be 0..prod(levels)-1 with none missing and none repeated.
+        # Comparing the *sorted* ids checks both at once: a wrong place value
+        # would still give prod(levels) ids, just not those ones.
         vals = [torch.unique(codes[:, c]) for c in range(len(levels))]
         tuples = torch.cartesian_prod(*vals) if len(levels) > 1 else vals[0][:, None]
         ids = q.codes_to_indices(tuples.T.reshape(1, len(levels), -1, 1)).flatten()
@@ -819,8 +793,8 @@ def _self_check() -> None:
                   f"{tuple(x.shape[1:])} -> {tuple(zed.shape[1:])} -> {tuple(y.shape[1:])}, "
                   f"output [{float(y.min()):+.3f}, {float(y.max()):+.3f}]")
 
-    # No tanh and no clamp on the output, so an untrained decoder must be free to
-    # leave [0, 1]. A range pinned inside it would mean an activation crept in.
+    # No tanh and no clamp on the output, so an untrained decoder must be able to
+    # leave [0, 1]. If it cannot, an activation has crept in.
     wide = Tokenizer((8, 8, 8))
     out_conv = wide.decoder[-1]
     assert isinstance(out_conv, nn.Conv2d) and out_conv.bias is not None, \
@@ -844,8 +818,8 @@ def _self_check() -> None:
         print(f"attention={attention}: gradient reaches all {n} parameter tensors "
               f"through the quantizer, all finite")
 
-    # 5e rides entirely on `encode`, so check the three things a token cache
-    # needs from it before spending a pass over 300,000 frames finding out.
+    # The token cache depends entirely on `encode`, so check the three things it
+    # needs here, before spending a pass over 300,000 frames finding out.
     tok = Tokenizer((8, 8, 8), quantize=True)
     tok.eval()
     ids = tok.encode(x)
@@ -861,17 +835,17 @@ def _self_check() -> None:
     print(f"encode: ids {tuple(ids.shape)} in [{int(ids.min())}, {int(ids.max())}], "
           f"deterministic, and refuses a continuous bottleneck")
 
-    # The whole point of the `r1c` rung, asserted rather than assumed. Backward
-    # from one latent cell and count the input pixels with a nonzero gradient.
-    # Three stride-2 3x3 convs give a conv field of 2*(2*(2*1+1)+1)+1 = 15, so
-    # channel-only normalisation must read exactly 15x15 for an interior cell,
-    # and GroupNorm - whose statistics span the feature map - must read the whole
-    # 64x64 frame. `bench/patch_probe.py`'s RF = 22 is neither.
+    # The point of the `r1c` rung, asserted rather than assumed. Backpropagate
+    # from one latent cell and count input pixels with a nonzero gradient. Three
+    # stride-2 3x3 convs see 2*(2*(2*1+1)+1)+1 = 15 px, so channel-only
+    # normalisation must reach exactly 15x15 for a central cell, and GroupNorm,
+    # whose statistics cover the whole map, must reach the whole 64x64 frame.
+    # (The receptive field of 22 used in `bench/patch_probe.py` is neither.)
     def _support(encoder_norm: str) -> int:
         m = Tokenizer((8, 8, 8), encoder_norm=encoder_norm)
         xin = torch.rand(1, 3, h, w, requires_grad=True)
         m.encoder(xin)[0, :, grid[0] // 2, grid[1] // 2].sum().backward()
-        gin = xin.grad  # bound once: `.grad` is a property, so narrowing it in
+        gin = xin.grad  # read once: `.grad` is a property, so a type narrowing on it does not stick
         assert gin is not None, "backward produced no input gradient"
         return int((gin.abs().sum(1)[0] > 0).sum())
 
@@ -882,18 +856,18 @@ def _self_check() -> None:
     print(f"one latent cell's gradient support: channel-only {got_ch} px (15x15), "
           f"GroupNorm {got_gn} px ({h}x{w}, the whole frame)")
 
-    # `LocalNorm` is only a middle if its endpoints really are the endpoints, so
-    # window 1 has to reproduce `ChannelNorm` and the interior window has to land
-    # strictly between. 15 + 2*(K-1)*7 is the support arithmetic; K=5 gives 71,
-    # which overshoots the frame, so **r1w3 is the only interior rung available**
-    # and that is a property of the architecture rather than a choice.
+    # `LocalNorm` is only "in between" if its extremes match: window 1 must
+    # reproduce `ChannelNorm`, and window 3 must land strictly between. A token
+    # sees 15 + 2*(K-1)*7 px; K=5 gives 71, wider than the frame, so **r1w3 is
+    # the only in-between rung possible**, a fact of the architecture rather
+    # than a choice.
     torch.manual_seed(0)
     probe = torch.randn(2, 64, grid[0], grid[1])
     cn, ln = ChannelNorm(GN_GROUPS, 64), LocalNorm(GN_GROUPS, 64, 1)
     with torch.no_grad():
         delta = float((cn(probe) - ln(probe)).abs().max())
     assert delta < 1e-5, f"LocalNorm(window=1) differs from ChannelNorm by {delta:.2e}"
-    side_w3 = 15 + 2 * (3 - 1) * 7  # the conv field plus the window's reach
+    side_w3 = 15 + 2 * (3 - 1) * 7  # the conv window plus the norm window's reach
     got_w3 = _support("local3")
     assert side_w3 == 43 and got_w3 == side_w3 * side_w3 == 1849, \
         f"local3 reaches {got_w3} pixels, expected {side_w3}x{side_w3}"
@@ -934,8 +908,8 @@ def main() -> None:
 
     cfg = config.load(args.config)
 
-    # Imported here, not at module level: `fsq_eval` imports this file, so a
-    # top-level import back would be a cycle. Function-local is the boring fix.
+    # Imported here, not at the top: `fsq_eval` imports this file, so a
+    # top-level import back would be circular.
     if args.tokens is not None:
         from mirage.fsq_eval import write_token_cache
         write_token_cache(args.tokens, cfg, batch=args.batch)
@@ -944,8 +918,8 @@ def main() -> None:
 
     if args.eval is not None:
         from mirage.fsq_eval import evaluate
-        # Nonzero exit when a pass/fail row misses, so the gate is usable from a
-        # script and not only by reading the table.
+        # Nonzero exit when a pass/fail row fails, so scripts can use the gate
+        # without reading the table.
         raise SystemExit(1 if evaluate(args.eval, cfg)["failed_rows"] else 0)
 
     assert args.run is not None
@@ -955,9 +929,10 @@ def main() -> None:
                 quantize=rung["quantize"], attention=rung["attention"],
                 encoder_norm=rung.get("encoder_norm", "group"))
     db = out["val_psnr_db"]
-    # Row 1 and row 2 of the gate, the two that can disagree. Row 1 passing while
-    # row 2 fails means the val split got easier, not that the model got better -
-    # which is why both are printed rather than the headline alone.
+    # Gate rows 1 and 2 (the 30 dB target, and the margin over the k-means
+    # baseline), which can disagree. Row 1 passing while row 2 fails means the
+    # validation split got easier, not that the model got better, so both are
+    # printed, not just the headline.
     print(f"\n{args.run.upper()} {out['run_id']}: held-out {db:.3f} dB")
     print(f"  row 1  vs the {PSNR_BAR_DB} dB Q-1 bar:            {db - PSNR_BAR_DB:+.3f} dB")
     floor = kmeans_floor_db(cfg)
