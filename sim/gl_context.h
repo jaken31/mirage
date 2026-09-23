@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <mujoco/mujoco.h>
 
 // Only a pointer to GLFW's window type is used here, so a forward declaration
@@ -39,10 +41,19 @@ public:
   // recomputes it or hardcodes 64.
   mjrRect viewport() const { return viewport_; }
 
+  // glGetString(GL_RENDERER) and glGetString(GL_VERSION), read once at setup,
+  // for the shard sidecar. GL_VERSION carries the driver version on NVIDIA
+  // ("4.6.0 NVIDIA 610.57.04") and Mesa alike. Empty only if the driver
+  // returned null for GL_VERSION.
+  const std::string& renderer() const { return renderer_; }
+  const std::string& version() const { return version_; }
+
 private:
   GLFWwindow* window_ = nullptr;
   // The constructor does the real setup (mjr_defaultContext). Zeroing here only
   // ensures no field is garbage if construction aborts partway.
   mjrContext con_ = {};
   mjrRect viewport_ = {};
+  std::string renderer_;
+  std::string version_;
 };

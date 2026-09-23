@@ -30,10 +30,18 @@
 // Not recomputed, but still checked: main.cpp's VerifyDataHash asks
 // mirage/config.py what the config hashes to and aborts on a mismatch, so a
 // stale hash never reaches this writer.
+//
+// gl_renderer and gl_version are GlContext's GL_RENDERER and GL_VERSION. They
+// name the GPU and driver that drew the frames, which data_hash cannot: it
+// covers the config and scene, and two GPUs render different bytes from the
+// same ones (runs.jsonl r55). They go in the sidecar only, so data_hash and
+// shards written before them are unaffected.
 struct ShardProvenance {
     std::string data_hash;
     std::string git_sha;
     int seed;
+    std::string gl_renderer;
+    std::string gl_version;
 };
 
 // The stored contact_mask byte holds two fields. Bits 0..6 are
@@ -143,6 +151,7 @@ private:
 //   both data files are exactly frames * per-frame bytes, so nothing padded them
 //   every meta field decodes at the offset the layout says
 //   shard_offset_fits rejects an overflowing offset without ending the process
+//   the sidecar parses as JSON and the GL strings survive its escaping
 //
 // What it does not check: that numpy reads the same bytes. mirage/data.py's
 // self-check does that.
