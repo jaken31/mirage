@@ -111,40 +111,59 @@ irreversible-and-silent first, expensive second, and reported-only last.
 
 ### Before item 1: strictly-causal against block-causal attention
 
-**Ordered 2026-09-22 to run before item 1, and it has not run.** The F-11 row in
-"Requirements at risk" in `world_model_requirements.md` records it:
-strictly-causal against block-causal attention, measured at a fixed step budget.
-It goes ahead of item 1 for item 1's own reason - the mask is baked into every
-checkpoint trained under it - and because it decides whether F-11's description
-still holds. Under block-causal attention the model predicts a frame's tokens
-together, and "predicts next token" would stop describing it. The requirement's
-own fallback is a second, separately dated amendment to F-11's description if
-block-causal is selected, and none if strictly-causal is.
+**Ordered 2026-09-22 to run before item 1, and it ran: block-causal is
+selected** - `runs.jsonl` r54, `bench/mask_probe.py`, 2026-09-23. It went ahead
+of item 1 for item 1's own reason - the mask is baked into every checkpoint
+trained under it - and because it decided whether F-11's description still
+holds. It does not: `world_model_requirements.md` carries the second,
+separately dated amendment the requirement prescribed, and the 2026-09-22
+restatement of F-11's acceptance test is untouched.
 
-**This plan does not take it and quotes no result.** The items below are
-written for strictly-causal attention, which is what F-11's description says
-today and what r49 timed: `bench/dyn_size_probe.py` builds its mask as
-`torch.triu` over all 975 positions. A block-causal result changes three things,
-listed here so they are found in one place:
+**What r54 found, in one paragraph - quote r54, not this.** Both arms fed one
+token stream and were scored on the next frame each *generated* from
+ground-truth context. Block-causal led by 2.40 points against a seed spread of
+0.20. Strictly-causal reads the true earlier cells of its own target frame under
+teacher forcing and its own guesses at rollout, and the gap between those two
+readings of one checkpoint is larger than its whole deficit to block-causal. So
+**gate row 1's measure taken as teacher-forced accuracy would have picked the
+wrong arm**. Under
+block-causal the two readings are one number. Neither arm beat persistence at
+r54's one-epoch endpoint, which is past both arms' held-out minimum. That is
+item 4's overfitting risk showing up on schedule, not an F-11 verdict. **The
+recorded trigger to reopen the mask:** a generated-frame comparison at each
+arm's held-out optimum, on r54's population, with strictly-causal ahead by more
+than the seed spread. r54 did not measure that.
 
-- **item 3's causality assert** moves from per position to per frame: altering
-  a token in frame `f` leaves every logit in the frames before `f` identical,
-  and may change any logit inside frame `f`.
+**The items below were written for strictly-causal attention**, which is what
+r49 timed: `bench/dyn_size_probe.py` builds its mask as `torch.triu` over all
+975 positions. The block-causal result changes four things, listed here so they
+are found in one place, and **these now govern wherever an item below says
+otherwise**:
+
+- **item 3's causality assert** moves from per position to per block, a block
+  being frame `t`'s 64 tokens plus `action[t+1]`: altering a token in block `b`
+  leaves every logit in the blocks before `b` identical, and may change any
+  logit inside block `b`.
 - **item 3's loss and item 6's decode step**: a frame's 64 predictions come out
   together rather than one position at a time. F-12's fixed step count and "all
   64 positions every step" hold under either mask.
 - **how a frame's positions are fed in training.** A frame cannot be both the
-  input and the target of its own block, so block-causal needs a different
-  arrangement of inputs and targets. What that arrangement is belongs to the
-  measurement's own row, not to this plan. Decision 2's alignment - both tokens
-  read at the same record index, and the phase assertion - holds under either
-  mask.
+  input and the target of its own block. r54's arrangement keeps decision 2's
+  stream exactly and only regroups it: blocks of 65, frame t's 64 tokens plus
+  the action after them, `action[t+1]`, full attention inside a block and
+  causal across blocks. Frame t+1's cell i is read at the position holding frame
+  t's cell i. `bench/mask_probe.py`'s `layout` is that arrangement, and its
+  `--self-check` asserts it. Decision 2's alignment - both tokens read at the
+  same record index, and the phase assertion - holds under either mask.
+- **how long a training sequence is.** A `ctx + 1` window of 16 frames feeds
+  15 blocks, **975 positions** - r49's priced length - because the last frame
+  is only ever a target. Item 1's derived 1,040 is the strictly-causal figure.
 
-The order records "at a fixed step budget" and no more. The budget, the score
-and the population are for the measurement to state in its own `runs.jsonl`
-row. **A suggestion, not part of the order:** scoring it on gate row 1's
-measure - held-out per-cell accuracy against the persistence baseline on the
-same population - would make its result readable against F-11 directly.
+The order recorded "at a fixed step budget" and no more. r54 states the
+budget, the score and the population: one epoch at batch 16, two seeds per arm,
+per-cell accuracy of the generated next frame against persistence, over every
+val window's last frame. The plan's suggestion - gate row 1's measure - was
+taken in that generated form, for the reason in the paragraph above.
 
 ### 1. The sequence layout, and the token/action window sampler
 
@@ -208,7 +227,9 @@ context plus the frame it predicts. `WindowSampler.__init__` sets
 the addressing, below, makes a Phase 2 window the sampler's window, and under
 teacher forcing its last frame is the one predicted from a full `ctx` of
 context, which is what F-13's rollout at 15 asks for. **Derived, not measured:**
-that sequence is 16 x 65 = **1,040** positions at `ctx` 15. Under RoPE the
+that sequence is 16 x 65 = **1,040** positions at `ctx` 15 - under
+strictly-causal attention. **Block-causal, selected by r54, feeds the same window
+as 975 positions**; see "Before item 1". Under RoPE the
 parameter count does not depend on sequence length, so r49's counts stand. Its
 tokens per epoch, step time and epoch time were all priced at 975 positions a
 window, and at 1,040 all three are higher by an amount r49 did not measure -
@@ -346,8 +367,9 @@ Three choices that are not stylistic:
   matmul and is explicitly not the implementation.
 - **Keep the causality claim asserted, not assumed.** A causal mask that is
   subtly wrong trains a model that reads the answer and then fails only at
-  rollout, hours later. The measurement before item 1 selects the mask; the
-  assert below is written for strictly-causal.
+  rollout, hours later. The measurement before item 1 selected block-causal
+  (r54), so the assert is the per-block form under "Before item 1", not the
+  strictly-causal one written below.
 
 **Working when:** `python -m mirage.dynamics` self-checks with **no dataset and
 no checkpoint**, the way `mirage.config`, `mirage.logging` and `mirage.fsq`
@@ -542,7 +564,7 @@ requirements, and none of them moves a bar.** Row 1 is written against F-11 as
 
 | # | Measure | Bar | What the requirement actually says |
 |---|---|---|---|
-| 1 | Held-out next-token accuracy against the **persistence baseline** - copying the previous frame's token at the same cell - on the same held-out population as the model, with the marginal-frequency baseline reported alongside | **above the persistence baseline, re-measured with `bench/token_stability_probe.py` on the model's population.** r46 reads **85.67%** over its 12 val episodes on R1; that figure is the bar only on that population. Quote r46, do not restate it | **F-11** - "dynamics model consumes interleaved frame and action tokens, predicts next token", accepted when held-out accuracy beats the persistence baseline scored like-for-like on the same population, with the marginal-frequency baseline reported alongside. **Restated 2026-09-22** from "beats marginal-frequency baseline by 3x". Its description is still at risk - see "Before item 1" |
+| 1 | Held-out next-token accuracy against the **persistence baseline** - copying the previous frame's token at the same cell - on the same held-out population as the model, with the marginal-frequency baseline reported alongside | **above the persistence baseline, re-measured with `bench/token_stability_probe.py` on the model's population.** r46 reads **85.67%** over its 12 val episodes on R1; that figure is the bar only on that population. Quote r46, do not restate it | **F-11** - "dynamics model consumes interleaved frame and action tokens, predicts next token", accepted when held-out accuracy beats the persistence baseline scored like-for-like on the same population, with the marginal-frequency baseline reported alongside. **Restated 2026-09-22** from "beats marginal-frequency baseline by 3x". Its description was amended 2026-09-23 on r54 - see "Before item 1". Under block-causal the teacher-forced and generated accuracies are one number |
 | 2 | One full next frame from `ctx` frames plus one action, fixed step count | **exact**, no fallback path | **F-12** - as quoted above. All 64 positions decoded every step |
 | 3 | Rollout at `ctx` 4, 8 and 15 from one checkpoint | **runs** | **F-13** (S) - "configurable context length at load time". Item 2's gotcha is why this is an argument and not a config edit |
 | 4 | Frames until the frame-to-frame continuity verdict fires | **>= 200** | **Q-3** - the coherence horizon. The verdict bounds per-step change in `link_angle`, `link_extent` and each block's `bbox` centroid, calibrated so that **zero windows of ground-truth frames fire** - the same acceptance shape **F-9** uses, F-9 being "frame validator reports block count, arm pose plausibility, palette adherence", accepted at zero false positives on ground-truth frames. Calibrate on **reconstructions, not renders**; `bench/q3_blind_probe.py` is the regression test and must fire on 100% of 300-step substitutions and 0% of clean reconstructions |
@@ -564,11 +586,12 @@ marginal-frequency column is where it first gets a number.
 
 ---
 
-## Decisions: eight taken, one open, one on its trigger, one waiting on a measurement
+## Decisions: nine taken, one open, one on its trigger
 
 Each one changes an item above, so each is named rather than quietly resolved.
-Decision 1 was taken 2026-09-18. The other seven were taken 2026-09-21, after a
-walkthrough of this plan's draft, and each is written down with its rationale.
+Decision 1 was taken 2026-09-18 and decision 9 on 2026-09-23, by measurement.
+The other seven were taken 2026-09-21, after a walkthrough of this plan's draft,
+and each is written down with its rationale.
 
 **1. F-11's acceptance test - DECIDED 2026-09-18: restated against the
 persistence baseline, and `world_model_requirements.md` carries it as of
@@ -686,10 +709,11 @@ healthy) rather than to buy a mitigation before that signature appears.
 not move. The equivalent figure is **unmeasured**, and item 4 says why it is
 not derived from the windowed epoch's 1.06 h.
 
-**9. Strictly-causal against block-causal attention - waiting on the
-measurement ordered 2026-09-22**, and taken by it rather than by argument. "Before
-item 1" says what it changes. Until it has run, F-11's description stands as
-written and the items above assume strictly-causal attention.
+**9. Strictly-causal against block-causal attention - DECIDED 2026-09-23 by the
+measurement ordered 2026-09-22: block-causal**, taken by it rather than by
+argument - `runs.jsonl` r54, under a rule fixed in code before the first step.
+"Before item 1" says what it changes and the trigger that would reopen it.
+F-11's description carries the second, separately dated amendment.
 
 ---
 
@@ -699,7 +723,7 @@ written and the items above assume strictly-causal attention.
 |---|---|---|
 | **A one-step action misalignment** | Every checkpoint conditions each frame on the wrong action, and Q-4 scores the wrong thing | **You do not**, from agreement: 93.9% against 95.6%, and the **wrong** reading scores higher, with both clearing Q-4's bar. Only the phase assert catches it - all 13,242 action changes sit at `step_idx % action_hold_steps == 0`. Assert it, and assert that a shift of one breaks it |
 | **Scoring gate row 1 against r46's 85.67% on another population, or on another tokenizer** | The row compares two statistics and reports the difference as skill | The row names episodes other than r46's 12 val ones, or a checkpoint other than R1. Re-measure the baseline with `bench/token_stability_probe.py` on the model's own population and checkpoint; r46's figure is the bar only on its own |
-| **Quoting r49's 975 positions as the training sequence** | Tokens per epoch, step time and epoch time are all understated, and a schedule built on them runs long | r49 prices `ctx x 65`, while `WindowSampler` holds `ctx + 1` frames - 16 at `ctx` 15 - and r49's own window count is the sampler's. Item 1 names the choice; re-take the timings at the sequence actually built |
+| **Quoting r49's 975 positions as the training sequence** | Tokens per epoch, step time and epoch time are all understated, and a schedule built on them runs long | r49 prices `ctx x 65`, while `WindowSampler` holds `ctx + 1` frames - 16 at `ctx` 15 - and r49's own window count is the sampler's. **Under the block-causal mask r54 selected, a 16-frame window is 975 input positions**, so the gap is the strictly-causal case's. Re-take the timings at the sequence actually built |
 | Putting the context length in `data.ctx` for F-13 | `data_hash` moves, `load_shards` refuses the 300,000 frames and `load_run` refuses the R1 checkpoint | Loudly, on the next run - which is the good case. The bad case is a session spent editing the register instead of passing an argument |
 | A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so E-4 has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` is in this state today, as a constant in `bench/dyn_size_probe.py` |
 | Calibrating Q-3's continuity verdict on **renders** | The verdict is tuned in the wrong regime and fires on ordinary decoder output | The same two-regime trap that cost Phase 1's build-order item 6 its obvious recipe: renders sit at `NUM-VAL-WORSTDIST` from the palette, reconstructions at `NUM-VAL-RECONDIST`. Calibrate on reconstructions |
@@ -760,13 +784,14 @@ No part of `mirage/dynamics.py` is written here, no run was launched, and no
 measurement was taken - there is no dataset and no checkpoint on the machine this
 was written on, so every number above is quoted from the record rather than
 earned here. **No `NUM-` id is minted**: registering a number is a separate,
-deliberate act, and until then r46 and r49 are what to quote. **No bar is
+deliberate act, and until then r46, r49 and r54 are what to quote. **No bar is
 moved here.** F-11's acceptance test was raised, not lowered, and
 `world_model_requirements.md` restated it on 2026-09-22; gate row 1 is written
 against that. Moving a bar *down* because a run missed it is the failure mode
-this project's discipline exists to prevent, and nothing here does that - no run
-has happened. **The decisions above are recorded here, not taken here**: they
-were taken 2026-09-18 and 2026-09-21, and the one new call this plan makes -
+this project's discipline exists to prevent, and nothing here does that - the
+one run since, r54, selected a mask and moved no bar. **The decisions above are
+recorded here, not taken here**: they were taken 2026-09-18, 2026-09-21 and
+2026-09-23, the last by r54's measurement, and the one new call this plan makes -
 `ctx + 1` frames a window, in item 1 - is written as a recommendation with its
 alternative. Phases 3 and 4 stay undrafted, which is "profile before changing
 anything" applied to planning.
