@@ -368,9 +368,10 @@ proposals against the requirements that already exist, not new requirements.
 Inherits R1 (named above), the fixed 512-code budget and the 64-token path. All
 three are settled and the reversal trigger is one-directional.
 
-**First, before item 1:** the strictly-causal against block-causal measurement
-ordered 2026-09-22. It has not run, and it decides whether F-11's description
-still stands - see the F-11 risk row in `world_model_requirements.md`.
+**The mask is decided: block-causal**, by the measurement ordered 2026-09-22 -
+`runs.jsonl` r54, 2026-09-23. F-11's description carries a second, dated
+amendment in `world_model_requirements.md`, and the plan's "Before item 1" lists
+the four things it changes. Item 1 is next.
 
 **Decided 2026-09-21**, with rationale in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

@@ -57,6 +57,25 @@ the first F-11 run that reports that baseline alongside is where the comparison
 gets a number. The tier and the description are unchanged, and no margin over
 persistence is set: the bar is the baseline itself.
 
+**F-11's description was amended 2026-09-23**, the second amendment and a separate
+one from the 2026-09-22 restatement above, which stands as written. The table
+row keeps its original wording; **this paragraph supersedes its "predicts next
+token"**, which now reads: *predicts the next frame's tokens together, each from
+the frames and actions before it.* The strictly-causal against block-causal
+measurement ordered 2026-09-22 selected **block-causal** - `runs.jsonl` r54,
+`bench/mask_probe.py`. Under it the 64 tokens of a frame attend to each other
+and are predicted in one pass from the earlier frames and the action that
+produced the frame, so no token is predicted from the one before it in the same
+frame, and "predicts next token" stopped describing the model. It won on the
+generated next frame from ground-truth context, 2.40 points ahead of
+strictly-causal against a seed spread of 0.20. Strictly-causal compounds its own
+early errors through the rest of a frame. **The acceptance test is unchanged**,
+and under block-causal the teacher-forced and generated accuracies are the same
+number by construction, so it has one reading. **r54 is not an F-11 verdict**:
+it scores two probe models at a one-epoch endpoint past their held-out
+minimum, and both sit below persistence on its population. The tier is
+unchanged.
+
 ### Inference and control
 
 | ID | Tier | Requirement | Acceptance test |
@@ -182,5 +201,5 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | **Q-4** | **Was measured 2026-08-28 to sit above its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene or `action_hold_steps` changes, and a Q-4 row quoting only the model's number is unfalsifiable | Report both numbers or the row does not count. `bench/hold_probe.py` produces the ground-truth term |
 | **Q-3** | **Was measured 2026-08-30 to terminate on a verdict blind to dynamics failure, and its terminator has been replaced** - see the row above. Residual risk: the continuity bound is calibrated on ground-truth frames, which are perfectly rendered, while Q-3's inputs are decoder output - the same two-regime trap that cost build-order item 6 its obvious recipe | Calibrate on **reconstructions**, not renders. Keep `bench/q3_blind_probe.py` as the regression test: a verdict that stops firing on the 300-step substitution has silently gone blind again |
 | **Q-5** | **Was measured 2026-08-30 to sit far below its own ceiling, and has been restated relative** - see the row above. Residual risk: the ground-truth term must be recomputed whenever the scene, the camera or the resolution changes, and a Q-5 row quoting only the model's number is unfalsifiable. The 1.1x factor is a judgement, not a measurement - nothing has established how much worse than the simulator a *bad* model reads on this statistic, so the bar may not discriminate | Report both numbers or the row does not count; `bench/link_drift_probe.py` produces the ground-truth term. Before Phase 3 quotes a Q-5 verdict, measure the statistic on a deliberately broken rollout - if it does not separate from the simulator's own reading, Q-5 has no discriminating power and should be retired rather than re-tuned. **Do not re-attempt the deprojection**: r50 records it as measured and refuted |
-| **F-11** | **Was restated 2026-09-22 against the persistence baseline** - see the paragraph under the Models table. **Its description is still at risk**: "predicts next token" is pending the measurement of strictly-causal against block-causal attention at a fixed step budget, ordered 2026-09-22 to run before Phase 2's first build item, the sequence layout. It has not run. Block-causal lets the tokens of one frame attend to each other, so the model would predict a frame's tokens together rather than each from the ones before it, and "predicts next token" would stop describing it. Residual risk: the baseline belongs to the tokenizer checkpoint, not to F-11 - r46 reads 85.67% on R1, 93.22% on r1c and 77.28% on R2 - so it moves whenever the tokenizer does | If block-causal is selected, restate the description in a second, separately dated amendment rather than editing this one. If strictly-causal is selected, the description stands. Re-run `bench/token_stability_probe.py` on any new tokenizer checkpoint and score against that figure, not against r46's R1 figure |
+| **F-11** | **Was restated 2026-09-22 against the persistence baseline** - see the paragraph under the Models table. **Its description was amended 2026-09-23** - see the second paragraph under the Models table. The measurement of strictly-causal against block-causal attention at a fixed step budget, ordered 2026-09-22 to run before Phase 2's first build item, ran as `runs.jsonl` r54 and selected block-causal, so "predicts next token" no longer describes the model. Two residual risks. r54 compared the arms at a one-epoch endpoint past both arms' held-out minimum, and neither arm's generated score at its optimum was measured. And the baseline belongs to the tokenizer checkpoint, not to F-11 - r46 reads 85.67% on R1, 93.22% on r1c and 77.28% on R2 - so it moves whenever the tokenizer does | Block-causal was selected, and the description is restated in the second, separately dated amendment rather than by editing the first. Reopen the mask only on a generated-frame comparison at each arm's held-out optimum, on r54's population, with strictly-causal ahead by more than the seed spread. Re-run `bench/token_stability_probe.py` on any new tokenizer checkpoint and score against that figure, not against r46's R1 figure |
 | P-6 | Two risks now. A software rasterizer instead of the GPU, ~50x slower; and `mjr_readPixels` fixed per-call cost under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms collapse to the single-pass render, near ~30 ms hand-roll a WGL pbuffer context |
