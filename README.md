@@ -25,12 +25,12 @@ decision changes, change it there first.
 | Item | Requirement | Status on this machine |
 |---|---|---|
 | GPU | RTX 5060, 8 GB, sm_120 | confirmed, capability (12,0) - **laptop variant** |
-| OS | **Native Windows** | Windows 11, Python 3.14.2 |
+| OS | **Native Windows or native Linux** - the machine dual-boots | Windows 11, Python 3.14.2. Omarchy (Arch, kernel 7.2.5), Python 3.14.7 |
 | CUDA | 12.8+ (Blackwell) | 13.0 |
 | PyTorch | cu128+ | 2.9.1+cu130 |
-| GL backend | **GLFW**, offscreen. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and ruled out | **verified 2026-08-26** - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
+| GL backend | **GLFW**, offscreen, on both. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and ruled out | **verified 2026-08-26 on Windows, 2026-09-23 on Linux** (with PRIME offload, see Build) - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
 | MuJoCo | 3.x, C API | **3.12.0, exercised** - 300,000 frames generated through it |
-| Compiler | C++20 | **MSVC, verified** - CMake generator `Visual Studio 18 2026`, `sim/main.cpp` prints `202002`. Both `sim/build/` and `sim/build-asan/` compile and run |
+| Compiler | C++20 | **MSVC, verified** - CMake generator `Visual Studio 18 2026`, `sim/main.cpp` prints `202002`. Both `sim/build/` and `sim/build-asan/` compile and run. **Linux: GCC 16.2.1 and Clang 22.1.8, verified 2026-09-23** - `202002`, warnings-clean under `-Werror`; the sanitizer build is Clang only |
 
 **WSL2 is out, and this is settled.** Its GPU graphics path is broken on this
 machine: no `/dev/dri` node, so Mesa falls back to a CPU rasterizer. The evidence
@@ -56,6 +56,12 @@ turns every timing in this repo into a meaningless number:
 ```bash
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
+
+On Linux, install into a venv first (`python -m venv .venv`, then
+`source .venv/bin/activate`): Arch's system Python refuses `pip install`
+(`externally-managed-environment`), and has no torch or pandas. The same two commands and pins then work unchanged -
+verified 2026-09-23 on Python 3.14.7, where the check below printed the
+expected line and `python check.py` passed.
 
 It must print `2.9.1+cu130 True`. The pins are `==` rather than `>=` on purpose:
 the `nn.Upsample` use-after-free that killed two 60-epoch runs is tied to this
@@ -121,9 +127,14 @@ closed - browsers, Teams, Discord, and the NVIDIA and Overwolf overlays all hold
 GPU contexts under WDDM.
 
 **Determinism caveat.** Bit-exact replay holds for a **fixed driver and
-build**. `/fp:fast` stays off; turning it on gives up the guarantee. Determinism
-is tested by generating twice at one seed and comparing the pixel blobs - there
-is no `--replay` mode.
+build**. `/fp:fast` stays off; turning it on gives up the guarantee. Measured
+across platforms 2026-09-23 (`runs.jsonl` r55): a GCC build on Linux, rendering on
+the same NVIDIA GPU, regenerated all 300,000 frames **byte-identical** to the
+Windows set. The Intel integrated GPU did not: 442 frames differ by one pixel, and
+71 `visible_px` counts by 1. So the GPU vendor decides the bytes, and the OS and
+compiler do not. Determinism (requirement F-4: same seed, same bytes) is tested
+by generating twice at one seed and comparing the pixel blobs - there is no
+`--replay` mode.
 
 ## Build
 
@@ -131,6 +142,8 @@ is no `--replay` mode.
 these commands in a directory that had never held this project. Nothing is vendored: MuJoCo 3.12.0, GLFW 3.5.1
 and nlohmann/json 3.12.0 are all fetched by CMake at configure time, pinned by
 SHA256 or tag in `sim/CMakeLists.txt`, so the first configure needs a network.
+
+### Windows
 
 Needs Visual Studio 2026 with the "Desktop development with C++" workload
 (measured against MSVC 19.50.35728, toolset 14.50.35717), CMake >= 3.20
@@ -182,3 +195,53 @@ configurations". It says nothing about a different toolchain.
 
 Run every command from the repo root. Config paths are repo-relative and the
 binary says so rather than guessing.
+
+### Linux
+
+**Verified 2026-09-23** on Omarchy (Arch) with CMake 4.4.3, Ninja, GCC 16.2.1 and
+Clang 22.1.8, from an empty build directory: 5.2 s configure, 5.3 s build, zero
+warnings. `sim/CMakeLists.txt` fetches MuJoCo's Linux tarball instead of the
+Windows zip, and copies `libmujoco.so.3.12.0` beside the binary, which finds it
+through an `$ORIGIN` RUNPATH. GLFW builds both its Wayland and X11 backends, so
+it needs their development files; on Arch they ship with `wayland`,
+`wayland-protocols`, `libxkbcommon`, `libx11`, `libxrandr`, `libxinerama`,
+`libxcursor` and `libxi`, all present on this machine. Nobody checked which of
+them is strictly required.
+
+```bash
+cmake -S sim -B sim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build sim/build
+```
+
+The sanitizer build adds UndefinedBehaviorSanitizer, and needs Clang: MuJoCo
+3.12.0's `mjsan.h` does not compile under GCC once AddressSanitizer is on, and
+CMake stops with that message rather than fail halfway through.
+
+```bash
+cmake -S sim -B sim/build-asan -G Ninja -DCMAKE_BUILD_TYPE=Release -DMIRAGE_ASAN=ON -DCMAKE_CXX_COMPILER=clang++
+cmake --build sim/build-asan
+```
+
+**Pick the NVIDIA GPU explicitly.** This laptop has two GPUs. Under Wayland, GLFW
+gets the Intel one (`GL_RENDERER: Mesa Intel(R) Graphics (ARL)`) by default. The
+hardware check passes, because it is real hardware, but it runs at about 1,000
+frames/s instead of 10,000 and renders a slightly **different dataset** under the
+same `data_hash`. Run the simulator through PRIME render offload:
+
+```bash
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+./sim/build/mirage_sim mirage/fixtures/fixture.json --data-hash <that hex> --git-sha $(git rev-parse HEAD)
+```
+
+It must print `GL_RENDERER: NVIDIA ...`. `llvmpipe` or `softpipe` is Mesa's
+software rasterizer, which the binary rejects.
+
+Run the sanitizer build with `ASAN_OPTIONS=detect_leaks=0`. LeakSanitizer does
+work on Linux, but every leak it found is in a library, and it exits nonzero
+anyway. The NVIDIA driver leaks about 1.7 KB per run, inside `libdbus` and in a
+driver module already unloaded when the report is made, so a suppression file
+cannot name it. GLFW 3.5.1's Wayland backend leaks about 140 KB each time the
+compositor sends a new keyboard keymap (window focus changes during a run do
+it): 6.7 MB over one 5-minute run. To leak-check this project's own code, run
+the fixture on the Intel GPU with leak checking on, which reports nothing.
