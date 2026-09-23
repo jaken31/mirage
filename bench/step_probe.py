@@ -16,20 +16,20 @@ assert model.opt.timestep == 0.002, f"expected timestep 0.002, got {model.opt.ti
 assert model.actuator_ctrllimited.all(), "ctrlrange is meaningless without crtllimited"
 DRIVE = model.actuator_ctrlrange[:, 1].copy()
 
-# Ids by prefix, not by hardcoded name: F-6/F-7 iterations are expected to edit
-# the scene, and a hardcoded list would silently drop a fourth block.
+# Find geoms by name prefix, not a hardcoded list: the scene is expected to be
+# edited, and a hardcoded list would silently miss a fourth block.
 NAMES = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) for i in range(model.ngeom)]
 ARM = np.array([i for i, n in enumerate(NAMES) if n and n.startswith("link")])
 BLOCK = np.array([i for i, n in enumerate(NAMES) if n and n.startswith("block")])
 assert ARM.size and BLOCK.size, f"no arm/block geoms found among {NAMES}"
 
 def arm_block_contacts(d):
-    """Contact rows pairing an arm link with a block.
+    """Number of contacts between an arm link and a block.
 
-    Excludes the table, which rests under every block and is why a plain
-    `ncon > 0` guard was vacuous. `d.contact` is already sliced to `ncon`
-    (verified, mujoco 3.12.0), so no truncation. Column order is not
-    guaranteed, hence both directions.
+    Ignores the table, which touches every block all the time and made a
+    plain `ncon > 0` check meaningless. `d.contact` already has exactly
+    `ncon` rows (checked on mujoco 3.12.0), so no slicing needed. The pair
+    order is not guaranteed, so both orders are counted.
     """
     g = np.asarray(d.contact.geom)                      # (ncon, 2)
     a, b = np.isin(g, ARM), np.isin(g, BLOCK)
@@ -55,7 +55,7 @@ def time_steps(drive, N, warmup, reset_every):
         mujoco.mj_step(model, data)
         t[i] = time.perf_counter_ns() - t0
         nc[i] = data.ncon
-        ab[i] = arm_block_contacts(data)      # costs more than mj_step; outside the timer
+        ab[i] = arm_block_contacts(data)      # slower than mj_step, so outside the timer
         if (i + 1) % reset_every == 0:
             restart()
 
@@ -80,10 +80,10 @@ for k, reps in out.items():
           f"  spread {(v.max() - v.min()) / np.median(v) * 100:4.1f}%")
 
     if k == "driven":
-        # Catches "the arm never touched a block". Below this is a finding about
-        # arm reach or reset cadence - do not lower it to make the run pass.
+        # Catches "the arm never touched a block". Falling below this says something
+        # about the arm's reach or the reset interval; do not lower it to pass.
         assert frac > 0.10, f"arm-block contact in only {frac:.1%} of steps - measurement invalid"
         med = np.median(t) / 1000.0
-        # 1850 us: the 2000 us frame P-6 allows at 500 fps, less render+readback and margin
+        # 1850 us: the 2000 us per frame that 500 frames/s allows, minus render, readback and margin
         print(f"driven median {med:.1f} us  |  budget 1850 us  "
               f"|  headroom {1850 / med:.0f}x  |  {1e6 / med:,.0f} steps/s")

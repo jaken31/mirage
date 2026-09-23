@@ -1,10 +1,11 @@
-#RULED OUT WSL RENDERING BECAUSE OF INCOMPATIBLE OPENGL DRIVER, SO THIS IS A HARDWARE EGL PROBE
+# Checks whether EGL can create a hardware (GPU) OpenGL context. Written for WSL,
+# where it showed the driver cannot: rendering in WSL is ruled out.
 
 
 import ctypes
 import os
 
-os.environ["EGL_PLATFORM"] = "surfaceless"  # for Mesa, to avoid X11 dependency
+os.environ["EGL_PLATFORM"] = "surfaceless"  # tells Mesa not to need an X11 display
 
 # --- constants, from EGL/egl.h ---
 EGL_DEFAULT_DISPLAY = None  # NULL
@@ -31,11 +32,10 @@ EGL_HEIGHT = 0x3056
 GL_VERSION = 0x1F02
 GL_VENDOR = 0x1F00
 GL_RENDERER = 0x1F01
-# Same config MuJoCo asks for, so a pass here implies a pass there.
 
 # --- C signatures ---
-# Declare every function before calling it. ctypes assumes a 32-bit int return,
-# which silently truncates 64-bit EGL handles.
+# Declare every function's types before calling it. ctypes otherwise assumes a
+# 32-bit int return, which silently cuts 64-bit EGL handles in half.
 libegl = ctypes.CDLL("libEGL.so.1")
 
 libegl.eglGetError.argtypes = []
@@ -74,6 +74,7 @@ print(f"EGL_VERSION      {query(display, EGL_VERSION)}")
 print(f"EGL_VENDOR       {query(display, EGL_VENDOR)}")
 print(f"EGL_CLIENT_APIS  {query(display, EGL_CLIENT_APIS)}")
 
+# The same config MuJoCo asks for, so passing here means MuJoCo would pass too.
 config_attributes = [
     EGL_RED_SIZE, 8,
     EGL_GREEN_SIZE, 8,

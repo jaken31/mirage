@@ -1,20 +1,21 @@
-"""Is the GPU clocked up under sustained load, and what does it deliver there?
+"""Does the GPU clock up under sustained load, and how fast is it then?
 
-The AGENDA blocker. Every compute floor in the fork table derives from an
-assumed 448 GB/s, and the first attempt measured 66-77 GB/s at 6.16 W - a
-low-power state, so it neither confirmed nor refuted the figure.
+Written to settle a planning question: the speed estimates assumed 448 GB/s of
+memory bandwidth, and the first attempt measured 66-77 GB/s at 6.16 W, which
+was a low-power state and so proved nothing either way.
 
-Two phases, because the two loads clock different domains:
+Two phases, because the two loads raise different clocks:
 
-  compute  fp16 matmul. SMs boost, and the driver *drops* the memory clock
-           because compute-bound work does not need it. Reported pstate follows
-           the memory domain, so it reads P4 here - that is correct behaviour,
-           not a failure. Judge this phase on SM clock and power instead.
-  memory   large copies. Memory clock goes to max and the pstate reads P0.
-           This is the only phase in which a bandwidth number is valid.
+  compute  fp16 matmul. The compute cores (SMs) speed up and the driver
+           *lowers* the memory clock, which compute-bound work does not need.
+           The reported power state (pstate) follows the memory clock, so it
+           reads P4 here. That is correct, not a failure; judge this phase on
+           SM clock and power draw instead.
+  memory   large copies. The memory clock goes to max and pstate reads P0.
+           Only this phase gives a valid bandwidth number.
 
-Pass is per phase. "P0 for the whole window" is not a usable criterion: no
-single load clocks both domains at once.
+Each phase passes or fails on its own. "P0 the whole time" cannot work as a
+test, because no single load raises both clocks at once.
 """
 import subprocess
 import threading
@@ -26,8 +27,8 @@ import torch
 assert torch.cuda.is_available(), "no CUDA device"
 DEV = torch.device("cuda")
 
-# nvidia-smi reports half the GDDR7 data rate, so bandwidth is clock x 2 x bytes.
-# 128-bit bus = 16 B, per the RTX 5060 Laptop product spec (not measurable here).
+# nvidia-smi reports half the memory's data rate, so bandwidth = clock x 2 x bus bytes.
+# 128-bit bus = 16 B, from the RTX 5060 Laptop spec (cannot be measured here).
 BUS_BYTES = 16
 SUSTAIN_S, MEASURE_AT_S, MEM_WARM_S = 35.0, 20.0, 10.0
 K = 8192
@@ -104,8 +105,8 @@ with Sampler() as smp:
     t0 = time.perf_counter()
     matmul_s = None
     while time.perf_counter() - t0 < SUSTAIN_S:
-        # Sync each iteration: without it the host queues kernels faster than the
-        # GPU drains them and banks minutes of backlog.
+        # Sync every iteration: otherwise the CPU queues work faster than the GPU
+        # finishes it and builds up minutes of backlog.
         torch.matmul(a, b, out=c)
         torch.cuda.synchronize()
         if matmul_s is None and time.perf_counter() - t0 >= MEASURE_AT_S:

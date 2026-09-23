@@ -1,44 +1,46 @@
-"""Calibrate F-9's palette verdict as a *quantile of distance*, not a pixel count.
+"""Try calibrating the validator's palette check as a *distance quantile* instead of a pixel count.
 
     python bench/palette_pctl_probe.py --run 20260829-005439-r1
     python bench/palette_pctl_probe.py --run <96x96 run> --config mirage/configs/base96.json
 
-Reads only: the run's `model.pt` and the shards. Writes nothing - the numbers go
-into `validator.offpalette_pctl` / `validator.offpalette_dist_max` and a
-`runs.jsonl` row by hand, the same way every other probe in `bench/` reports.
+Reads only the run's `model.pt` and the shards, and writes nothing. Results are
+copied into a `runs.jsonl` row by hand, like every other probe in `bench/`.
 
-**Why this probe exists.** Build order item 6 calibrated the palette verdict as
-`offpalette_px > N` - a count of pixels further than tau from every palette
-entry - and landed N = 350 at 64x64. A count is a *resolution-dependent*
-statistic, so the 96x96 fork needed its own N, and the obvious rescale by frame
-area (350 * 2.25 = 788) is wrong on this project's own evidence: 96% of squared
-error is edge geometry, and edge length scales 1.5x where area scales 2.25x. A
-quantile of the per-pixel distance is invariant to frame size by construction,
-so one threshold serves every resolution and the rescale question stops existing.
+Outcome: the quantile lost. The off-palette *fraction* (also measured here)
+became the validator's pass/fail number; see
+`validator.measure_pixels_only`.
 
-**The methodology is item 6's, deliberately unchanged**, so the two calibrations
-are comparable:
+**Why this probe exists.** The palette check was first calibrated as
+`offpalette_px > N` (a count of pixels further than tau from every palette
+colour), with N = 350 at 64x64. A count depends on resolution, so 96x96 needed
+its own N, and simply scaling by frame area (350 * 2.25 = 788) is wrong by the
+project's own evidence: 96% of squared error is at edges, and edge length
+grows 1.5x where area grows 2.25x. A quantile of per-pixel distance does not
+depend on frame size, so one threshold would serve every resolution.
 
-  1. fix the threshold at the maximum over *clean* held-out reconstructions, which
-     is zero false positives by construction;
-  2. measure what fraction of a decayed frame each setting then catches;
-  3. take the interior optimum.
+**The method is the original calibration's, unchanged**, so the two are
+comparable:
 
-The four decay proxies are item 6's four, for the same reason - a diverging world
-model produces mush, and these are the four shapes mush takes:
+  1. set the threshold at the maximum over *clean* held-out reconstructions,
+     which gives zero false alarms by construction;
+  2. measure what fraction of damaged frames each setting then catches;
+  3. take the best setting that is not at either end of the range.
 
-  * `blend`  - a 50/50 average of two futures, the hedge a model makes when it
-               cannot commit. This is the realistic one and the hardest to catch.
-  * `blur3`  - a 3x3 box blur iterated 4x, detail loss without colour drift.
-  * `noise16`- gaussian noise sigma 16, the high-frequency failure.
-  * `grey`   - collapse to uniform grey, the degenerate endpoint.
+The four kinds of damage are also the original four, because a failing world
+model produces mush, and these are the shapes mush takes:
 
-**What a quantile buys and what it costs.** It buys resolution invariance, which
-is the whole point. It costs the tail: at p99.9 on a 64x64 frame the statistic is
-the 4th-worst pixel of 4,096, so it is nearly the maximum and inherits the
-maximum's variance. At p99 it is the 41st-worst, much steadier but blind to a
-small bright fault. The ladder below is what decides, and the answer is expected
-to be interior for exactly that reason.
+  * `blend`  - a 50/50 average of two possible futures, what a model does when
+               it cannot commit. The most realistic and hardest to catch.
+  * `blur3`  - a 3x3 box blur applied 4 times: lost detail, no colour drift.
+  * `noise16`- gaussian noise with sigma 16, the high-frequency failure.
+  * `grey`   - collapse to uniform grey, the extreme case.
+
+**What a quantile gains and loses.** It gains resolution independence, the
+whole point. It loses on the extreme pixels: at p99.9 on a 64x64 frame it is
+the 4th-worst pixel of 4,096, nearly the maximum, and just as jumpy. At p99 it
+is the 41st-worst, much steadier but blind to a small bright fault. The range
+of quantiles tried below decides, and the best is expected to be in the middle
+for that reason.
 """
 
 import argparse
@@ -56,21 +58,21 @@ sys.path.insert(0, str(ROOT))
 from mirage import config, data, validator  # noqa: E402
 from mirage.fsq_eval import load_run, reconstruct  # noqa: E402
 
-# The ladder. Spans "41st-worst pixel of 4,096" to "2nd-worst", which is the
-# range over which the statistic stops being a max and starts being a summary.
+# The quantiles tried. From "41st-worst pixel of 4,096" to "2nd-worst": the
+# range where the statistic goes from almost a maximum to a summary.
 PCTLS = (0.99, 0.995, 0.999, 0.9995)
 PROXIES = ("blend", "blur3", "noise16", "grey")
-# `grey` is measured but **excluded from the pick**, and that is a finding rather
-# than a convenience. A frame collapsed to its own mean lands ~22 RGB units from
-# the table colour - inside any usable tau - so a uniform grey is *palette
-# plausible* and no palette statistic can see it, the count included. It is
-# caught by F-9's other two checks: every block's `px_count` goes to zero. Left
-# in the table so nobody re-derives that the hard way.
+# `grey` is measured but **excluded from the choice**, and that is a finding,
+# not a shortcut. A frame collapsed to its mean colour lands about 22 RGB units
+# from the table colour, inside any usable tau, so uniform grey *looks
+# on-palette* and no palette statistic can see it, the count included. The
+# validator's object checks catch it instead: every block's `px_count` drops to
+# zero. Kept in the table so nobody has to rediscover this.
 PALETTE_PROXIES = ("blend", "blur3", "noise16")
-# The candidate verdict statistics, in one table so the comparison is like for
-# like: the quantile ladder, then the off-palette *fraction* at tau.
+# The candidate pass/fail numbers, in one table so they are compared fairly:
+# the quantiles, then the off-palette *fraction* at tau.
 COLS = tuple(f"p{q:.4%}" for q in PCTLS) + ("offpal_frac",)
-SAMPLE = 4000  # frames per proxy - the clean side always uses the whole split
+SAMPLE = 4000  # frames per kind of damage; the clean side always uses the whole split
 
 
 def box_blur(x: np.ndarray, iters: int) -> np.ndarray:
@@ -86,11 +88,11 @@ def box_blur(x: np.ndarray, iters: int) -> np.ndarray:
 
 
 def decay(clean: np.ndarray, kind: str, rng: np.random.Generator) -> np.ndarray:
-    """One decay proxy over a (n, h, w, 3) uint8 batch. Returns uint8."""
+    """Apply one kind of damage to a (n, h, w, 3) uint8 batch. Returns uint8."""
     x = clean.astype(np.float64)
     if kind == "blend":
-        # Pair each frame with a *different* frame, never itself: a 50/50 blend
-        # of a frame with itself is the identity and would measure nothing.
+        # Pair each frame with a *different* frame, never itself: blending a
+        # frame with itself changes nothing and would measure nothing.
         x = 0.5 * x + 0.5 * x[rng.permutation(len(x))]
     elif kind == "blur3":
         x = box_blur(x, 4)
@@ -106,18 +108,17 @@ def decay(clean: np.ndarray, kind: str, rng: np.random.Generator) -> np.ndarray:
 def frame_stats(frames: np.ndarray, palette: validator.Palette,
                 pctls: tuple[float, ...], tau: float) -> np.ndarray:
     """(n, len(pctls) + 1) per frame: each distance quantile, then the off-palette
-    *fraction* at `tau` - the count statistic made resolution-free by dividing by
-    the frame's pixels.
+    *fraction* at `tau` (the pixel count divided by the frame's pixels, so it no
+    longer depends on resolution).
 
-    Both candidates in one pass, because `_label` re-derives the nearest-palette
-    mapping on each call and that is the expensive part. Measuring them together
-    is also the only way the comparison is fair: same frames, same decode.
+    Both in one pass, because `_label`'s nearest-colour matching is the expensive
+    part. Measuring them together also keeps the comparison fair: same frames,
+    same decode.
 
-    The two are different questions, which is the whole finding here. A quantile
-    asks *how far off* the frame's worst pixels are - a tail statistic. A fraction
-    asks *how much* of the frame is off - a bulk statistic. Uniform decay (grey
-    collapse, additive noise) is a bulk failure with a modest tail, so a tail
-    statistic cannot see it.
+    They answer different questions, which is the main finding. A quantile asks
+    *how far off* the worst pixels are. A fraction asks *how much* of the frame is
+    off. Damage spread over the whole frame (grey collapse, added noise) changes
+    many pixels a little, so the worst-pixel view misses it.
     """
     out = np.empty((len(frames), len(pctls) + 1), dtype=np.float64)
     n_px = float(frames.shape[1] * frames.shape[2])
@@ -154,9 +155,9 @@ def main() -> None:
     print(f"quantile ladder {PCTLS} - on {h * w:,} px those are ranks "
           f"{[int(round((1 - q) * h * w)) for q in PCTLS]} from the worst\n")
 
-    # --- the clean side: the whole val split, because the threshold is a MAX ---
-    # A max over a subsample is systematically smaller than a max over the whole
-    # split, so calibrating on a sample would set a threshold the gate then fails.
+    # --- clean frames: the whole validation split, because the threshold is a MAX ---
+    # A max over a sample is usually smaller than over the whole split, so
+    # calibrating on a sample would set a threshold the gate then fails.
     t0 = time.time()
     clean = reconstruct(model, val_idx, lut, np.arange(len(val_idx)))
     clean_q = frame_stats(clean, palette, PCTLS, tau)
@@ -168,7 +169,7 @@ def main() -> None:
               f"frame-p99 {np.quantile(col, 0.99):8.4f}   "
               f"max/median {thresholds[j] / max(np.median(col), 1e-9):.2f}x")
 
-    # --- the decay side, at exactly those thresholds ---
+    # --- damaged frames, at exactly those thresholds ---
     rng = np.random.default_rng(args.seed)
     take = rng.choice(len(val_idx), size=min(args.sample, len(val_idx)), replace=False)
     take.sort()
@@ -183,9 +184,9 @@ def main() -> None:
         detection[kind] = {n: float(r) for n, r in zip(COLS, hits)}
         print(f"  {kind:<9}" + "".join(f"  {r:>12.1%}" for r in hits))
 
-    # The pick is by the WORST proxy, not the mean. A verdict that catches three
-    # decay modes and misses the fourth is a verdict a diverging model walks
-    # straight through, and averaging hides exactly that.
+    # Choose by the WORST kind of damage, not the average. A check that catches
+    # three kinds and misses the fourth lets a failing model walk straight
+    # through, and averaging hides exactly that.
     worst = [min(detection[k][n] for k in PALETTE_PROXIES) for n in COLS]
     best = int(np.argmax(worst))
     print(f"\n  {'WORST*':<9}" + "".join(f"  {r:>12.1%}" for r in worst))

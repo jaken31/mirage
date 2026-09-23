@@ -1,37 +1,37 @@
-"""How much of F-7's occlusion rate is recoverable occlusion, and how much is a
-block that is simply gone.
+"""How much of the occlusion rate is a block briefly hidden, and how much is a
+block that is simply gone?
 
-F-7 counts a frame when any block reads `visible_px == 0`. Two different things
-answer yes to that, and the counter cannot tell them apart:
+The old occlusion counter counted a frame whenever any block read
+`visible_px == 0`. Two different things cause that, and the counter cannot
+tell them apart:
 
-  * the arm passes in front of the block - it comes back, which is the thing
-    F-7 exists to measure and the thing Q-6 scores object permanence on;
-  * the block leaves for good - knocked out of the camera's view, or off the
-    table - and reads 0 for every remaining frame of the episode.
+  * the arm passes in front of the block and it comes back. That is real
+    occlusion, the thing the object-permanence test scores a model on;
+  * the block leaves for good (pushed out of the camera's view, or off the
+    table) and reads 0 for the rest of the episode.
 
-The second inflates F-7 and would drag Q-6 down for a reason that has nothing to
-do with a model's memory: an "occlusion event" that can never end is one no
-model can be asked to recover from.
+The second inflates the rate, and would unfairly lower the object-permanence
+score: a block that never comes back is not something any model can be asked
+to remember.
 
-This probe is what measured that split, found the recorded cause of it wrong -
-no block has ever left the table - and produced the numbers **F-7 was restated
-on**. As of 2026-08-28 the requirement counts recoverable occlusion only, and
+This probe measured that split, showed the assumed cause was wrong (no block
+has ever left the table), and produced the numbers the occlusion requirement
+was rewritten on. It now counts only occlusion the block recovers from, and
 `mirage/validator.py` enforces it against
-`validator.recoverable_occlusion_rate_min`; the split itself lives in
-`mirage.data.seen_later`, which both this probe and the validator call.
+`validator.recoverable_occlusion_rate_min`. The split itself is
+`mirage.data.seen_later`, used by both this probe and the validator.
 
-What remains here that the validator does not do is the *why*: the per-block
-breakdown, and the camera projection that says a terminal run is a block pushed
-out of view rather than off the table.
+What this adds beyond the validator is the *why*: the per-block breakdown,
+and the camera projection showing that a block that never comes back was
+pushed out of view, not off the table.
 
     python bench/occlusion_probe.py
 """
 
 import pathlib
 import sys
-# stdlib ElementTree, for the reason mirage/validator.py records at length:
-# the only file parsed is scene/arm_blocks.xml, a version-controlled repo
-# artifact at the same trust level as this source. No XXE boundary to defend.
+# Standard-library ElementTree, as in mirage/validator.py: the only file parsed
+# is scene/arm_blocks.xml, which is in the repo and as trusted as this code.
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -43,8 +43,8 @@ from mirage import config, data  # noqa: E402
 
 cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
 
-# Table half-extent in x and y, read from the scene rather than restated as a
-# literal - the whole question here is whether a block can leave it.
+# Table half-size in x and y, read from the scene rather than hardcoded: the
+# whole question here is whether a block can leave it.
 scene_root = ET.parse(ROOT / cfg.sim["scene_xml"]).getroot()
 table = next(g for g in scene_root.iter("geom") if g.get("name") == "table")
 table_size = table.get("size")
@@ -57,11 +57,11 @@ episodes = cfg.sim["episodes"]
 steps = cfg.sim["steps_per_episode"]
 blocks = len([g for g in scene_root.iter("geom") if (g.get("name") or "").startswith("block")])
 
-# Episodes are contiguous, 0..episodes-1, and never split across a shard -
-# mirage/data.py's self-check asserts all three - so concatenating the shards in
-# index order and reshaping gives the episode axis. Asserted rather than
-# assumed: a silent off-by-one here would stitch two episodes together and every
-# "the block never came back" verdict below would be about the wrong frames.
+# Episodes are unbroken, numbered 0..episodes-1, and never split across shards
+# (mirage/data.py's self-check asserts all three), so joining the shards in
+# order and reshaping gives one row per episode. Asserted, not assumed: an
+# off-by-one here would join two episodes, and every "never came back" result
+# below would be about the wrong frames.
 meta = np.concatenate([np.asarray(s.meta) for s in shards])
 assert len(meta) == episodes * steps, f"{len(meta)} frames, expected {episodes * steps}"
 ep_id = meta["episode_id"].reshape(episodes, steps)
@@ -78,10 +78,9 @@ xy = np.stack([
 
 zero = visible == 0
 
-# "Comes back" = this block is visible at some strictly later step of the same
-# episode. `mirage.data.seen_later` owns that, because F-7's own acceptance check
-# in `mirage/validator.py` computes the same split and two implementations would
-# eventually disagree about which frames are occlusion.
+# "Comes back" means this block is visible at some later step of the same
+# episode. `mirage.data.seen_later` computes that, because the validator makes
+# the same split and two implementations would eventually disagree.
 seen_later = data.seen_later(visible)
 
 recoverable = zero & seen_later      # hidden now, visible again later this episode
@@ -107,9 +106,9 @@ for b in range(blocks):
     print(f"  block{b}: zero {zero[b].mean():6.2%}  recoverable {recoverable[b].mean():6.2%}  "
           f"terminal {terminal[b].mean():6.2%}  never visible in {never} of {episodes} episodes")
 
-# The knocked-off-the-table hypothesis, tested rather than assumed. The arm's
-# reach is ~0.33 m and the table is 1.2 m to each edge, so a block would have to
-# be pushed roughly four times the distance the arm can even touch.
+# The "knocked off the table" idea, tested rather than assumed. The arm reaches
+# about 0.33 m and the table is 1.2 m to each edge, so a block would need to go
+# about four times further than the arm can even reach.
 off_table = (np.abs(xy) > TABLE_HALF).any(axis=-1)
 print()
 print(f"worst |x| any block reached {np.abs(xy[..., 0]).max():.3f} m, "
@@ -117,9 +116,9 @@ print(f"worst |x| any block reached {np.abs(xy[..., 0]).max():.3f} m, "
       f"{TABLE_HALF[0]} / {TABLE_HALF[1]} m")
 print(f"frames with a block off the table: {int(off_table.sum())} of {off_table.size}")
 
-# Where a terminal run begins, if any. A block that stops being visible while
-# still well inside the table has left the *camera*, not the table - and a
-# "block is on the table" field would not have caught it.
+# Where each never-returns stretch begins, if any. A block that disappears
+# while well inside the table has left the *camera's view*, not the table, and
+# a "block is on the table" check would not have caught it.
 prev = np.concatenate([np.zeros_like(terminal[:, :, :1]), terminal[:, :, :-1]], axis=2)
 starts = terminal & ~prev
 if starts.any():
@@ -129,15 +128,15 @@ if starts.any():
 else:
     print("terminal runs: none - every block that goes to 0 px comes back")
 
-# Off the table or out of the camera? Different causes, different fixes, so it
-# is settled by projecting rather than argued. An axis-aligned box around the
-# positions that render will not do it - the frustum is a cone, so a block can
-# sit inside the worst-case |x| and |y| and still be outside the view.
+# Off the table, or out of the camera's view? Different causes need different
+# fixes, so settle it by projecting into the camera. A simple x/y box around the
+# positions that render is not enough: the view is a pyramid, so a block can be
+# inside the worst-case |x| and |y| and still be out of view.
 #
-# MuJoCo's `xyaxes` gives the camera's right and up in world coordinates; the
-# camera frame's z is right x up and the camera looks along -z. Default fovy is
-# 45 degrees and the frame is square, so the horizontal half-angle equals the
-# vertical one.
+# MuJoCo's `xyaxes` gives the camera's right and up directions in world
+# coordinates; the camera looks along -(right x up). The default vertical field
+# of view is 45 degrees and the frame is square, so the horizontal half-angle
+# is the same.
 camera = next(c for c in scene_root.iter("camera") if c.get("name") == "main")
 cam_pos_attr, cam_axes_attr = camera.get("pos"), camera.get("xyaxes")
 assert cam_pos_attr and cam_axes_attr, "the main camera has no pos/xyaxes"
@@ -146,20 +145,19 @@ axes = np.array([float(v) for v in cam_axes_attr.split()])
 right = axes[:3] / np.linalg.norm(axes[:3])
 up = axes[3:] / np.linalg.norm(axes[3:])
 forward = -np.cross(right, up)
-FOVY_DEG = float(camera.get("fovy") or 45.0)   # MuJoCo's default when unset
+FOVY_DEG = float(camera.get("fovy") or 45.0)   # MuJoCo's default when not set
 half = np.tan(np.radians(FOVY_DEG) / 2.0)
 
-# The block's centre is not enough. Blocks get pushed to within 0.196 m of a
-# camera that sits at y=-0.5, and at that range a 0.05 m cube subtends enough
-# angle that its centre leaves the frustum while a corner is still rendering.
-# The margin is the cube's circumradius, from the scene's own half-size - a
-# derived number, not one tuned until the check passed.
+# The block's centre is not enough. Blocks get pushed to within 0.196 m of the
+# camera, and that close a 0.05 m cube is big enough that its centre can leave
+# the view while a corner still shows. The margin is the cube's corner-to-centre
+# distance, from the scene's own half-size: derived, not tuned to pass.
 half_size = float(next(g for g in scene_root.iter("geom")
                        if (g.get("name") or "").startswith("block")).get("size").split()[0])
 RADIUS = half_size * np.sqrt(3.0)
 
-# Block centre height is the free-joint body's z from the scene, which is the
-# block half-size - they rest on the table at z=0.
+# Block centre height is the block body's z in the scene, which equals its
+# half-size, since blocks rest on the table at z=0.
 block_body = next(b for b in scene_root.iter("body")
                   if (b.get("name") or "").startswith("block"))
 block_z = float(block_body.get("pos").split()[2])
@@ -169,9 +167,9 @@ in_view = ((depth > -RADIUS)
            & (np.abs(rel @ right) < half * depth + RADIUS)
            & (np.abs(rel @ up) < half * depth + RADIUS))
 
-# The projection, checked against the renderer before any conclusion rests on
-# it: a block that rendered pixels must project inside the frustum. It does, on
-# all but a handful of frames out of 900,000.
+# Check the projection against the renderer before relying on it: a block
+# that rendered pixels must project inside the view. It does, on all but a
+# handful of 900,000 block-frames.
 seen = visible > 0
 agree = float(in_view[seen].mean())
 print()
