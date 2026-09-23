@@ -28,7 +28,7 @@ decision changes, change it there first.
 | OS | **Native Windows or native Linux** - the machine dual-boots | Windows 11, Python 3.14.2. Omarchy (Arch, kernel 7.2.5), Python 3.14.7 |
 | CUDA | 12.8+ (Blackwell) | 13.0 |
 | PyTorch | cu128+ | 2.9.1+cu130 |
-| GL backend | **GLFW**, offscreen, on both. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and ruled out | **verified 2026-08-26 on Windows, 2026-09-23 on Linux** (with PRIME offload, see Build) - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
+| GL backend | **GLFW**, offscreen, on both. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and ruled out | **verified 2026-08-26 on Windows, 2026-09-23 on Linux** (the binary selects the NVIDIA GPU itself, see Build) - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
 | MuJoCo | 3.x, C API | **3.12.0, exercised** - 300,000 frames generated through it |
 | Compiler | C++20 | **MSVC, verified** - CMake generator `Visual Studio 18 2026`, `sim/main.cpp` prints `202002`. Both `sim/build/` and `sim/build-asan/` compile and run. **Linux: GCC 16.2.1 and Clang 22.1.8, verified 2026-09-23** - `202002`, warnings-clean under `-Werror`; the sanitizer build is Clang only |
 
@@ -222,20 +222,26 @@ cmake -S sim -B sim/build-asan -G Ninja -DCMAKE_BUILD_TYPE=Release -DMIRAGE_ASAN
 cmake --build sim/build-asan
 ```
 
-**Pick the NVIDIA GPU explicitly.** This laptop has two GPUs. Under Wayland, GLFW
-gets the Intel one (`GL_RENDERER: Mesa Intel(R) Graphics (ARL)`) by default. The
-hardware check passes, because it is real hardware, but it runs at about 1,000
-frames/s instead of 10,000 and renders a slightly **different dataset** under the
-same `data_hash`. Run the simulator through PRIME render offload:
+**The binary picks the NVIDIA GPU itself; export nothing.** This laptop has two
+GPUs, and under Wayland GLFW gets the Intel one (`Mesa Intel(R) Graphics (ARL)`)
+by default. That one is real hardware, so the software check passes it, but it
+runs at about 1,000 frames/s instead of 10,000 and renders a slightly
+**different dataset** under the same `data_hash`. So on Linux `sim/gl_context.cpp`
+sets PRIME render offload (`__NV_PRIME_RENDER_OFFLOAD=1`, and
+`__GLX_VENDOR_LIBRARY_NAME=nvidia` for GLFW's X11 backend) before GLFW starts,
+overwriting whatever the shell had, and then refuses to render unless
+`GL_RENDERER` contains `NVIDIA`:
 
 ```bash
-export __NV_PRIME_RENDER_OFFLOAD=1
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 ./sim/build/mirage_sim mirage/fixtures/fixture.json --data-hash <that hex> --git-sha $(git rev-parse HEAD)
 ```
 
-It must print `GL_RENDERER: NVIDIA ...`. `llvmpipe` or `softpipe` is Mesa's
-software rasterizer, which the binary rejects.
+It prints `GL_RENDERER: NVIDIA ...` and `GL_VERSION: 4.6.0 NVIDIA <driver>`.
+Anything else stops the run before a frame is written: `software GL, not
+hardware` for Mesa's `llvmpipe` or `softpipe`, and `GL_RENDERER is '...', not
+NVIDIA` for another hardware GPU. The one setting that can still steer GLFW
+away is `__EGL_VENDOR_LIBRARY_FILENAMES` naming Mesa's vendor file, and the
+NVIDIA check stops that too. Windows is unchanged: the software check only.
 
 Run the sanitizer build with `ASAN_OPTIONS=detect_leaks=0`. LeakSanitizer does
 work on Linux, but every leak it found is in a library, and it exits nonzero
@@ -244,4 +250,6 @@ driver module already unloaded when the report is made, so a suppression file
 cannot name it. GLFW 3.5.1's Wayland backend leaks about 140 KB each time the
 compositor sends a new keyboard keymap (window focus changes during a run do
 it): 6.7 MB over one 5-minute run. To leak-check this project's own code, run
-the fixture on the Intel GPU with leak checking on, which reports nothing.
+the fixture with leak checking on and expect only the driver's share: about
+1.7 KB, all in `libdbus` or an unnamed module. The Intel GPU, which reported
+nothing, is no longer an option, because the binary refuses it.

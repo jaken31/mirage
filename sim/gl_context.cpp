@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <GLFW/glfw3.h>
 
 namespace {
@@ -22,6 +23,24 @@ namespace {
 GlContext::GlContext(const mjModel* model) {
     glfwSetErrorCallback(GlfwErrorCallback);
 
+#ifdef __linux__
+    // On Linux the dataset is rendered on the NVIDIA GPU and nothing else. On a
+    // hybrid laptop GLFW gets the integrated GPU by default, which renders 442
+    // of 300,000 frames one pixel differently under the same data_hash
+    // (runs.jsonl r55). PRIME render offload hands the context to NVIDIA:
+    // __NV_PRIME_RENDER_OFFLOAD alone is enough for EGL (GLFW's Wayland
+    // backend), and GLX (its X11 backend) also needs the vendor name.
+    //
+    // Set here rather than in a launch script, so every way of starting the
+    // binary gets them, and overwritten rather than defaulted, so a value left
+    // in the shell cannot undo the choice. It works because libglvnd reads
+    // both when it first picks a vendor, which is inside glfwInit or window
+    // creation, after this. The NVIDIA check below catches anything that still
+    // gets past, such as __EGL_VENDOR_LIBRARY_FILENAMES naming Mesa.
+    setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 1);
+    setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 1);
+#endif
+
     if (!glfwInit()) {
         mju_error("Failed to initialize GLFW");
     }
@@ -40,7 +59,8 @@ GlContext::GlContext(const mjModel* model) {
     // A software renderer is about 50x slower and quietly wrecks the
     // data-generation speed target (500 frames/s). Reject known software
     // renderers by name instead of allowing only this GPU, which would wrongly
-    // fail on any other good machine.
+    // fail on any other good machine. Linux adds a vendor check further down,
+    // for a different reason: which frames come out, not how fast.
     const GLubyte* renderer_raw = glGetString(GL_RENDERER);
     if (!renderer_raw) {
         mju_error("glGetString(GL_RENDERER) returned null - no current GL context");
@@ -51,7 +71,27 @@ GlContext::GlContext(const mjModel* model) {
             mju_error("software GL, not hardware: matched '%s' in '%s'", bad, renderer);
         }
     }
+
+#ifdef __linux__
+    // An allow-list on Linux, on top of the deny-list: real hardware from
+    // another vendor passes the deny-list and still renders different bytes.
+    // Windows keeps the deny-list alone.
+    if (!std::strstr(renderer, "NVIDIA")) {
+        mju_error("GL_RENDERER is '%s', not NVIDIA. On Linux the dataset is "
+                  "rendered on the NVIDIA GPU only - another GPU gives different "
+                  "frames under the same data_hash. The binary already sets PRIME "
+                  "offload, so check the NVIDIA driver is loaded and that "
+                  "__EGL_VENDOR_LIBRARY_FILENAMES does not point elsewhere",
+                  renderer);
+    }
+#endif
+
+    // GL_VERSION carries the driver version on NVIDIA ("4.6.0 NVIDIA
+    // 610.57.04") and on Mesa alike.
+    const GLubyte* version_raw = glGetString(GL_VERSION);
     printf("GL_RENDERER:  %s\n", renderer);
+    printf("GL_VERSION:   %s\n",
+           version_raw ? reinterpret_cast<const char*>(version_raw) : "(null)");
 
     mjr_defaultContext(&con_);
     mjr_makeContext(model, &con_, mjFONTSCALE_100);

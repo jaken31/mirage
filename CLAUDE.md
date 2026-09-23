@@ -61,14 +61,13 @@ copy between the two byte-identical.
 - **System Python (3.14.7) lacks torch and pandas and refuses `pip install`.** Use
   a venv at the repo root (`.venv/`, gitignored) with `requirements.txt`'s two
   commands; `python check.py` passes from it.
-- **Render on the NVIDIA GPU explicitly.** The laptop's default GL device under
-  Wayland is the Intel iGPU (`Mesa Intel(R) Graphics (ARL)`). It passes the
-  hardware check, runs ~10x slower, and renders a slightly different dataset
-  under the same `data_hash`. Set `__NV_PRIME_RENDER_OFFLOAD=1` and
-  `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json`,
-  then `GL_RENDERER` names the RTX 5060 and the full 300k set regenerates
-  byte-identical to the Windows one (`runs.jsonl` r55). Software GL here is
-  `llvmpipe`/`softpipe`, rejected by `sim/gl_context.cpp`.
+- **The simulator renders on the NVIDIA GPU only, and picks it itself.** The
+  laptop's default GL device under Wayland is the Intel iGPU (`Mesa Intel(R)
+  Graphics (ARL)`), which runs ~10x slower and renders a slightly different
+  dataset under the same `data_hash`. `sim/gl_context.cpp` sets PRIME offload
+  before GLFW starts and aborts unless `GL_RENDERER` contains `NVIDIA`, so no
+  environment variable is needed and the Intel path refuses (`runs.jsonl` r56).
+  Software GL here is `llvmpipe`/`softpipe`, rejected by the same file.
 - **The sanitizer build is Clang-only on Linux** - MuJoCo 3.12.0's `mjsan.h`
   breaks GCC under ASan - and it adds UBSan, which MSVC lacks.
 - **Keep-awake:** launch long runs under `systemd-inhibit --what=idle:sleep`;
