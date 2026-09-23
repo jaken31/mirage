@@ -7,7 +7,7 @@ simulator, and control the learned model in real time at 30 fps.
 
 | File | What |
 |---|---|
-| [docs/writeup_part1.md](docs/writeup_part1.md) | **The writeup, part one.** Phases 0-1, the dataset and the tokenizer, refutation-first. Start here to know what this *is*; start at AGENDA to know what to *do* |
+| [docs/writeup_part1.md](docs/writeup_part1.md) | **The writeup, part one.** Phases 0-1, the dataset and the tokenizer, told through what measurement refuted. Start here to know what this *is*; start at AGENDA to know what to *do* |
 | [AGENDA.md](AGENDA.md) | What to do next. Start here. |
 | [docs/world_model_architecture.md](docs/world_model_architecture.md) | How the pieces meet: interfaces, shard format, provenance, validator |
 | [docs/world_model_requirements.md](docs/world_model_requirements.md) | Tiered requirements and acceptance tests |
@@ -28,13 +28,13 @@ decision changes, change it there first.
 | OS | **Native Windows** | Windows 11, Python 3.14.2 |
 | CUDA | 12.8+ (Blackwell) | 13.0 |
 | PyTorch | cu128+ | 2.9.1+cu130 |
-| GL backend | **GLFW**, offscreen. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and an anti-choice | **verified 2026-08-26** - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
+| GL backend | **GLFW**, offscreen. EGL is unavailable on Windows MuJoCo; OSMesa is a CPU rasterizer and ruled out | **verified 2026-08-26** - `sim/gl_context.cpp` reads `NVIDIA GeForce RTX 5060 Laptop GPU/PCIe/SSE2`. The day-1 blocker cleared: `mjr_readPixels` is **25.4 us** RGB at 64x64, not the ~30 ms the MuJoCo discussion reported |
 | MuJoCo | 3.x, C API | **3.12.0, exercised** - 300,000 frames generated through it |
 | Compiler | C++20 | **MSVC, verified** - CMake generator `Visual Studio 18 2026`, `sim/main.cpp` prints `202002`. Both `sim/build/` and `sim/build-asan/` compile and run |
 
 **WSL2 is out, and this is settled.** Its GPU graphics path is broken on this
-machine - no `/dev/dri` node, Mesa falls back to a CPU rasterizer. Evidence in
-`CLAUDE.md`, produced by `bench/egl_probe.py`. Do not re-litigate it.
+machine: no `/dev/dri` node, so Mesa falls back to a CPU rasterizer. The evidence
+is in `CLAUDE.md`, produced by `bench/egl_probe.py`. Do not reopen it.
 
 ### Python packages
 
@@ -58,9 +58,9 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 It must print `2.9.1+cu130 True`. The pins are `==` rather than `>=` on purpose:
-the `nn.Upsample` use-after-free that killed two 60-epoch runs is specific to
-this python/torch pair, and a reproduction attempt elsewhere is worth nothing
-without them.
+the `nn.Upsample` use-after-free that killed two 60-epoch runs is tied to this
+python/torch pair, so an attempt to reproduce it on anything else is worth
+nothing.
 
 ## Checks
 
@@ -71,8 +71,8 @@ Every module owns a `_self_check()` and stays runnable alone -
 python check.py
 ```
 
-It exits nonzero if any fails, and orders them cheapest first, so a break in
-`config` surfaces in seconds rather than after `data` has swept 300,000 frames.
+It exits nonzero if any fails. It runs the cheapest first, so a break in
+`config` shows up in seconds rather than after `data` has swept 300,000 frames.
 `config`, `logging` and `fsq` need no dataset at all; `validator` and `data` fall
 back to the committed 40-frame fixture in `mirage/fixtures/` when `data/shards`
 is empty. This is a runner, not a test framework, and it does not reverse the
@@ -80,10 +80,11 @@ per-module choice recorded in `docs/phase0_debt_checklist.md`.
 
 It also validates `docs/canonical_numbers.md`, the register holding the current
 value of every number this project quotes in more than one place. Four checks, all
-chosen because they cannot false-positive: no id defined twice, every entry names
-a source, every `r<N>` source points at a `runs.jsonl` row that exists, and every
-`NUM-` id cited anywhere in the tree is defined. **Cite the id, not the value** -
-that is what lets a figure move in one place instead of seventeen.
+chosen because they cannot give a false alarm: no id defined twice, every entry
+names a source, every `r<N>` source points at a `runs.jsonl` row that exists, and
+every `NUM-` id cited anywhere in the tree is defined. Docs state their numbers in
+plain words; **when a number moves, update the register first**, then search the
+docs for the old value and for conclusions built on it.
 
 ## Taking a measurement
 
@@ -120,14 +121,14 @@ closed - browsers, Teams, Discord, and the NVIDIA and Overwolf overlays all hold
 GPU contexts under WDDM.
 
 **Determinism caveat (F-4).** Bit-exact replay holds for a **fixed driver and
-build**. `/fp:fast` stays off; enabling it forfeits the guarantee. F-4 is tested
-by generating twice at one seed and comparing the pixel blobs - there is no
-`--replay` mode.
+build**. `/fp:fast` stays off; turning it on gives up the guarantee. Determinism
+is tested by generating twice at one seed and comparing the pixel blobs - there
+is no `--replay` mode.
 
 ## Build
 
-**E-2, verified 2026-08-28** by running exactly these commands in a directory
-that had never held this project. Nothing is vendored: MuJoCo 3.12.0, GLFW 3.5.1
+**The clean-build requirement (E-2), verified 2026-08-28** by running exactly
+these commands in a directory that had never held this project. Nothing is vendored: MuJoCo 3.12.0, GLFW 3.5.1
 and nlohmann/json 3.12.0 are all fetched by CMake at configure time, pinned by
 SHA256 or tag in `sim/CMakeLists.txt`, so the first configure needs a network.
 
@@ -176,8 +177,8 @@ would show you:
 The ASan binary was run over the same 40-frame generation, into a throwaway
 shard directory: no sanitizer report, and its `.pixels` and `.meta` blobs are
 **byte-identical** to the Release build's. Same compiler, machine and driver, so
-this widens F-4's determinism from "same build, twice" to "two build
-configurations" - it does not say anything about a different toolchain.
+this widens the determinism result from "same build, twice" to "two build
+configurations". It says nothing about a different toolchain.
 
 Run every command from the repo root. Config paths are repo-relative and the
 binary says so rather than guessing.
