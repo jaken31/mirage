@@ -159,4 +159,4 @@ Three things that are normal and not signals to abandon the plan:
 
 1. **Phase 2 output looks bad for a while.** Rollouts drift, the arm smears. Expected.
 2. **Phase 4 numbers look flat at first.** Profile before changing anything. Guessing at optimizations is how weeks disappear.
-3. **Object permanence (Q-6) may not emerge at all.** It is a "should," not a "must." Measure it, report it either way, and ship without it if it does not come.
+3. **Object permanence may not emerge at all.** It is a "should," not a "must." Measure it, report it either way, and ship without it if it does not come.

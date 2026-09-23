@@ -28,7 +28,7 @@ trains on.
 
 Shards on disk -> `preload` recodes them to palette indices in RAM -> `encoder`
 -> `FSQ` -> `decoder` -> loss. After training: encode every frame once into the
-token cache, and re-run the validator's palette sweep (F-9) against
+token cache, and re-run the validator's palette sweep against
 reconstructions.
 
 Everything flows one direction. Nothing calls backwards.
@@ -116,8 +116,8 @@ packed to the 50,000 ceiling. The largest 96x96 shard is 1.19 GB. Do not derive
 the shard count from `frames_per_shard` - read a sidecar.
 
 Generation was measured at 4,560 fps on 2026-08-28 and lands 8.294 GB on disk.
-Together with the 64x64 set, that is still inside the 20 GB dataset ceiling
-(R-4). Two earlier figures for this line were wrong in opposite directions: "~45 s
+Together with the 64x64 set, that is still inside the 20 GB dataset ceiling.
+Two earlier figures for this line were wrong in opposite directions: "~45 s
 at 6,775 fps" came from a superseded throughput number, and scaling the measured
 64x64 cost by pixel count predicted 1.5-2 min. **2.25x the pixels costs 9% more
 wall clock** - 65.8 s against 60.2 s - because generation is dominated by physics
@@ -128,7 +128,7 @@ resolution change by pixel count.
 shards summing to 300,000 frames with the same per-shard frame counts as the
 64x64 set; the two directories report **different** `data_hash`es; and
 `mirage/validator.py` over the new set still reports at most 7 unique colours per
-frame. The flat-render requirement (F-2) does not depend on resolution, so a
+frame. The flat-render requirement does not depend on resolution, so a
 failure here means the render config did not survive the size change.
 
 **Done 2026-08-28**, all of the above, at `data_hash 35e5b8627987a2bb`. Both
@@ -138,10 +138,10 @@ script. An explicit path skips the fixture fallback on purpose, so a missing set
 fails by name instead of quietly checking 40 other frames.
 
 **One number moved, and it is the one that matters to the fork: recoverable
-occlusion (F-7) fell from 5.35% to 4.78%.** That is a 1.6x margin over the 3%
+occlusion fell from 5.35% to 4.78%.** That is a 1.6x margin over the 3%
 floor, against 1.8x at 64x64. It is the resolution working as intended - a bigger
 frame makes total occlusion rarer - but it means the 144-token path buys edge
-fidelity and spends occlusion headroom. The contact rate (F-6) is unchanged at
+fidelity and spends occlusion headroom. The contact rate is unchanged at
 16.63%, since contact is a physics fact rather than a pixel one.
 
 ### 3. `mirage/data.py` - `preload`
@@ -198,8 +198,8 @@ run, but the 96x96 ladder pays it per rung.
 
 `log(dict)` appends one JSON object per line to a run-scoped jsonl, always, and
 mirrors to W&B only when a flag is set. Roughly 40 lines. Every record carries
-the run id and the relevant hash, so bench reproducibility and the run log (E-4,
-E-5) hold by construction rather than by remembering.
+the run id and the relevant hash, so bench reproducibility and the run log
+hold by construction rather than by remembering.
 
 This is the first phase with a training loop, which is the only reason the file
 lands now rather than in Phase 0.
@@ -250,7 +250,7 @@ maintain, and adding an auxiliary loss here undoes the reason it was picked.
 **5b. Encoder and decoder.** Stride 8 forces three stride-2 stages. Channels
 3 -> 64 -> 128 -> 256, then a 1x1 conv to `len(levels)` = 3. The decoder mirrors
 it. **744,966 parameters measured** (1,008,646 with attention), not the ~1.5M
-this line predicted, so the training VRAM bar (R-1) is a non-issue at any batch
+this line predicted, so the training VRAM bar is a non-issue at any batch
 size worth using.
 
 Three choices that are not stylistic:
@@ -385,7 +385,7 @@ bottom of the same file, with one line on what moved them. Only then
 search the live docs for the old values, and for conclusions built on them, and
 update each one.
 
-**Do not apply the 24-colour ceiling (F-2) to reconstructions.** That bar is a
+**Do not apply the 24-colour ceiling to reconstructions.** That bar is a
 statement about the renderer. A healthy decoder emits hundreds of colours and
 would fail it.
 
@@ -410,7 +410,7 @@ unchanged.
 | The pixel blob is bottom-up | `preload` bypasses the sampler's flip | Every angle and `link_extent` mirrors. Visible immediately if you look at one frame, silent forever if you do not |
 | PSNR computed on the raw float output | Reports ~0.01 dB the pipeline never delivers | It does not fail; it just is not the number. Round to `uint8` first, and hand the validator the same frames |
 | `ConvTranspose2d` in the decoder | Checkerboard artifacts read as edge error | Sends the project to 96x96 for a week on a false diagnosis |
-| The 24-colour ceiling (F-2) applied to reconstructions | A healthy decoder fails a renderer check | `n_unique_colors` reads in the hundreds. Mode 1 only |
+| The 24-colour ceiling applied to reconstructions | A healthy decoder fails a renderer check | `n_unique_colors` reads in the hundreds. Mode 1 only |
 | Adding an entropy or commitment loss to FSQ | Undoes the reason FSQ was chosen over VQ | The entropy score improves and you can no longer tell whether the codebook would have collapsed. If the entropy bar misses, shrink the vocabulary instead |
 | Assuming the page cache is warm | Training runs 16x slower than the probe promised | 6,804 frames/s cold against 109,682 warm. This is why item 3 exists |
 | Two runs writing one token-cache directory | Phase 2 trains on a mixture of two tokenizers | The manifest's `tokenizer_hash` disagrees with the checkpoint's. Name the directory by run id |
@@ -429,9 +429,9 @@ anywhere else and you are probably quoting a random-init run**, which reads
 |---|---|---|
 | Union of distinct byte triples, whole set | 7, worst palette distance 0.75 RGB units | item 3's palette-index preload is lossless, 1.162 GB not 3.49 GB raw |
 | 8x8 patches that are one flat colour | **63.47%** - `runs.jsonl` row 27, the complement of the 36.53% of patches that hold 99.95% of the floor's error. **Not the same statistic as the 20.28% flat receptive fields in the next row**, which counts 22x22 receptive fields and is far smaller | most of the frame is free to reconstruct |
-| Interior cells with a fully flat 22x22 receptive field | 20.28%, all table | the provable entropy ceiling is 94.25% of uniform, so **the data does not force the 70% entropy bar (Q-2) to fail** |
+| Interior cells with a fully flat 22x22 receptive field | 20.28%, all table | the provable entropy ceiling is 94.25% of uniform, so **the data does not force the 70% entropy bar to fail** |
 | k-means, 512 centroids, real patches | 28.27 dB held out, 486 of 512 centroids live | the floor item 5 must beat by +1.73 dB. **Two superseded values sit behind this**, and both chains are in `canonical_numbers.md`. The earlier one came from an unrecorded random initialisation and was the only direct evidence the entropy bar was at risk. The later one came from k-means++ fit *and* scored on a sample straddling the train/val split, which was worth 0.75 dB |
-| same, 1024 centroids | 29.39 dB held out | doubling the vocabulary **still misses the 30 dB bar (Q-1)**, so vocabulary is not a proven lever at all. Read usefully, that is good news: it removes the main reason to regret the fixed 512-code budget the Phase 2 handoff imposes. The in-sample figure that said otherwise is in the chain |
+| same, 1024 centroids | 29.39 dB held out | doubling the vocabulary **still misses the 30 dB bar**, so vocabulary is not a proven lever at all. Read usefully, that is good news: it removes the main reason to regret the fixed 512-code budget the Phase 2 handoff imposes. The in-sample figure that said otherwise is in the chain |
 | Share of that error in non-flat patches | 99.95% | the fork diagnostic is close to settled in advance - if the PSNR bar misses, 96x96 is indicated |
 | Loader at ctx=0, cold / warm | 6,804 / 109,682 frames/s | against a ~13,000 need: preload, do not hope |
 | FSQ levels tables checked | `[8,8,8]` `[8,6,5]` `[5,5,5]` `[4,4,4]` | exactly `prod(levels)` codes, and the index mapping is one-to-one |

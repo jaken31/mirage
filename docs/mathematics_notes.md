@@ -52,7 +52,7 @@ rounding has no useful one.
 
 ## 1. Euclidean distance in colour space
 
-Used by: the frame validator's palette check (F-9) and `offpalette_tau`.
+Used by: the frame validator's palette check and `offpalette_tau`.
 
 A pixel is a point in 3D space, `(R, G, B)`, each channel 0..255. The distance
 between two colours is Pythagoras extended to three axes:
@@ -137,7 +137,7 @@ palette doubles that for no gain.
 
 ## 2. MSE and PSNR
 
-Used by: the tokenizer PSNR bar (Q-1, 30.0 dB) and the training loss.
+Used by: the tokenizer PSNR bar (30.0 dB) and the training loss.
 
 ### Mean squared error
 
@@ -212,7 +212,7 @@ Recomputed at three levels, per 4,096-pixel frame:
 | Level | PSNR | MSE | SSE per frame | Equivalent wrong pixels |
 |---|---|---|---|---|
 | held-out k-means floor | 28.27 dB | 96.85 | 1,190,040 | **24.9** |
-| the PSNR bar (Q-1) | 30.0 dB | 65.03 | 799,027 | **16.7** |
+| the PSNR bar | 30.0 dB | 65.03 | 799,027 | **16.7** |
 | R1 at convergence | 31.095 dB | 50.53 | 620,957 | **13.0** |
 
 This is where "cut the error count by a third" comes from: about 25 wrong pixels
@@ -236,7 +236,7 @@ exactly the blur that PSNR rewards, and the two cannot both be gamed.
 
 ## 4. Shannon entropy
 
-Used by: the token-entropy bar (Q-2, 70%) and gate row 3.
+Used by: the token-entropy bar (70%) and gate row 3.
 
 Count each token id over all 300,000 frames, convert to probabilities
 `p_i = c_i / sum(c)`, then:
@@ -427,7 +427,7 @@ Scattered debris fills almost none of it, about 0.05.
 axis-aligned box around a square rotated 45 degrees has twice the area: the
 diagonal is sqrt(2) times the side, and sqrt(2)^2 = 2. Compactness would read
 about 0.5 for a perfectly intact rotated block, colliding with the genuinely
-partially-occluded case that the occlusion floor (F-7) makes common. Both arm
+partially-occluded case that the occlusion floor makes common. Both arm
 links rotate and a free-joint block rotates when pushed, so rotation is the
 normal case here.
 
@@ -448,7 +448,7 @@ Separately, `y` runs downward in image coordinates, so the angle increases
 clockwise on screen. Action-following compares against a commanded joint sign
 and must calibrate that sign against the data rather than assume it. Note that
 ground truth itself only scores 83.1% on this measure, below the absolute 90%
-bar Q-4 once set.
+bar the action-following requirement once set.
 
 ---
 

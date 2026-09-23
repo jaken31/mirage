@@ -120,14 +120,14 @@ NVIDIA performance profiles selected, `nvidia-smi --lock-gpu-clocks` and
 closed - browsers, Teams, Discord, and the NVIDIA and Overwolf overlays all hold
 GPU contexts under WDDM.
 
-**Determinism caveat (F-4).** Bit-exact replay holds for a **fixed driver and
+**Determinism caveat.** Bit-exact replay holds for a **fixed driver and
 build**. `/fp:fast` stays off; turning it on gives up the guarantee. Determinism
 is tested by generating twice at one seed and comparing the pixel blobs - there
 is no `--replay` mode.
 
 ## Build
 
-**The clean-build requirement (E-2), verified 2026-08-28** by running exactly
+**The clean-build requirement, verified 2026-08-28** by running exactly
 these commands in a directory that had never held this project. Nothing is vendored: MuJoCo 3.12.0, GLFW 3.5.1
 and nlohmann/json 3.12.0 are all fetched by CMake at configure time, pinned by
 SHA256 or tag in `sim/CMakeLists.txt`, so the first configure needs a network.
