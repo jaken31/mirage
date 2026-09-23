@@ -99,7 +99,7 @@ is flat, and every value is an integer or a character-checked atom, so the write
 needs no JSON library and no escaping. Nesting anything in it is the trigger to
 use `nlohmann/json`, which the config reader already links.
 
-Each field has a named consumer. A field without one does not ship:
+Each field has one named consumer - a field with no named consumer does not ship:
 
 | Field | Consumer |
 |---|---|
@@ -350,9 +350,10 @@ holds for a fixed driver and build, and `/fp:fast` stays off.
 
 ## Validator: emit measurements, not verdicts
 
-Python only. The validator is a feature extractor, not a pass/fail check. Per
-frame it emits a fixed vector, and "the validator failed" is a threshold
-expression over that vector, defined in config rather than in code.
+Python only. The validator is a feature extractor, not a predicate: it measures
+and never decides pass or fail. Per frame it emits a fixed vector, and "the
+validator failed" is a threshold expression over that vector, defined in config
+rather than in code.
 
 | Field | Per | Detects |
 |---|---|---|
@@ -802,7 +803,7 @@ parameter cost remain.
 ### fp32 for Phase 1, not bf16
 
 `world_model_ingredients.md` specifies bf16 training. That line is about the
-15M-parameter dynamics model at context 1024, where bf16 is necessary. The
+15M-parameter dynamics model at context 1024, where it is necessary. The
 tokenizer is ~1.5M parameters with ~400 MB of activations at batch 128, so fp32
 costs nothing against the 7.5 GB training VRAM bar (R-1). It also removes a class
 of numerical doubt from the single number the whole phase turns on: an MSE around
@@ -869,7 +870,7 @@ run id, plus a manifest carrying `tokenizer_hash`, the checkpoint and per-shard
 frame counts. 38.4 MB total.
 
 Per-shard rather than one flat array, because a flat array is addressed through a
-cumulative frame offset, and that invites off-by-one bugs. Per-shard makes
+cumulative frame offset, and that is an off-by-one factory. Per-shard makes
 `len(tokens) == shard.frames` a loud assert. Named by run rather than by
 `tokenizer_hash` for the reason already given under provenance: two runs at
 identical config and different seeds share a hash and produce different tokens.
