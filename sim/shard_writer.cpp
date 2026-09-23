@@ -9,16 +9,14 @@
 #include <mujoco/mujoco.h>
 
 namespace {
-    // Upper bound on the meta record, so one stack buffer serves every frame
-    // instead of a per-frame allocation on the path of all 300k. 46 bytes for
-    // the current scene; this covers ~24 blocks before the constructor
-    // complains.
+    // Upper bound on the meta record size, so one stack buffer serves every
+    // frame instead of allocating for each of the 300k. The current scene needs
+    // 46 bytes; this allows about 24 blocks before the constructor complains.
     constexpr int kMaxMetaRecordBytes = 256;
 
-    // Characters allowed in the two provenance strings. They are pasted into the
-    // sidecar with no escaping, so this is what keeps a stray quote or backslash
-    // from producing a file json.load rejects - or worse, one it accepts with
-    // the wrong contents.
+    // Characters allowed in the two provenance strings. They go into the sidecar
+    // unescaped, so this stops a stray quote or backslash from producing JSON
+    // that fails to load, or worse, loads with the wrong contents.
     bool IsSafeJsonAtom(const std::string& text) {
         for (const char c : text) {
             const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
@@ -36,10 +34,10 @@ namespace {
         return (std::filesystem::path(dir) / name).string();
     }
 
-    // Little-endian writers. Explicit shifts rather than a memcpy of a struct:
-    // padding differs between compilers, and mirage/data.py reads these at fixed
-    // offsets with a '<' dtype. Spelling out the byte order makes the file the
-    // same on any host, not just this one.
+    // Little-endian writers. Explicit shifts rather than memcpy of a struct:
+    // struct padding differs between compilers, and mirage/data.py reads fixed
+    // offsets as little-endian. Writing each byte explicitly makes the file
+    // identical on any machine.
     void PutU8(unsigned char* out, std::uint8_t value) {
         out[0] = value;
     }
@@ -56,9 +54,9 @@ namespace {
         out[3] = static_cast<unsigned char>((value >> 24) & 0xFF);
     }
 
-    // f32, not the mjtNum double it came from. The 46-byte record is what R-4's
-    // budget is computed against, and single precision is ~1e-7 relative - far
-    // below anything measurable off a 64x64 frame.
+    // Stored as 32-bit float, not the original double. The storage budget
+    // assumes the 46-byte record, and float precision (~1e-7 relative) is far
+    // finer than anything measurable from a 64x64 frame.
     void PutF32(unsigned char* out, double value) {
         const float narrowed = static_cast<float>(value);
         std::uint32_t bits = 0;
@@ -115,9 +113,9 @@ ShardWriter::ShardWriter(const std::string& dir, int shard_index, int height, in
 
     pixel_bytes_per_frame_ = 3LL * height * width;
 
-    // action u8 + contact_mask u8 + episode_id u32 + step_idx u16 = 8 fixed,
-    // then qpos f32 per joint, and block_xy f32 pair + visible_px u16 per block.
-    // 46 for 2 joints and 3 blocks, the figure in the architecture doc.
+    // action u8 + contact_mask u8 + episode_id u32 + step_idx u16 = 8 fixed
+    // bytes, then one f32 angle per joint, and per block an f32 x,y pair plus a
+    // u16 visible-pixel count. 46 bytes for 2 joints and 3 blocks.
     meta_record_bytes_ = 8 + 4*joints + 10*blocks;
     if (meta_record_bytes_ > kMaxMetaRecordBytes) {
         mju_error("meta record is %d bytes, over the %d the writer's frame "
@@ -131,10 +129,9 @@ ShardWriter::ShardWriter(const std::string& dir, int shard_index, int height, in
                   dir_.c_str(), ec.message().c_str());
     }
 
-    // The stale sidecar goes first, and that ordering matters: a re-run of the
-    // same shard index truncates last run's blobs, and if it then died, last
-    // run's commit marker would be sitting on top of this run's half-written
-    // ones.
+    // Delete any old sidecar first. Order matters: rerunning a shard index
+    // overwrites the old data files, and if this run then died, the old
+    // "complete" marker would sit on top of half-written new data.
     const std::string pixel_path = ShardPath(dir_, shard_index_, "pixels");
     const std::string meta_path = ShardPath(dir_, shard_index_, "meta");
     std::filesystem::remove(ShardPath(dir_, shard_index_, "json"), ec);
@@ -150,8 +147,8 @@ ShardWriter::ShardWriter(const std::string& dir, int shard_index, int height, in
 }
 
 ShardWriter::~ShardWriter() {
-    // No sidecar here, deliberately. Everything else about this destructor is
-    // ordinary cleanup; the omission is the design.
+    // Deliberately no sidecar here. The rest is ordinary cleanup; leaving the
+    // sidecar out is the whole design.
     pixels_.close();
     meta_.close();
 }
@@ -179,9 +176,9 @@ void ShardWriter::append(const unsigned char* rgb, int action, const TruthFrame&
                   joints_, blocks_);
     }
 
-    // E-3's bounds assert, at the write site, on 64-bit counters. The predicate
-    // lives apart so shard_writer_self_check can watch it reject an overflowing
-    // offset without ending the process.
+    // Bounds check at the write site, on 64-bit counters. The check is a
+    // separate function so shard_writer_self_check can see it reject an
+    // overflowing offset without ending the process.
     if (!shard_offset_fits(pixel_bytes_, pixel_bytes_per_frame_) ||
         !shard_offset_fits(meta_bytes_, meta_record_bytes_)) {
         mju_error("shard %d: offset would overflow at frame %lld (%lld pixel "
@@ -212,9 +209,9 @@ void ShardWriter::append(const unsigned char* rgb, int action, const TruthFrame&
         PutU16(record + at, static_cast<std::uint16_t>(count));
         at += 2;
     }
-    // Checked, not assumed. truth.cpp caps blocks at 7 so this cannot fire
-    // today, but the two fields share a byte and the day a block bit reaches
-    // bit 7 the flag reads as contact on that block and nothing else notices.
+    // Checked, not assumed. truth.cpp caps blocks at 7, so this cannot fire
+    // today. But the two fields share a byte, and if a block bit ever reached
+    // bit 7 the flag would read as contact on that block with no other sign.
     if ((truth.contact_mask & kScriptedBit) != 0) {
         mju_error("shard %d: contact_mask is 0x%02X and bit 7 is the "
                   "scripted-episode flag", shard_index_, truth.contact_mask);
@@ -235,9 +232,9 @@ void ShardWriter::append(const unsigned char* rgb, int action, const TruthFrame&
                   static_cast<std::streamsize>(pixel_bytes_per_frame_));
     meta_.write(reinterpret_cast<const char*>(record),
                 static_cast<std::streamsize>(meta_record_bytes_));
-    // Checked every frame rather than at close: a full disk sets failbit here,
-    // and finding out at close means not knowing which frame was the last good
-    // one. The check is a flag test, not a syscall.
+    // Checked every frame, not at close: a full disk sets failbit here, and
+    // finding out at close would hide which frame was the last good one. It is
+    // a cheap flag test, not a system call.
     if (!pixels_ || !meta_) {
         mju_error("shard %d: write failed at frame %lld", shard_index_,
                   static_cast<long long>(frames_));
@@ -257,8 +254,8 @@ void ShardWriter::commit() {
                   "would happily accept is worse than none", shard_index_);
     }
 
-    // close(), not flush(): the sidecar is a commit marker only if the blobs are
-    // shut and their buffers are on disk before it appears.
+    // close(), not flush(): the sidecar only marks the shard complete if both
+    // data files are closed and written out before it appears.
     pixels_.close();
     meta_.close();
     if (!pixels_.good() || !meta_.good()) {
@@ -277,14 +274,12 @@ void ShardWriter::write_sidecar() {
         mju_error("could not open '%s' for writing", path.c_str());
     }
 
-    // Flat by design: every value is an integer or a character-checked atom, so
-    // this needs no JSON library and no escaping. Nest anything in here and that
-    // stops being true - reach for nlohmann/json at that point rather than
-    // growing this.
+    // Flat by design: every value is an integer or a character-checked string,
+    // so this needs no JSON library and no escaping. If it ever needs nesting,
+    // switch to nlohmann/json instead of growing this.
     //
-    // meta_joints and meta_blocks are here so mirage/data.py builds its dtype
-    // from the file instead of hardcoding 46 bytes. Same "no hardcoded shapes"
-    // rule as everywhere else, applied across the language boundary.
+    // meta_joints and meta_blocks let mirage/data.py build its record layout
+    // from the file instead of hardcoding 46 bytes.
     out << "{\n"
         << "  \"frames\": " << frames_ << ",\n"
         << "  \"height\": " << height_ << ",\n"
@@ -308,7 +303,7 @@ void ShardWriter::write_sidecar() {
 }
 
 void shard_writer_self_check() {
-    // The bounds predicate first, since nothing else matters if it is wrong.
+    // The bounds check first, since nothing else matters if it is wrong.
     const std::int64_t max64 = std::numeric_limits<std::int64_t>::max();
     if (!shard_offset_fits(0, 1) || !shard_offset_fits(max64 - 1, 1)) {
         mju_error("shard_offset_fits rejects an offset that fits");
@@ -337,9 +332,9 @@ void shard_writer_self_check() {
     const std::string meta_path = ShardPath(dir_string, 7, "meta");
     const std::string sidecar_path = ShardPath(dir_string, 7, "json");
 
-    // The values below are dyadic - halves and quarters - so the double to f32
-    // narrowing is exact and the comparisons can be ==. Anything else would need
-    // a tolerance, and a tolerance would hide a real corruption.
+    // The values below are halves and quarters, which convert from double to
+    // f32 exactly, so the comparisons can use ==. Other values would need a
+    // tolerance, and a tolerance could hide real corruption.
     std::vector<unsigned char> rgb(static_cast<std::size_t>(pixel_bytes_per_frame));
     TruthFrame truth;
     truth.joint_qpos.resize(static_cast<std::size_t>(joints));
@@ -372,14 +367,15 @@ void shard_writer_self_check() {
                 truth.visible_px[static_cast<std::size_t>(b)] = 100*f + b;
             }
             truth.contact_mask = static_cast<std::uint8_t>(f + 1);
-            // Alternating, so the check below sees the flag both set and clear
-            // and a writer that hardcoded either one would fail.
+            // Alternate, so the check below sees the flag both set and clear, and a
+            // writer that hardcoded either value would fail.
             writer.append(rgb.data(), 5 + f, truth, /*is_scripted=*/(f % 2) == 0,
                           static_cast<std::uint32_t>(70000 + f),
                           static_cast<std::uint16_t>(600 + f));
         }
 
-        // The crash-safety claim, checked at the one moment it is observable.
+        // The crash-safety rule, checked at the one moment it can be seen: before
+        // commit(), no sidecar.
         if (std::filesystem::exists(sidecar_path)) {
             mju_error("the sidecar exists before commit, so a crashed run would "
                       "leave a shard the loader accepts as complete");

@@ -22,8 +22,8 @@ GlContext::GlContext(const mjModel* model) {
         mju_error("Failed to initialize GLFW");
     }
 
-    // The window is never drawn into - it exists only to own the GL context.
-    // Single-buffered because nothing is ever swapped.
+    // Nothing is ever drawn to this window; it exists only to own the GL
+    // context. Single-buffered because nothing is ever swapped.
     glfwWindowHint(GLFW_VISIBLE, 0);
     glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_FALSE);
     window_ = glfwCreateWindow(800, 800, "Invisible window", nullptr, nullptr);
@@ -33,9 +33,10 @@ GlContext::GlContext(const mjModel* model) {
 
     glfwMakeContextCurrent(window_);
 
-    // F-3: a software renderer is ~50x slower and silently kills P-6. Deny by
-    // name rather than allow-listing this GPU, which would fail on any other
-    // machine that is perfectly fine.
+    // A software renderer is about 50x slower and quietly wrecks the
+    // data-generation speed target (500 frames/s). Reject known software
+    // renderers by name instead of allowing only this GPU, which would wrongly
+    // fail on any other good machine.
     const GLubyte* renderer_raw = glGetString(GL_RENDERER);
     if (!renderer_raw) {
         mju_error("glGetString(GL_RENDERER) returned null - no current GL context");
@@ -48,23 +49,21 @@ GlContext::GlContext(const mjModel* model) {
     }
     printf("GL_RENDERER:  %s\n", renderer);
 
-    // Create the offscreen render context
     mjr_defaultContext(&con_);
     mjr_makeContext(model, &con_, mjFONTSCALE_100);
 
-    // mjr_setBuffer returns void and silently keeps the window buffer when
-    // offscreen is unavailable, so the state it mutated has to be read back.
+    // mjr_setBuffer returns nothing and silently stays on the window buffer
+    // when offscreen is unavailable, so read the result back to check.
     mjr_setBuffer(mjFB_OFFSCREEN, &con_);
     if (con_.currentBuffer != mjFB_OFFSCREEN) {
         mju_error("offscreen framebuffer not selected: currentBuffer is %d",
                   con_.currentBuffer);
     }
 
-    // An offwidth/offheight that never took effect leaves the offscreen buffer
-    // at its 640x480 default, and every frame becomes a crop of the upper-left
-    // corner. Since 2026-08-28 those two fields are written from config in
-    // main.cpp rather than read from <global> in the XML, so this now checks
-    // that the driver honoured the requested size, not that the XML parsed.
+    // If offwidth/offheight never took effect, the offscreen buffer stays at
+    // its 640x480 default and every frame becomes a crop of the top-left
+    // corner. main.cpp sets both from config (not from the XML), so this checks
+    // that the driver gave us the size we asked for.
     viewport_ = mjr_maxViewport(&con_);
     if (viewport_.width != model->vis.global.offwidth ||
         viewport_.height != model->vis.global.offheight) {
@@ -83,7 +82,7 @@ GlContext::GlContext(const mjModel* model) {
 }
 
 GlContext::~GlContext() {
-    // Order matters: mjr_freeContext releases GPU objects and needs the context
+    // Order matters: mjr_freeContext frees GPU objects and needs the context
     // still current, and glfwTerminate destroys the window that owns it.
     mjr_freeContext(&con_);
     glfwTerminate();
