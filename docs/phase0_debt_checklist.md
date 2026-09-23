@@ -1,16 +1,17 @@
 # Phase 0: Technical Debt Checklist
 
 Derived from `docs/phase0_report.md` plus a fresh audit of the tree at `af1d6c1`.
-Work happens on branch `worktree-phase0-debt`.
+Work happens on branch `worktree-phase0-debt`. **Every item is now closed**; the
+list is kept as the record.
 
-**Ordering principle: cost of fixing it later, divided by cost now.** Everything
-in Tier 1 is baked into 300,000 frames on disk - regenerating today costs 44
-seconds, and regenerating after Phase 1 and Phase 2 invalidates `data_hash`, every
-hash below it, every checkpoint and every eval row. Everything else is flat cost:
-it will cost the same next month. Only Tier 1 has a deadline.
+**Ordering principle: the cost of fixing it later, divided by the cost now.**
+Everything in Tier 1 is baked into the 300,000 frames on disk. Regenerating today
+costs 44 seconds. Regenerating after Phases 1 and 2 invalidates `data_hash`, every
+hash below it, every checkpoint and every eval row. Everything else costs the same
+whenever it is done, so only Tier 1 has a deadline.
 
-Each item carries its evidence, because a debt claim without one is an opinion -
-`CLAUDE.md`, "Every requirement claim carries its evidence".
+Each item carries its evidence, because a debt claim without evidence is an
+opinion - `CLAUDE.md`, "Every requirement claim carries its evidence".
 
 ---
 
@@ -23,12 +24,12 @@ marked **"unverified - a guess"**. Estimated from the compiled model's
 `dof_damping = 0.5` and `dof_armature = 0.01` as `inertia / damping` ~ 15 steps,
 then rounded up to 20. Never measured.
 
-**Why it is debt.** Q-4 requires >= 90% action-following, measured as
-`sign(theta_t+1 - theta_t)` against the commanded sign. For roughly one settling
-time after every sign flip the joint is still moving the *old* way, so the
-measurement disagrees with the command through no fault of the model. Too short a
-hold and **Q-4 is unreachable by any model**, which is a dataset defect that
-presents as a modelling failure.
+**Why it is debt.** Action-following (Q-4) required >= 90% agreement, measured
+as `sign(theta_t+1 - theta_t)` against the commanded sign. For roughly one
+settling time after every sign flip the joint is still moving the *old* way, so
+the measurement disagrees with the command through no fault of the model. With too
+short a hold, **no model can reach Q-4**. That is a dataset defect that looks like
+a modelling failure.
 
 **Done when.**
 1. Measure the settling time directly: drive one joint at constant `+1`, log
@@ -58,11 +59,11 @@ diagonal.** The link inertia was omitted.
 The first-order `M/b` prediction matches every measurement - 34 vs 35.0, 30 vs
 29.4, 21 vs 20.3, 12 vs 12.3 - so both numbers are trustworthy.
 
-**The finding that matters is not the settling time. It is that Q-4's 90% bar sits
-above its own ceiling.** Ground-truth frames score **83.1%** action-following at
-the shipped hold, so **a model that reproduced the simulator exactly would fail
-Q-4 by 7 points.** That is a defect in the requirement, not in any dataset or
-model, and it holds whatever the hold is set to. Recorded in
+**The finding that matters is not the settling time. It is that the 90%
+action-following bar sits above its own ceiling.** Ground-truth frames score
+**83.1%** at the shipped hold, so **a model that reproduced the simulator exactly
+would fail by 7 points.** That is a defect in the requirement, not in any dataset
+or model, and it holds whatever the hold is set to. Recorded in
 `world_model_requirements.md`, "Requirements at risk".
 
 **And no hold satisfies both this and D2**, at the shipped physics:
@@ -105,15 +106,16 @@ the random half, where draws are uniform over 9 and the arithmetic holds. One
 episode used **2 distinct actions across 600 steps**.
 
 **Why it is debt.** An action-conditioned model learns what an action *does*
-largely from windows where the action changes. Nearly three in five windows carry
-no such event. If F-11 (acceptance test in `world_model_requirements.md`) or Q-4
-underperforms, this is a leading candidate cause - and by then it is a dataset
-problem found after two phases of training on it.
+mostly from windows where the action changes. Nearly three in five windows carry
+no such change. If the dynamics model's acceptance test (F-11, in
+`world_model_requirements.md`) or action-following (Q-4) comes up short, this is a
+leading suspect - and by then it is a dataset problem found after two phases of
+training on it.
 
-**Honest counterweight.** This is not obviously fatal. The action token is present
-in every frame, the model still observes dynamics, and 41.3% of 300k windows is
-still ~124,000 windows containing a transition. **The point is that this should be
-a known number before Phase 2, not a discovery after it.**
+**On the other hand**, this is not obviously fatal. The action token is present in
+every frame, the model still sees dynamics, and 41.3% of 300k windows is still
+~124,000 windows containing a transition. **The point is that this should be a
+known number before Phase 2, not a discovery after it.**
 
 **Done when** - one of:
 - **(a) Accept it.** Record the measurement in the architecture doc next to `ctx`,
@@ -123,8 +125,8 @@ a known number before Phase 2, not a discovery after it.**
   both. Note `action_hold_steps < ctx` makes every window contain a boundary by
   construction.
 - **(c) Fix the mechanism.** Have the scripted half re-draw a *different* action on
-  repeat. Cheapest in code, but it perturbs F-5's measured histogram, so F-5 must
-  be re-run at its own 2,000-episode sample size afterward.
+  repeat. Cheapest in code, but it disturbs the measured action histogram (F-5),
+  so F-5 must be re-run at its own 2,000-episode sample size afterwards.
 
 **Do this with D1, not separately** - both are settled by the same sweep and the
 same regeneration.
@@ -154,8 +156,9 @@ repeat, is still the lever for that half.
 
 #### The decision, which is not mine to make
 
-All three paths cost a regeneration, which is 44 seconds of compute and a
-re-verification of F-5, F-6 and F-7 - the numbers that justify the scene as it is.
+All three paths cost a regeneration: 44 seconds of compute, plus re-checking the
+action balance, contact rate and occlusion rate (F-5, F-6, F-7) - the numbers that
+justify the scene as it is.
 
 | Path | Buys | Costs |
 |---|---|---|
@@ -194,15 +197,16 @@ F-4 holds: two runs at one seed gave **bit-identical** blobs, all 14 compared by
 SHA256. F-8's 448 records still double-decode. Mode 2 still matches segmentation
 truth **exactly on 100.0%** of 6,000 block readings.
 
-**The Q-4 ceiling now clears the old absolute 90% outright**, so C stopped being
-load-bearing for *passing* the moment B landed. It is kept anyway: the ceiling is
-a property of the physics, and a bar that only happens to sit under it is one
-scene edit away from being wrong again. That is the whole lesson of this item.
+**The action-following ceiling now clears the old absolute 90% outright**, so C
+stopped being needed for *passing* the moment B landed. It is kept anyway. The
+ceiling is a property of the physics, and a bar that only happens to sit under it
+is one scene edit away from being wrong again. That is the whole lesson of this
+item.
 
-**Two costs, both expected and both small.** F-6 fell to 16.63%, still 3.3x its
-floor - fewer frames in contact because the arm passes through faster. Throughput
-fell because a more responsive arm makes more contacts for the solver. Arrival
-went the other way, 36.4% -> 40.0%.
+**Two costs, both expected and both small.** The contact rate fell to 16.63%,
+still 3.3x its floor: fewer frames are in contact because the arm passes through
+faster. Throughput fell because a more responsive arm makes more contacts for the
+solver to handle. Arrival went the other way, 36.4% -> 40.0%.
 
 **Not reconciled: `AGENDA.md`.** The main checkout's copy was rewritten for Phase
 1 while this branch ran, and still quotes the superseded F-6 20.69% / F-7 16.18%
@@ -219,12 +223,12 @@ which is now already done here.
 D2's split above had to be inferred from a bimodal histogram with a hand-chosen
 0.55 cutoff, which is why that section reports clusters rather than a clean 50/50.
 
-**Why it is debt.** Any per-half question is guesswork from the dataset alone:
-does F-6's contact come mostly from the scripted half? Does Q-4 fail on
-random episodes specifically? The 50/50 coin is the single biggest structural
-choice in the policy and the dataset cannot report on it.
+**Why it is debt.** Any per-half question is guesswork from the dataset alone.
+Does the contact rate come mostly from the scripted half? Does action-following
+fail on random episodes specifically? The 50/50 coin is the biggest structural
+choice in the policy, and the dataset cannot report on it.
 
-**Honest counterweight.** The architecture doc's own rule is "a field with no named
+**On the other hand**, the architecture doc's own rule is "a field with no named
 consumer does not ship." This now has one - D2's analysis - but it is a
 **diagnostic, not a requirement**, and it costs a byte (46 -> 47) plus a
 regeneration.
@@ -252,11 +256,11 @@ is unchanged - only the *meaning* of one byte widened, which is why every reader
 had to be found and made to mask.
 
 **The masking is the whole risk, and it is checked.** `contact_mask != 0` on the
-raw byte counts every scripted frame as a contact and reads F-6 as over 50%
-instead of 16.63%, failing nothing. Two named accessors now exist -
+raw byte counts every scripted frame as a contact and reads the contact rate as
+over 50% instead of 16.63%, failing nothing. Two named accessors now exist -
 `mirage.data.contact_bits` and `mirage.data.scripted` - and `Truth` splits the
-byte into `contact_mask` and `is_scripted`. That F-6 still reads **16.63%** after
-the regeneration is the evidence they are used.
+byte into `contact_mask` and `is_scripted`. That the contact rate still reads
+**16.63%** after the regeneration is the evidence they are used.
 
 **Measured.** The flag is **constant across every frame of all 500 episodes** -
 asserted per episode, not in aggregate, because a per-frame bug would still leave
@@ -279,12 +283,12 @@ verified clean-build-from-scratch recipe here." E-2 is **Must**, and the
 requirements doc names the README as its home: "Documented in README, verified
 once."
 
-**Why it is debt.** Every ingredient is known and scattered - MSVC via CMake
+**Why it is debt.** Every ingredient is known, but scattered: MSVC via the CMake
 generator `Visual Studio 18 2026`, C++20, `sim/build/` and `sim/build-asan/`, the
-ASan runtime DLL copied beside the binary, `/Zi` plus linker `/DEBUG` mandatory
-because `C5072` is fatal under `/WX`. Nobody has run the sequence from an empty
-directory. The failure mode is a recipe that works only on a machine that already
-built it once.
+ASan runtime DLL copied beside the binary, and `/Zi` plus linker `/DEBUG`, which
+are mandatory because `C5072` is fatal under `/WX`. Nobody has run the sequence
+from an empty directory. The risk is a recipe that works only on a machine that
+already built it once.
 
 **Done when.** Clone to a fresh directory, run the documented commands, both build
 types compile and the binary runs. Paste the **exact** commands into README's
@@ -318,11 +322,11 @@ layout lists it at root, and `.gitignore` goes out of its way to protect it:
 and belongs in version control. Do not add a `*.jsonl` rule here." The intent was
 committed; the artifact never was.
 
-**Why it is debt.** E-5 is **Must**, one entry per run. Every Phase 0 number
-currently lives only as prose in the architecture doc's verification log. Phase 1
-produces PSNR sweeps, codebook entropy and reconstruction runs, and there is no
-notebook to put them in - so they will land as more prose, and the log's value
-falls with every phase it does not cover.
+**Why it is debt.** The run log (E-5) is **Must**, one entry per run. Every Phase
+0 number currently lives only as prose in the architecture doc's verification
+log. Phase 1 produces PSNR sweeps, codebook entropy and reconstruction runs, and
+there is no notebook to put them in. So they will land as more prose, and the log
+is worth less with every phase it does not cover.
 
 **Done when.** `runs.jsonl` exists at root and is backfilled with the Phase 0 gate
 run and the four day-1 probes - one line each: config hash, change, number,
@@ -364,8 +368,8 @@ gate benchmarks on `pstate == P0`** - that rule was refuted 2026-08-23." The
 pstate follows the *memory* clock domain, so a correct compute-bound run reads P4
 while the SMs sit at 86% of max drawing 99 W of a 100 W cap.
 
-**Why it is debt.** This is the worst class of doc rot: not merely stale, but
-instructing the wrong action. Anyone following the README rejects every valid
+**Why it is debt.** This is the worst kind of doc rot: not just stale, but telling
+the reader to do the wrong thing. Anyone following the README rejects every valid
 compute number the machine can produce.
 
 **Done when.** Replaced with the two-domain rule - compute gated on **SM clock +
@@ -458,8 +462,8 @@ from it now.
 
 #### Why it drifted - the mechanism, and it is not carelessness
 
-**Corrections propagate by string match, not by meaning.** The evidence is that
-drift is not uniform *within a single file*:
+**Corrections spread by string match, not by meaning.** The evidence is that
+drift is uneven *within a single file*:
 
 - **`castshadow`** is a distinctive, greppable token. Fixed in **all six** places
   it appears. Nothing survives.
@@ -477,8 +481,8 @@ drift is not uniform *within a single file*:
   corrected while rows 80 and 128 were missed. Same file, same session. "Nobody
   updated this doc" does not explain that.
 
-The predictor of survival is **whether the refuted claim is phrased in the same
-words as the refutation.**
+What predicts whether a stale claim survives is **whether it is phrased in the
+same words as the refutation.**
 
 #### LANDED 2026-08-28 - items 2 and 3 below
 
@@ -555,11 +559,11 @@ Phase 1's plan gets written from the stale template.
 `base.json` holds only `contact_rate_min` and `occlusion_rate_min`.
 
 **Why it is debt.** It contradicts the design statement the validator was built
-from - "the validator is a feature extractor, not a predicate: ... 'the validator
+from: "the validator is a feature extractor, not a predicate: ... 'the validator
 failed' is a threshold expression over that vector, **defined in config rather
 than in code**." `validator_hash` exists precisely so that changing a threshold
 produces a new eval row against the same checkpoint. **With tau in code, changing
-tau does not move `validator_hash`**, and two Q-3 coherence-horizon rows that are
+tau does not move `validator_hash`**, and two coherence-horizon (Q-3) rows that are
 not comparable will claim they are.
 
 **Done when.** `validator.offpalette_tau` exists in `base.json`, is read through
@@ -587,20 +591,20 @@ item was about. The value is unchanged and still uncalibrated.
 the same. Only `python -m mirage.config` passes. `data/` is gitignored, correctly -
 it is 3.5 GB.
 
-**Why it is debt.** `python -m mirage.data` **is F-8's acceptance test** and
-`python -m mirage.validator` **is F-9's**. Both are unrunnable by anyone who has
-not first generated 300,000 frames - which includes every fresh clone, every CI
-run, and this worktree.
+**Why it is debt.** `python -m mirage.data` **is the round-trip requirement's
+acceptance test (F-8)**, and `python -m mirage.validator` **is the validator's
+(F-9)**. Nobody can run either without first generating 300,000 frames - which
+rules out every fresh clone, every CI run, and this worktree.
 
 **Done when.** A tiny committed fixture - one shard of ~20 frames, ~250 KB,
 produced by the real binary - plus both self-checks falling back to it when
 `data/shards` is empty. `shard_writer_self_check` already proves the C++ side can
 write a small shard to a temp directory; this is the Python-side mirror of it.
 
-**Cheaper alternative, and why not to take it:** the self-checks could *synthesize*
-a shard in temp from `meta_dtype` plus random pixels. That loses the "real bytes
-from the real writer" property, which is most of what F-8 is testing. Prefer the
-fixture.
+**A cheaper alternative, and why not to take it:** the self-checks could
+*synthesize* a shard in temp from `meta_dtype` plus random pixels. That loses the
+"real bytes from the real writer" property, which is most of what F-8 tests.
+Prefer the fixture.
 
 #### LANDED 2026-08-28 - the fixture, and it costs 4.9 KB
 
@@ -664,9 +668,9 @@ separated **nothing**, and it would have cost a regeneration to learn that.
 | ...recoverable occlusion - the block is visible again later in the episode | **5.35%** |
 | ...frames counted only by a block that never returns | **14.48%** |
 
-**73% of F-7's headline number is blocks that are gone**, and the honest
-occlusion rate is **5.35%** - still over the 3% floor, but **1.8x it, not 6.6x**.
-Anyone reading 19.83% as headroom is reading it wrong.
+**73% of the occlusion rate's headline number is blocks that are gone.** The
+real occlusion rate is **5.35%** - still over the 3% floor, but **1.8x it, not
+6.6x**. Anyone reading 19.83% as headroom is reading it wrong.
 
 **The real cause is the camera.** Projecting each block into the 45-degree
 frustum - validated against the renderer, which agrees on **99.9988%** of frames
@@ -680,8 +684,8 @@ tuned until the check passed.
 
 **Done, and it needed no field and no regeneration.** The split falls out of
 `visible_px` alone: a reversed cumulative maximum over the step axis says whether
-a block is ever visible again in the same episode. Q-6 can therefore score object
-permanence on occlusion events that actually end, at any time, over the shards
+a block is ever visible again in the same episode. So object permanence (Q-6) can
+be scored on occlusion events that actually end, at any time, over the shards
 that already exist. That is the cheapest thing that works, and it is available
 today rather than after a regeneration.
 
@@ -706,7 +710,8 @@ and agree on 5.35% to the digit, which is the cross-check worth having.
 ## Tier 5 - Explicitly do NOT do these
 
 Each already has a recorded trigger, and none has fired. Doing them now is the
-speculative-fallback failure the architecture doc warns about.
+failure the architecture doc warns about: building a fallback before anything
+asks for it.
 
 | Leave alone | Why |
 |---|---|
