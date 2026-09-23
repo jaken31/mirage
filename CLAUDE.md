@@ -49,9 +49,34 @@ invalidates spellings and capabilities wholesale while leaving the reasoning int
 so after one, re-check the flags and expect the stale copies to outnumber the
 decision that caused them.
 
-## Environment facts (verified 2026-08-21)
+## Environment facts
 
-**Everything runs on Windows.** From a WSL shell that means `py.exe`, which
+**The machine dual-boots Windows 11 and Omarchy (Arch Linux), and the whole
+project runs natively on either.** Python and the simulator build on both; the
+build commands for each are in `README.md`, "Build". Datasets and run directories
+copy between the two byte-identical.
+
+### Linux (verified 2026-09-23)
+
+- **System Python (3.14.7) lacks torch and pandas and refuses `pip install`.** Use
+  a venv at the repo root (`.venv/`, gitignored) with `requirements.txt`'s two
+  commands; `python check.py` passes from it.
+- **Render on the NVIDIA GPU explicitly.** The laptop's default GL device under
+  Wayland is the Intel iGPU (`Mesa Intel(R) Graphics (ARL)`). It passes the
+  hardware check, runs ~10x slower, and renders a slightly different dataset
+  under the same `data_hash`. Set `__NV_PRIME_RENDER_OFFLOAD=1` and
+  `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json`,
+  then `GL_RENDERER` names the RTX 5060 and the full 300k set regenerates
+  byte-identical to the Windows one (`runs.jsonl` r55). Software GL here is
+  `llvmpipe`/`softpipe`, rejected by `sim/gl_context.cpp`.
+- **The sanitizer build is Clang-only on Linux** - MuJoCo 3.12.0's `mjsan.h`
+  breaks GCC under ASan - and it adds UBSan, which MSVC lacks.
+- **Keep-awake:** launch long runs under `systemd-inhibit --what=idle:sleep`;
+  `fsq._keep_awake` only acts on Windows.
+
+### Windows (verified 2026-08-21)
+
+From a WSL shell, running on Windows means `py.exe`, which
 reads a `\\wsl.localhost\...` cwd fine - WSL's own `python3` has none of the
 deps. Environment variables do **not** cross into it unless named in `WSLENV`
 (`WSLENV=WANDB_API_KEY py.exe ...`), which is how a secret reaches a run without
