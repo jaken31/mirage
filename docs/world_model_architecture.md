@@ -954,7 +954,9 @@ land well below them. Measure; do not extrapolate from SPEC.
   GLFW 3.5.1's Wayland backend, which replaces its compose state without freeing
   the old one - 6.7 MB over one 5-minute run. So Linux sanitizer runs set
   `ASAN_OPTIONS=detect_leaks=0`, and leak-checking this project's code is the
-  40-frame fixture on the Intel GPU, which reports nothing. A process that exits
+  40-frame fixture with leak checking on, expecting only the NVIDIA driver's
+  ~1.7 KB (the Intel GPU, which reported nothing, is refused on Linux since
+  `runs.jsonl` r56). A process that exits
   after one shard is also where leaks matter least.
 - **Phase 0 is the only phase where this is clean, because it has no CUDA.** ASan
   and CUDA coexist poorly - another reason to keep all C++ in Phase 0.
