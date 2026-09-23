@@ -1,19 +1,18 @@
-"""Run every module self-check in one command. Exit nonzero if any of them fails.
+"""Run every module self-check in one command. Exits nonzero if any fails.
 
 `python check.py`
 
-Not a test framework, and deliberately not one - `docs/phase0_debt_checklist.md`
-records "no test framework, no fixtures, self-checks per module" as a design
-choice rather than an omission, and this does not reverse it. Each module still
-owns its own `_self_check()` and is still runnable alone as
-`python -m mirage.data`. The only thing missing was something that ran all five
-without a human remembering the list, which is what this is.
+Deliberately not a test framework: "no test framework, per-module self-checks"
+is a recorded design choice (`docs/phase0_debt_checklist.md`), and this does
+not reverse it. Each module keeps its own `_self_check()` and still runs alone,
+e.g. `python -m mirage.data`. This just runs all five so nobody has to remember
+the list. It also checks the numbers register (`docs/canonical_numbers.md`).
 
-ponytail: subprocesses rather than importing and calling `_self_check()`, so one
-module's crash or `SystemExit` cannot take the runner down with it, and each gets
-a clean interpreter. Serial, because `mirage.data` and `mirage.validator` each
-sweep the 300,000-frame set and running them together would contend for the same
-page cache and misreport both timings.
+ponytail: runs each check as a subprocess instead of importing it, so one
+module's crash or `SystemExit` cannot kill the runner, and each gets a clean
+interpreter. One at a time, because `mirage.data` and `mirage.validator` each
+read the whole 300,000-frame dataset, and running them together would compete
+for the same file cache and distort both timings.
 """
 
 import re
@@ -22,10 +21,10 @@ import sys
 import time
 from pathlib import Path
 
-# Cheap and data-free first, so a break surfaces in seconds instead of minutes.
-# `config`, `logging` and `fsq` touch no dataset at all; `validator` and `data`
-# sweep the full set, and fall back to the committed 40-frame fixture in
-# `mirage/fixtures/` when `data/shards` is empty.
+# Fast, data-free checks first, so a failure shows up in seconds, not minutes.
+# `config`, `logging` and `fsq` touch no dataset; `validator` and `data` read the
+# full dataset, or the committed 40-frame fixture in `mirage/fixtures/` when
+# `data/shards` is empty.
 MODULES = ("config", "logging", "fsq", "validator", "data")
 
 ROOT = Path(__file__).resolve().parent
@@ -34,42 +33,41 @@ ROOT = Path(__file__).resolve().parent
 REGISTER = ROOT / "docs" / "canonical_numbers.md"
 NOTEBOOK = ROOT / "runs.jsonl"
 # A register row: a backticked id alone in the first cell, then four more cells.
-# The placeholder below is spelled `NUM-<id>` rather than with real-looking
-# characters on purpose - CITE scans this file too, and a realistic example here
-# would report itself as an undefined citation.
+# The placeholder is written `NUM-<id>`, not a realistic id, on purpose: CITE
+# scans this file too, and a realistic example would be reported as an
+# undefined citation.
 ROW = re.compile(r"^\|\s*`(NUM-[A-Z0-9-]+)`\s*\|(.*)\|\s*$")
 CITE = re.compile(r"NUM-[A-Z0-9-]+")
-# Definitions live above this heading; below it the same ids reappear as
-# supersession chains, which are history rather than second definitions.
+# Definitions are above this heading. Below it the same ids reappear in the
+# history of replaced values, which are not second definitions.
 CHAINS = "## Superseded"
 
 
 def check_register() -> list[str]:
     """Validate `docs/canonical_numbers.md` and every `NUM-` id that cites it.
 
-    Four checks, all chosen because they cannot produce a false positive:
+    Four checks, each chosen because it cannot raise a false alarm:
 
     1. no id is defined twice, and every row has all five cells
-    2. every row carries a non-empty Source and Status - the provenance rule,
-       enforced rather than trusted
-    3. every `r<N>` source points at a `runs.jsonl` row that exists. This is the
-       one that catches drift: rows are cited by index, so a citation to r45 when
-       the notebook holds 41 is a dangling reference nobody would notice by eye
-    4. every `NUM-` id cited anywhere in the tree is actually defined here, which
-       is what makes renaming an entry safe
+    2. every row has a non-empty Source and Status, so "every number names where
+       it came from" is enforced rather than trusted
+    3. every `r<N>` source points at a `runs.jsonl` row that exists. This catches
+       drift: rows are cited by position, so a citation to row 45 when the file
+       has 41 rows is a broken reference nobody would spot by eye
+    4. every `NUM-` id cited anywhere in the repo is defined here, which is what
+       makes renaming an entry safe
 
-    Check 4 also fires on a bare *group prefix* - a group name with a trailing
-    hyphen and no entry after it, written to mean "all the rows in this group".
-    That is deliberate and was left alone after it fired for real: spelling the
-    ids out is more useful to a reader and keeps every one of them greppable. The
-    prefix form is not written literally anywhere in this file for the same
-    reason CITE scans this file too.
+    Check 4 also fires on a bare *group prefix*, a group name with a trailing
+    hyphen and nothing after it, meant as "every row in this group". That is on
+    purpose and was kept after it fired for real: writing out each id is clearer
+    for readers and keeps every id searchable. For the same reason, the prefix
+    form never appears literally in this file, since CITE scans it too.
 
-    ponytail: deliberately NOT checking that live docs are free of superseded
-    values. It sounds like the obvious check and it is unimplementable without a
-    per-site opt-out: measured 2026-08-29, the superseded values appear 60 times
-    across the live docs and most are legitimate narration of the refutation that
-    retired them. The chain table in the register is for humans, not for grep.
+    ponytail: deliberately does NOT check that live docs are free of replaced
+    values. It sounds obvious but cannot work without a per-line opt-out: the
+    replaced values appear about 60 times across the live docs, and most are
+    legitimate explanations of why they were replaced. The history table in the
+    register is for people, not for grep.
     """
     if not REGISTER.exists():
         return [f"{REGISTER.name} is missing"]
@@ -134,9 +132,9 @@ def main() -> int:
     for name in MODULES:
         print(f"\n=== python -m mirage.{name} {'=' * 44}", flush=True)
         started = time.perf_counter()
-        # cwd=ROOT so this works when invoked from anywhere: `-m` resolves
-        # `mirage` off the current directory, and a run from elsewhere would
-        # otherwise die on ModuleNotFoundError rather than on a real failure.
+        # cwd=ROOT so this works from any directory: `-m` finds `mirage` in
+        # the current directory, so running from elsewhere would otherwise fail
+        # with ModuleNotFoundError instead of testing anything.
         code = subprocess.run([sys.executable, "-m", f"mirage.{name}"], cwd=ROOT).returncode
         elapsed = time.perf_counter() - started
         print(f"--- mirage.{name}: {'ok' if code == 0 else f'FAILED rc={code}'} in {elapsed:.1f}s")

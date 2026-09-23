@@ -1,23 +1,23 @@
-"""How big is the Phase 2 dynamics model, and what does one epoch cost?
+"""How big is the dynamics model (the next-frame predictor), and what does one epoch cost?
 
-Records the sizing an earlier session computed in conversation and never wrote
-down: parameter count, sequence length, token-cache size, distance from the
-Chinchilla-optimal token budget, and fp32 against bf16 throughput.  Nothing here
-is a Phase 2 decision - it prices the model the docs already specify
-(`world_model_ingredients.md`: d_model 384, 8 layers, 6 heads, plain MHA;
-`configs/base.json` `dynamics`) so that a plan can be written against numbers
-instead of recollections.
+Writes down sizing that was once worked out but never recorded: parameter
+count, sequence length, token-cache size, how far the data is from the
+Chinchilla rule of thumb (about 20 training tokens per parameter), and fp32 vs
+bf16 speed. It decides nothing. It sizes the model the docs already describe
+(`world_model_ingredients.md`: d_model 384, 8 layers, 6 heads, standard
+multi-head attention; the `dynamics` section of `configs/base.json`) so plans
+can use numbers instead of memory.
 
-**Four variants, on purpose.** The parameter count depends on two choices that
-are still open - `docs/handoff_tokenizer_decision.md` section 7, decision 4,
-sequence layout and position encoding, which it calls irreversible.  Quoting one
-number would decide it by accident, so the table prices tied against untied
-output embeddings and RoPE against learned positions, and the plan can pick.
+**Four variants, on purpose.** The parameter count depends on two open
+choices, sequence layout and position encoding, which
+`docs/handoff_tokenizer_decision.md` calls irreversible. Quoting one number
+would decide them by accident, so the table covers shared vs separate output
+embeddings and RoPE vs learned positions.
 
-**The throughput number is measured, not modelled**, because that is the one an
-estimate gets wrong: fp32 matmul on this machine does not use TF32 by default,
-and the thermal state moves the answer (repo `CLAUDE.md`).  `bench/gpu_probe.py`
-is what says whether the machine was clocked up when this ran.
+**Speed is measured, not estimated**, because that is where estimates go
+wrong: fp32 matmul here does not use TF32 by default, and the laptop's thermal
+state changes the answer (see the repo `CLAUDE.md`). `bench/gpu_probe.py` shows
+whether the GPU was clocked up when this ran.
 
     python bench/dyn_size_probe.py [--batch 16] [--steps 20]
 """
@@ -33,18 +33,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mirage import config, data  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-N_HEADS = 6          # world_model_ingredients.md; not in config
-MLP_RATIO = 4        # the transformer default the ingredients doc assumes
+N_HEADS = 6          # from world_model_ingredients.md; not in the config
+MLP_RATIO = 4        # the usual transformer default, as that doc assumes
 N_ACTIONS = 9        # 3 levels ^ 2 joints, sim/policy.h
 CHINCHILLA = 20      # tokens per parameter
 
 
 class Block(nn.Module):
-    """Pre-norm transformer block, plain MHA - what the ingredients doc names.
+    """Pre-norm transformer block with standard multi-head attention, as the docs describe.
 
-    `nn.MultiheadAttention` rather than a hand-rolled block: this probe exists
-    to count parameters and time a matmul, and a second attention implementation
-    written here would be a third place the shape can be wrong.
+    Uses `nn.MultiheadAttention` rather than a hand-written block: this probe only
+    counts parameters and times matmuls, and a custom attention here would be one
+    more place to get the shapes wrong.
     """
 
     def __init__(self, d: int, heads: int) -> None:
@@ -61,8 +61,8 @@ class Block(nn.Module):
 
 
 class Dynamics(nn.Module):
-    """The sizing model.  Not the Phase 2 implementation - `mirage/dynamics.py`
-    does not exist yet and this deliberately does not become it."""
+    """A stand-in used only for sizing. Not the real dynamics model:
+    `mirage/dynamics.py` does not exist yet, and this is not meant to become it."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int,
                  vocab_out: int, seq: int, learned_pos: bool, tied: bool) -> None:
@@ -72,8 +72,8 @@ class Dynamics(nn.Module):
         self.blocks = nn.ModuleList([Block(d, heads) for _ in range(layers)])
         self.norm = nn.LayerNorm(d)
         # Tied: reuse the input embedding's first `vocab_out` rows as the output
-        # projection.  Only sound because the frame codes are the first block of
-        # the vocabulary and the action tokens are appended after them.
+        # layer. Only valid because frame codes come first in the vocabulary and
+        # the action tokens come after them.
         self.head = None if tied else nn.Linear(d, vocab_out, bias=False)
         self.vocab_out = vocab_out
 
@@ -119,7 +119,7 @@ def probe(cfg: config.Config, batch: int, steps: int) -> dict:
     layers = cfg.dynamics["n_layers"]
     ctx = cfg.data["ctx"]
     per_frame = cfg.shapes.token_grid[0] * cfg.shapes.token_grid[1]
-    seq = ctx * (per_frame + 1)          # F-11: interleaved frame and action tokens
+    seq = ctx * (per_frame + 1)          # each frame's tokens followed by one action token
     vocab_in = cfg.tokenizer["codebook_size"] + N_ACTIONS
     vocab_out = cfg.tokenizer["codebook_size"]
 

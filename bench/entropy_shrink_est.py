@@ -1,42 +1,42 @@
-"""What a shrink step and what attention would do to Q-2 at 96x96 - by arithmetic.
+"""What a smaller vocabulary, or attention, would do to token entropy at 96x96: by arithmetic.
 
     python bench/entropy_shrink_est.py
 
-**This is a derived row, not a measurement.** It answers a question that would
-otherwise cost two 3-hour training runs, and it answers it off the token caches
-already on disk. Nothing here trains anything. `runs.jsonl` r45 carries the
-result and says the same thing about its status.
+**An estimate, not a measurement.** It answers a question that would otherwise
+cost two 3-hour training runs, using the token caches already on disk. Nothing
+here trains anything. `runs.jsonl` records the result with the same caveat.
 
-R1 at 96x96 misses **Q-2** - "token entropy vs uniform over 512 codes, >= 70%" -
-at 55.4%, and `AGENDA.md` names exactly two remedies: the Q-2 shrink ladder, and
-(for quality) the attention rung. This prices both before either is run.
+R1 at 96x96 falls short of the token entropy target (at least 70% of the
+maximum possible for 512 codes) at 55.4%. There are two candidate fixes: use
+fewer levels per channel (a smaller vocabulary), or add attention. This
+estimates both before either is run.
 
 Three kinds of number come out, and they are not equally trustworthy:
 
-  * **Model-independent bounds.** `H_joint <= sum of the channel marginals` is an
-    identity, so the marginal sum is a hard ceiling on any method that only
-    *decorrelates* channels - attention included. And coarsening a distribution
-    can only destroy information, so `current bits / log2(new codes)` is a hard
-    upper bound on any shrink step whatever the re-binning. **Trust these.**
-  * **The coarsening model.** FSQ puts each channel's bounded latent on L evenly
-    spaced levels, so dropping 8 -> M re-bins the same latent onto a coarser
-    grid; map each level-8 bin centre to its nearest level-M centre and
-    accumulate the joint. Exact under one assumption that is certainly false:
-    it holds the latent distribution **fixed**, where a retrained tokenizer would
-    adapt. So it reads **pessimistic**.
-  * **The transfer estimates for attention**, which carry the 64x64 R1 -> R2
-    measurement across to 96x96 three different ways. Weakest of the three, and
-    it does not matter, because the identity above already settles that case.
+  * **Bounds that hold for any model.** Joint entropy can never exceed the sum
+    of the per-channel entropies, so that sum caps any method that only makes
+    the channels *less redundant*, attention included. And merging levels can
+    only lose information, so `current bits / log2(new codes)` caps any
+    vocabulary shrink. **Trust these.**
+  * **The merging model.** FSQ places each channel's value on L evenly spaced
+    levels, so going from 8 to M levels re-bins the same values onto a coarser
+    grid: map each of the 8 level centres to the nearest of the M, and add up.
+    Exact under one assumption that is surely false: that the values stay
+    **fixed**, when a retrained tokenizer would adapt. So it reads
+    **pessimistic**.
+  * **Transfer estimates for attention**, which carry the 64x64 R1 -> R2
+    measurement over to 96x96 three ways. The weakest, and it does not matter,
+    because the bound above already settles that case.
 
-**Known artifact, so nobody reads it as a finding:** the shrink ladder is
-non-monotonic - `[8,6,5]` scores below `[4,4,4]`. 8 -> 4 is an exact 2:1 merge
-while 8 -> 6 and 8 -> 5 are ragged, and a ragged merge concentrates mass. Treat
-the non-divisor rungs as pessimistic by a few points on top of everything else.
+**Known artifact, not a finding:** the shrink results are not in order;
+`[8,6,5]` scores below `[4,4,4]`. 8 -> 4 merges exactly two levels into one,
+while 8 -> 6 and 8 -> 5 merge unevenly, which piles up probability. Treat the
+uneven cases as a few points too pessimistic on top of everything else.
 
-The one available check on the model is `R1 64x64`, where row 3 passes today: the
-model returns 75.2% and 71.5% for `[8,6,5]` and `[5,5,5]` against a real 74.1% at
-`[8,8,8]`, so it is in the right neighbourhood. That is a sanity check and not a
-validation - **no shrunk rung has ever been trained**, which is the whole reason
+The only available check on the model is R1 at 64x64, which passes the target
+today: the model gives 75.2% and 71.5% for `[8,6,5]` and `[5,5,5]` against a
+real 74.1% at `[8,8,8]`, so it is in the right range. That is a sanity check,
+not proof: **no smaller-vocabulary rung has ever been trained**, which is why
 this file is arithmetic.
 """
 import json, math, pathlib, itertools
@@ -58,7 +58,7 @@ def h(p):
     return float(-(nz * np.log2(nz)).sum())
 
 def joint3(counts, levels=(8, 8, 8)):
-    """counts over mixed-radix ids -> (l0,l1,l2) probability array."""
+    """Counts over token ids -> a (l0, l1, l2) probability array, one axis per channel digit."""
     p = counts / counts.sum()
     ids = np.arange(len(p))
     d = []
@@ -77,7 +77,7 @@ def coarsen(a, target):
         L = out.shape[ax]
         if m == L:
             continue
-        # bin k of L sits at k/(L-1) of the bounded range; nearest bin of m
+        # level k of L sits at k/(L-1) of the range; find the nearest of the m new levels
         j = np.rint(np.arange(L) / (L - 1) * (m - 1)).astype(int)
         new = np.zeros(out.shape[:ax] + (m,) + out.shape[ax + 1:])
         np.add.at(new, (slice(None),) * ax + (j,), out)
