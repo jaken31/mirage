@@ -1,12 +1,13 @@
 # Research: token stability, normalisation, and rollout length
 
-**Doc class: Live.** Measured and derived mirage values are cited by name and
-`NUM-` id, never restated. External values are stated inline with the paper
-section or the repo file and line that owns them, because those numbers are not
-in the register and never will be.
+**Doc class: Live.** The survey body, kept as written on 2026-08-29, cites mirage
+values by name and `NUM-` id; look an id up in `canonical_numbers.md`. The status
+section below states values in plain words. External values are stated inline
+with the paper section or the repo file and line that owns them, because those
+numbers are not in the register and never will be.
 
 **What this is.** A survey of primary sources on four questions raised by the
-Phase 1 token-persistence measurement. It is dated 2026-08-29 and it is a
+Phase 1 token-persistence measurement. It is dated 2026-08-29, and it is a
 *survey*, not a decision. The decisions it feeds are at the end, ranked and
 costed. Nothing here has been run on mirage except the two probes in section (a),
 which are reproduced inline so they can be re-run.
@@ -22,47 +23,48 @@ table.
 
 ## Status as of 2026-08-30: options 1 and 2 have been run
 
-This survey is kept as written, dated 2026-08-29. What follows is what happened
-when its first two recommendations were executed the next day, `runs.jsonl` r46.
+The survey below is kept as written, dated 2026-08-29. This section records what
+happened when its first two recommendations were carried out the next day (the
+r1c token-stability row in `runs.jsonl`).
 
-**Option 1 ran, and did not falsify the line of work.** The spurious-flip rate
+**Option 1 ran, and did not rule out this line of work.** The spurious-flip rate
 was measured by `bench/token_stability_probe.py` over 12 held-out episodes and
-460,032 cell-transitions: **8.86%** on the R1 checkpoint, **18.75%** on R2, with
-**53.21%** and **71.06%** of all flips spurious. This document named a rate near
-zero as the falsifier. It did not happen, and attention makes it worse.
+460,032 cell-transitions: **8.86%** on the R1 checkpoint and **18.75%** on R2, with
+**53.21%** and **71.06%** of all flips spurious. This document said a rate near
+zero would rule the work out. That did not happen, and attention makes it worse.
 
 **Option 2 ran, as rung `r1c`.** Channel-only encoder normalisation drives the
-spurious-flip rate to **exactly 0 of 396,013** quiet-field transitions, so the
-mechanism this survey identified is not merely real but is the *entire* cause.
-The cost is the part no source predicted: **Q-2 token entropy falls 74.1% ->
-54.6%**, failing the 70% bar, for only 0.282 dB of Q-1. **Phase 2 therefore stayed
-on R1** - see `world_model_architecture.md`, "Phase 2 inherits R1", and
+spurious-flip rate to **exactly 0 of 396,013** quiet-field transitions. So the
+mechanism this survey identified is not just real; it is the *entire* cause. The
+cost is the part no source predicted: **token entropy (Q-2) falls 74.1% ->
+54.6%**, failing the 70% bar, for only 0.282 dB of PSNR. **So Phase 2 stayed on
+R1** - see `world_model_architecture.md`, "Phase 2 inherits R1", and
 `handoff_tokenizer_decision.md` for the reasoning.
 
 **The companion probe in option 1 is REFUTED.** This document proposes that
 encoding a frame and the same frame shifted one pixel "separates the aliasing
 mechanism from the global-coupling mechanism". **It does not.** A one-pixel shift
 moves the input to *every* receptive field in the frame, so both mechanisms fire
-together and the measurement cannot attribute the change to either. The
-separating measurement is the one option 1 already specifies - conditioning on
+together, and the measurement cannot pin the change on either. The measurement
+that does separate them is the one option 1 already specifies - conditioning on
 whether the cell's own receptive field changed - and that is what was run.
 
-**The receptive-field discrepancy below is confirmed, and it has a subtlety this
-survey did not have the measurement to see.** Both directions are correct, under
+**The receptive-field discrepancy below is confirmed, with a subtlety this survey
+did not have the measurement to see.** Both directions are correct, under
 different readings of "receptive field":
 
-- The **conv** field is 15x15, as this document derives. Flat share over 15x15 is
-  **26.33%** against **20.43%** over 22x22, so on that reading the true ceiling is
-  **below** `NUM-TOK-Q2CEIL`, exactly as stated below.
-- But the derivation's premise is that two cells with identical receptive fields
-  must share a code, and under `GroupNorm` a cell's **effective** field is the
-  whole frame. The flat share over the whole frame is **0.00%**, so for the
-  encoder actually in use the derivation is **vacuous** and the ceiling is 100%.
+- The **conv** field is 15x15, as this document derives. The flat share over
+  15x15 is **26.33%**, against **20.43%** over 22x22. On that reading the true
+  entropy ceiling is **below** the registered 94.25%, exactly as stated below.
+- But the derivation assumes two cells with identical receptive fields must share
+  a code, and under `GroupNorm` a cell's **effective** field is the whole frame.
+  The flat share over the whole frame is **0.00%**, so for the encoder actually in
+  use the derivation says nothing, and the ceiling is 100%.
 
-So `NUM-TOK-Q2CEIL` is understated for a locality-respecting encoder such as
-`r1c`, and meaningless for `R1` and `R2`. Neither reading threatens Q-2 and no
-passed gate moves, which is why this is still recorded rather than fixed.
-`bench/patch_probe.py:60` still says `RF = 22`.
+So the registered 94.25% ceiling is too low for an encoder that respects locality,
+such as `r1c`, and meaningless for `R1` and `R2`. Neither reading threatens the
+entropy bar, and no passed gate moves, which is why this is still recorded rather
+than fixed. `bench/patch_probe.py:60` still says `RF = 22`.
 
 ---
 

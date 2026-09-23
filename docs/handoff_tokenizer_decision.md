@@ -3,20 +3,21 @@
 > **Derived explainer, never a citable source.** Same standing as
 > `decision_notes.md` and `timeline.md`: it restates the authoritative files in
 > plain words for a reader picking the project back up. The decision itself lives
-> in `world_model_architecture.md`, the evidence in `runs.jsonl` r46 and the
-> verification log. **When this file disagrees with those, they win** - and unlike
-> them it is a snapshot, so its "still open" and "on disk" sections go stale.
+> in `world_model_architecture.md`; the evidence is the r1c token-stability row in
+> `runs.jsonl` and the verification log. **When this file disagrees with those,
+> they win.** Unlike them it is a snapshot, so its "still open" and "on disk"
+> sections go stale.
 
 **Session date:** 2026-08-29 into 2026-08-30. **Repo:** `C:\Users\nguye\Documents\Dev_and_Projects\mirage`,
-branch `main`. It grew out of an agent-session handoff that lived outside the repo and is
-probably gone; nothing here depends on it, and sections 6 and 7 carry forward
+branch `main`. It grew out of an agent-session handoff that lived outside the repo
+and is probably gone. Nothing here depends on it; sections 6 and 7 carry forward
 the only parts of it that mattered.
 
 **Two commits landed, both on `main`:**
 
 | commit | what |
 |---|---|
-| `1660129` | `feat:` rung r1c, `bench/token_stability_probe.py`, `runs.jsonl` r46, one verification-log row |
+| `1660129` | `feat:` rung r1c, `bench/token_stability_probe.py`, its `runs.jsonl` row, one verification-log row |
 | `e0484fa` | `docs:` the R1 decision with its reversal trigger, plus `LocalNorm` and rung r1w3 |
 
 `python check.py` passes at both: all 5 self-checks ok, register clean.
@@ -41,44 +42,44 @@ than read off a table.
 
 | | R1 `20260829-005439-r1` | R2 `20260828-230015-r2` |
 |---|---|---|
-| Q-1 held-out PSNR | 31.095 dB | **31.182** |
-| Q-2 token entropy | 74.1% | **77.6%** |
+| held-out PSNR (Q-1) | 31.095 dB | **31.182** |
+| token entropy (Q-2) | 74.1% | **77.6%** |
 | tokens stable across batch size | **yes, structurally** | ~2 in 100,000 move |
 | spurious token flips | **8.86%** | 18.75% |
 | parameters | **744,966** | 1,008,646 |
 
-- R2's Q-1 win is **+0.087 dB for +263,680 parameters**, about a sixth of the
+- R2's PSNR win is **+0.087 dB for +263,680 parameters**, about a sixth of the
   architecture doc's own "within ~0.5 dB means tied" threshold. **A measured
   non-lever.** Do not re-argue this on quality.
-- **The load-bearing argument is E-1 determinism.** R2's encoder attention makes
-  tokens batch-size dependent, and **Phase 3 encodes a seed clip at batch 1**.
-  R1 structurally cannot have that exposure.
-- Stability is the third argument and points the same way.
+- **The deciding argument is determinism (E-1).** R2's encoder attention makes
+  tokens depend on batch size, and **Phase 3 encodes a seed clip at batch 1**.
+  R1 structurally cannot have that problem.
+- Stability is the third argument, and points the same way.
 
 ### Why not r1c, the tokenizer that is arguably better
 
 This is the part worth understanding, because the surface reading is wrong.
 
-r1c reaches within **0.282 dB** of R1 while using **26% fewer bits per frame**
-(314.2 against 426.9). On a rate-distortion basis it is the better tokenizer, and
-it is not collapsed - 463 codes live, zero unused. **It was still rejected**,
-because it fails Q-2 at 54.6% against the 70% bar.
+r1c comes within **0.282 dB** of R1 while using **26% fewer bits per frame**
+(314.2 against 426.9). Judged on quality per bit, it is the better tokenizer, and
+it has not collapsed - 463 codes live, zero unused. **It was still rejected**,
+because it fails the entropy bar (Q-2) at 54.6% against 70%.
 
-**The tempting move - "Q-2 is measuring the wrong thing for a dynamics model" -
-was considered and rejected on purpose.** Lower token entropy is an *easier*
-prediction problem for Phase 2, and the fidelity that matters is Q-1, which barely
-moved. That argument is real. It was rejected because:
+**The tempting move - "the entropy bar measures the wrong thing for a dynamics
+model" - was considered and rejected on purpose.** Lower token entropy makes an
+*easier* prediction problem for Phase 2, and the fidelity that matters is PSNR,
+which barely moved. That argument is real. It was rejected because:
 
-1. This project's discipline says moving or reinterpreting a bar because a run
-   missed it is exactly the failure mode the discipline exists to prevent, and
-   the 96x96 arm was held to that standard the previous day.
+1. This project's rule is that moving or reinterpreting a bar because a run missed
+   it is exactly the failure the rule exists to prevent, and the 96x96 arm was held
+   to that standard the day before.
 2. **r1c has a strictly weaker case than 96x96 did.** The 96x96 arm failed the
-   *statistic* while satisfying the *rationale* - it delivered 1.68x the bits per
-   frame with zero dead codes. r1c delivers **fewer** bits per frame than R1. It
-   fails the bar and the rationale together, so there is no escape hatch.
+   *statistic* while meeting its *purpose* - it delivered 1.68x the bits per frame
+   with zero dead codes. r1c delivers **fewer** bits per frame than R1. It fails
+   the bar and the purpose together, so there is no way out.
 
-**`NUM-BAR-Q2` is not moved.** If a future session wants to reopen this, it needs
-new evidence about what Phase 2 actually needs, not a re-reading of the same
+**The 70% entropy bar is not moved.** A future session that wants to reopen this
+needs new evidence about what Phase 2 actually needs, not a re-reading of the same
 numbers.
 
 ---
@@ -96,10 +97,10 @@ depend on every pixel of the frame.** Autograd on one latent cell, now asserted 
 | local, window 5 or `GroupNorm` | **4,096 px**, the whole frame |
 
 The conv field is 15 by arithmetic, `2*(2*(2*1+1)+1)+1`. A K x K normalisation
-window adds `2*(K-1)*7` px on top, so **K=3 is the only interior point the
-architecture admits** - K=5 already overshoots the 64 px frame. That is a property
-of three stride-2 stages, not a choice, and it caps how finely this curve can ever
-be sampled without changing the encoder's stage structure.
+window adds `2*(K-1)*7` px on top, so **K=3 is the only in-between point the
+architecture allows** - K=5 already overshoots the 64 px frame. That follows from
+having three stride-2 stages; it is not a choice. It limits how finely this curve
+can ever be sampled without changing the encoder's stage structure.
 
 ### The three measured points
 
@@ -110,8 +111,8 @@ one thing changed.
 | | R1 (GroupNorm) | R2 (+attention) | r1c (channel-only) |
 |---|---|---|---|
 | support | 4,096 px | 4,096 px | 225 px |
-| Q-1 PSNR | 31.095 dB | 31.182 | 30.813 |
-| Q-2 entropy | 74.1% | 77.6% | **54.6% FAIL** |
+| PSNR (Q-1) | 31.095 dB | 31.182 | 30.813 |
+| entropy (Q-2) | 74.1% | 77.6% | **54.6% FAIL** |
 | bits per frame | 426.9 | 447.2 | 314.2 |
 | persistence | 85.67% | 77.28% | **93.22%** |
 | P(flip given quiet field) | 8.86% | 18.75% | **0.00%** |
@@ -119,20 +120,20 @@ one thing changed.
 | live codes | 485 | 460 | 463 |
 
 **The zero is literal: 0 spurious flips out of 396,013.** That is the whole result.
-Spatial coupling was not *a* mechanism behind tokens flipping for no local reason,
-it was the *entire* cause. **It is also the probe's own control** - an encoder that
-respects its receptive field is *required* to read exactly 0, so a nonzero reading
-would have condemned `bench/token_stability_probe.py` rather than the model. Keep
-using controls like this.
+Spatial coupling was not *one* cause of tokens flipping for no local reason; it
+was the *entire* cause. **It is also the probe's own control.** An encoder that
+respects its receptive field *must* read exactly 0, so a nonzero reading would
+have condemned `bench/token_stability_probe.py` rather than the model. Keep using
+controls like this.
 
 ### Why entropy and stability are the same knob
 
 They are two readings of one quantity: **how much of the frame each token sees.**
 `GroupNorm` lets a token encode global context, so the same 8x8 patch gets
-different codes depending on the rest of the frame - which raises entropy *and*
-means the token changes when something far away moves. **You cannot buy one
-without paying the other.** The trade is steep: locality costs 0.282 dB of Q-1 and
-19.5 points of Q-2.
+different codes depending on the rest of the frame. That raises entropy, *and* it
+means the token changes when something far away moves. **You cannot have one
+without paying for the other.** The trade is steep: locality costs 0.282 dB of
+PSNR and 19.5 points of entropy.
 
 ### The shortfall is skew, not collapse - and that closes the remedies
 
@@ -141,13 +142,14 @@ without paying the other.** The trade is steep: locality costs 0.282 dB of Q-1 a
 | marginal skew | 1.440 bits | **2.959** |
 | redundancy | 0.890 bits | 1.131 |
 
-**The skew term doubled and redundancy barely moved** - the same signature r45
-priced at 96x96, reached by a completely different route. By r45's arithmetic the
-two named Q-2 remedies are a *collapse* fix (the shrink ladder) and a *redundancy*
-fix (attention), and **neither touches skew**. Worse, r1c's **sum of channel
-marginals is 6.041 bits = 67.1%, below the 70% bar**, so a *perfect* decorrelator
-on top of this encoder still fails, model-independently. **Do not run an attention
-or shrink rung on top of r1c.** It is refuted by arithmetic, at zero GPU cost.
+**The skew term doubled and redundancy barely moved** - the same pattern the
+96x96 arithmetic found, reached by a completely different route. By that
+arithmetic, the two named remedies for an entropy miss are a *collapse* fix (the
+shrink ladder) and a *redundancy* fix (attention), and **neither touches skew**.
+Worse, r1c's **sum of channel marginals is 6.041 bits = 67.1%, below the 70%
+bar**, so even a *perfect* decorrelator on top of this encoder fails, whatever the
+model. **Do not run an attention or shrink rung on top of r1c.** Arithmetic
+already rules it out, at zero GPU cost.
 
 ---
 
@@ -156,8 +158,8 @@ or shrink rung on top of r1c.** It is refuted by arithmetic, at zero GPU cost.
 **Read this before quoting the stability numbers.**
 
 **Nothing has measured what spurious flips cost a dynamics model, in either
-direction.** The architecture doc says this outright, and it should stay said. The
-case for caring is an argument, not a measurement:
+direction.** The architecture doc says so outright, and it should keep saying so.
+The case for caring is an argument, not a measurement:
 
 - *for*: a model roughly 16x under Chinchilla spends scarce capacity learning
   global dependencies that carry no physics
@@ -165,10 +167,10 @@ case for caring is an argument, not a measurement:
   transformer over a 975-token sequence can see the whole frame. They are not
   noise to it, and it may learn them for free
 
-**Stability was a tiebreaker, not a driver.** It agreed with a choice the E-1
-argument had already decided. A future reader will find three arguments all
-pointing at R1 and could reasonably conclude stability was load-bearing evidence.
-It was not.
+**Stability was a tiebreaker, not a driver.** It agreed with a choice the
+determinism argument had already made. A future reader will find three arguments
+all pointing at R1, and could reasonably conclude stability carried weight. It
+did not.
 
 **The trigger is one-directional: a rung can promote itself above R1, nothing
 demotes R1.** Any tokenizer passing *every* gate row with materially fewer than
@@ -192,8 +194,8 @@ weakens.
   so **every pre-existing checkpoint still loads**
 - `bench/token_stability_probe.py` - new, no GPU, reads the token cache and shard
   pixels. `python bench/token_stability_probe.py <run_id> [more...]`
-- `runs.jsonl` **r46**, and one verification-log row at the end of
-  `docs/world_model_architecture.md`
+- one `runs.jsonl` row (the r1c token-stability run), and one verification-log
+  row at the end of `docs/world_model_architecture.md`
 - `docs/world_model_architecture.md` + `AGENDA.md` - the decision
 
 **Runs on disk.** `20260830-000842-r1c` is the finished r1c rung with its token
@@ -208,9 +210,9 @@ Re-issue it after each `nn.Upsample` crash, against the newest `runs/*-r1w3` id,
 `--tokens` / `--eval` and the stability probe. Section 5 has the crash budget.
 
 which auto-resumes through crashes, then runs the token cache, gate, and probe.
-**Only run it if you have decided stability matters.** Under the recorded trigger
-r1w3 can only promote itself above R1, and by the doc, if it misses Q-2 then **no
-further rungs should be run chasing this**.
+**Only run it if you have decided stability matters.** Under the recorded trigger,
+r1w3 can only promote itself above R1, and by the doc, if it misses the entropy
+bar then **no further rungs should be run chasing this**.
 
 **Not touched, and not mine:** `docs/writeup_part1.md` (modified before this
 session) and `docs/research_token_stability.md` (untracked, from the previous
@@ -237,40 +239,42 @@ trainer pid explicitly or it keeps training.
 
 ## 6. Still unrecorded, still not citable
 
-**These findings were measured in an earlier session and exist only in its
-conversation.** r46
-records A and C in passing; **D, E and F had no `runs.jsonl` row, no
-verification-log entry, and no register id.** By this project's own rules they
-could not be quoted until reproduced or recorded.
+**These findings were measured in an earlier session and existed only in its
+conversation.** The r1c token-stability row in `runs.jsonl` records A and C in
+passing. **D, E and F had no `runs.jsonl` row, no verification-log entry, and no
+register id.** By this project's own rules they could not be quoted until
+reproduced or recorded.
 
-**All three were re-run and recorded on 2026-08-30** - r47, r48, r49, with r50
-added when the Q-5 repair was refuted. **Two of the three came back with
-different numbers**, which is the argument for this table rather than against it:
-a recollection that is 2.2x out on one figure and 1.3x out in the other direction
-on its neighbour would have been quoted as fact by whoever wrote the Phase 2 plan.
-The status column now carries what moved.
+**All three were re-run and recorded on 2026-08-30** - as the link-drift, Q-3
+blind-probe and dynamics-sizing rows of `runs.jsonl`, plus a fourth row when the
+Q-5 repair was refuted. **Two of the three came back with different numbers**,
+which is the argument for this table rather than against it: a recollection that
+is 2.2x out on one figure and 1.3x out the other way on its neighbour would have
+been quoted as fact by whoever wrote the Phase 2 plan. The status column now
+carries what moved.
 
 | | finding | status |
 |---|---|---|
-| A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in r46 as evidence, **and acted on**: decided 2026-09-18, and F-11's acceptance test is restated against persistence in `world_model_requirements.md` on 2026-09-22. The marginal top-1 half of the comparison was never measured |
-| B | `GroupNorm` couples tokens globally | **recorded and superseded** by r46, which measured it properly |
-| C | `bench/patch_probe.py:60` sets `RF = 22`; the true conv field is **15** | **recorded in r46, NOT FIXED.** See below |
-| D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 in r48, and acted on**: Q-3's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
-| E | Q-5's 10% link-drift bar fails the simulator's own frames (35.6% mean) | **recorded 2026-08-30 in r47, and acted on**: Q-5 is now relative, Q-4's treatment. **The number moved** - 44.2% on link1 and 23.0% on link0, not one 35.6% figure; the recollection appears to have averaged two links that fail for different reasons. r50 additionally refutes the obvious repair |
-| F | Phase 2 sizing: 14,592,384 params, 975-token sequence, 38.4 MB cache, ~16x under Chinchilla, fp32 6.6 h/epoch vs bf16 49 min | **recorded 2026-08-30 in r49, and THREE OF ITS NUMBERS MOVED.** Params 14,593,152 for RoPE+untied (the recollection is 768 short, and the four layout variants span only 571,008 in total). Chinchilla shortfall 15.0x, not ~16x. **The epoch times were wrong in both directions**: fp32 is 2.99 h, not 6.6, and bf16 is 1.06 h, not 49 min. Sequence length and cache size reproduce exactly. Nothing depended on the two wrong ones |
+| A | F-11's 3x-marginal bar is beaten by a zero-parameter persistence baseline | **recorded** in the token-stability row as evidence, **and acted on**: decided 2026-09-18, and F-11's acceptance test is restated against persistence in `world_model_requirements.md` on 2026-09-22. The marginal top-1 half of the comparison was never measured |
+| B | `GroupNorm` couples tokens globally | **recorded and superseded** by the token-stability row, which measured it properly |
+| C | `bench/patch_probe.py:60` sets `RF = 22`; the true conv field is **15** | **recorded in the token-stability row, NOT FIXED.** See below |
+| D | Q-3 cannot see dynamics failure; F-9 fires 0.0% on tokens from 300 steps later | **recorded 2026-08-30 (`bench/q3_blind_probe.py`), and acted on**: Q-3's terminator is restated in `world_model_requirements.md`. Reproduced exactly - 0.00%, with both controls holding |
+| E | Q-5's 10% link-drift bar fails the simulator's own frames (35.6% mean) | **recorded 2026-08-30 (`bench/link_drift_probe.py`), and acted on**: Q-5 is now relative, Q-4's treatment. **The number moved** - 44.2% on link1 and 23.0% on link0, not one 35.6% figure; the recollection appears to have averaged two links that fail for different reasons. A later row additionally refutes the obvious repair |
+| F | Phase 2 sizing: 14,592,384 params, 975-token sequence, 38.4 MB cache, ~16x under Chinchilla, fp32 6.6 h/epoch vs bf16 49 min | **recorded 2026-08-30 (`bench/dyn_size_probe.py`), and THREE OF ITS NUMBERS MOVED.** Params 14,593,152 for RoPE+untied (the recollection is 768 short, and the four layout variants span only 571,008 in total). Chinchilla shortfall 15.0x, not ~16x. **The epoch times were wrong in both directions**: fp32 is 2.99 h, not 6.6, and bf16 is 1.06 h, not 49 min. Sequence length and cache size reproduce exactly. Nothing depended on the two wrong ones |
 
-**No `NUM-` id was minted for anything this session.** Registering is a separate,
-deliberate act; quote `r46` until then.
+**No register entry was created for anything this session.** Registering is a
+separate, deliberate act; quote the `runs.jsonl` row until then.
 
 ### The `RF = 22` correction, deliberately not applied
 
-`bench/patch_probe.py:60` is wrong and "22x22" is quoted in several documents.
-The Q-2 ceiling derivation rests on it - "cells with identical receptive fields
-must share a code" - and that premise is **vacuous while `GroupNorm` is in the
-encoder**, because the effective field is the whole frame. **The direction is
-safe** (a larger true field means more room than registered, not less) and **no
-passed gate moves**, which is why it was logged rather than hot-fixed. Whoever
-touches `NUM-TOK-Q2CEIL` next has to deal with it.
+`bench/patch_probe.py:60` is wrong, and "22x22" is quoted in several documents.
+The entropy-ceiling derivation rests on it - "cells with identical receptive
+fields must share a code" - and that premise **says nothing while `GroupNorm` is
+in the encoder**, because the effective field is the whole frame. **The error
+points the safe way** (a larger true field means more room than registered, not
+less), and **no passed gate moves**, which is why it was logged rather than fixed
+on the spot. Whoever next touches the 94.25% entropy ceiling (`NUM-TOK-Q2CEIL` in
+the register) has to deal with it.
 
 ---
 
@@ -285,7 +289,7 @@ what follows is only the reminder that they exist:
 | 2 | data volume: 500 episodes or regenerate 3x / 5x | gated on the `data_hash` provenance story |
 | ~~3~~ | ~~restate F-11 against the persistence baseline~~ | **closed 2026-09-18**, and restated in `world_model_requirements.md` on 2026-09-22. What is still open is F-11's description, "predicts next token", which waits on the strictly-causal against block-causal measurement - see the F-11 risk row there |
 | 4 | sequence layout and position encoding | **irreversible.** RoPE is the lazy correct answer |
-| ~~5~~ | ~~Q-3's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded in r48 and Q-3 now terminates on frame-to-frame continuity rather than on F-9's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see the Q-3 risk row in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
+| ~~5~~ | ~~Q-3's verdict expression and calibration population~~ | **closed 2026-08-30.** Finding D is recorded (`bench/q3_blind_probe.py`), and Q-3 now terminates on frame-to-frame continuity rather than on F-9's palette verdict. The calibration population is settled with it: **reconstructions, not renders** - see the Q-3 risk row in `world_model_requirements.md`. What is still to be written is the expression's own thresholds, which is implementation, not a decision |
 | 6 | rollout sampling: greedy vs temperature | sim is deterministic (E-1), greedy is the strong default |
 | 7 | file split `dynamics.py` / `dynamics_eval.py` | do **not** start `engine.py` (Phase 3) |
 | 8 | exposure bias: mitigate now or name a trigger | |
