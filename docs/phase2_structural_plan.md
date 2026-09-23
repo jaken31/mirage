@@ -586,10 +586,11 @@ marginal-frequency column is where it first gets a number.
 
 ---
 
-## Decisions: nine taken, one open, one on its trigger
+## Decisions: ten taken, one on its trigger
 
 Each one changes an item above, so each is named rather than quietly resolved.
-Decision 1 was taken 2026-09-18 and decision 9 on 2026-09-23, by measurement.
+Decision 1 was taken 2026-09-18, decision 9 on 2026-09-23 by measurement, and
+decision 7 on 2026-09-23.
 The other seven were taken 2026-09-21, after a walkthrough of this plan's draft,
 and each is written down with its rationale.
 
@@ -698,11 +699,17 @@ than a statistical one.
 now.** The same 500-line trigger that split `fsq_eval.py` out of `fsq.py`,
 applied when it fires and not before.
 
-**7. Exposure bias: mitigate now, or name a trigger - OPEN, and not taken.**
-Teacher forcing trains on ground-truth context and the rollout feeds the model
-its own output. The cheap position is to name the trigger (a coherence horizon
-that collapses well before Q-3's 200 while held-out next-token accuracy looks
-healthy) rather than to buy a mitigation before that signature appears.
+**7. Exposure bias - DECIDED 2026-09-23: name a trigger, build no mitigation
+now.** Teacher forcing trains on ground-truth context and the rollout feeds the
+model its own output. Under decision 9's block-causal mask a frame's 64 tokens
+come out of one pass from earlier frames only, so the gap applies across frames,
+not within one. Item 4's first real training run trains with no exposure-bias
+mitigation, which keeps its train/val gap measurement clean. **Trigger:** gate
+row 4's coherence horizon (Q-3, frames until the continuity verdict fires) comes
+in under 100 frames while gate row 1 passes (held-out accuracy beats the
+persistence baseline). **If it fires**, the first remedy is context-token
+corruption during training (randomly replacing a small share of context tokens),
+and scheduled sampling is the second. The accepted cost is one retrain.
 
 **8. What P-7 means for a windowed epoch - DECIDED 2026-09-21: scored against a
 300,000-frame equivalent.** A scoring-method decision only; `NUM-BAR-P7` does
