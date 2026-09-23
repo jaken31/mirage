@@ -2,17 +2,17 @@
 
 **One line:** train an action-conditioned world model on a MuJoCo manipulation scene, delete the simulator, and control the learned model in real time at 30fps.
 
-**Hardware:** RTX 5060 **Laptop** 8GB, sm_120, **384 GB/s peak** (12001 MHz x 2 x 128-bit), 308.3 GB/s measured streaming read. The 448 figure previously here is the *desktop* 5060 at 28 Gbps and was wrong for this machine - see the architecture doc's verification log.
+**Hardware:** RTX 5060 **Laptop** 8GB, sm_120, **384 GB/s peak** (12001 MHz x 2 x 128-bit), 308.3 GB/s measured streaming read. The 448 figure that used to be here is the *desktop* 5060 at 28 Gbps, and it was wrong for this machine - see the architecture doc's verification log.
 **Timeline:** 12 weeks with 2 weeks slack.
-**Scope principle:** ML ambition at the floor, systems ambition intact. The inference engine is the project.
+**Scope principle:** keep the ML ambition minimal and the systems ambition intact. The inference engine is the project.
 
 ---
 
 ## Why robotics
 
-The architecture you already chose is the one this field converged on. Recent work on causal world modeling for robot control unifies video and action in a single autoregressive framework specifically to get persistent memory via KV cache and real-time observation integration. Diffusion video models predict better but are too slow to close a control loop. That gap is where this project sits.
+The architecture you already chose is the one this field settled on. Recent work on causal world modeling for robot control puts video and action in one autoregressive model, specifically to get persistent memory through the KV cache and to take in new observations in real time. Diffusion video models predict better but are too slow to close a control loop. This project sits in that gap.
 
-The demo also reads correctly to the audience you care about: a learned manipulation simulator running real-time on consumer hardware is immediately legible to robotics and ML infra people.
+The demo also speaks to the audience you care about: robotics and ML infra people immediately understand a learned manipulation simulator running in real time on consumer hardware.
 
 ## What changed from the game-world version
 
@@ -21,7 +21,7 @@ The demo also reads correctly to the audience you care about: a learned manipula
 | Self-written C++ 2D sandbox | MuJoCo scene, C++ harness against the C API |
 | Avatar + bouncing balls | 2-link planar arm + 3 pushable blocks |
 | 5 arrow-key actions | 9 actions: 3 joints-deltas x 3 per joint |
-| Memory test cut | **memory test back in** — the arm naturally occludes blocks |
+| Memory test cut | **memory test back in** - the arm naturally occludes blocks |
 | Flat 2D sprites | 3D scene rendered deliberately flat |
 | DiagD held in reserve | **DiagD may be a required rung** (see budget) |
 
@@ -42,7 +42,7 @@ The demo also reads correctly to the audience you care about: a learned manipula
 
 ## The flat-render config (critical)
 
-A default MuJoCo render has shading gradients, shadows, and specular highlights. Those do not compress to 64 tokens. Force the scene flat:
+A default MuJoCo render has shading gradients, shadows, and specular highlights. Those do not compress into 64 tokens. Force the scene flat:
 
 - ambient-only lighting, no directional lights
 - `shadow=false`, `reflection=false`
@@ -51,7 +51,7 @@ A default MuJoCo render has shading gradients, shadows, and specular highlights.
 - distinct saturated colors per object class
 - disable anti-aliasing (`offsamples=0`) so edges stay hard
 
-This is the single highest-leverage config decision in the project. Get it wrong and the tokenizer budget collapses.
+No other config decision in the project matters as much. Get it wrong and the tokenizer budget collapses.
 
 ## Scene
 
@@ -107,9 +107,9 @@ Training:   bf16, AdamW
 | **Compute floor** | **~95 us** | **~127 us** |
 | **Launch overhead (~80 kernels)** | **~400 us** | **~400 us** |
 
-At 64 tokens, overhead is 4x compute and CUDA graphs alone likely close it.
+At 64 tokens, overhead is 4x compute, and CUDA graphs alone likely close the gap.
 
-At 144 tokens, **overhead exceeds the entire budget.** Graph capture becomes mandatory rather than the headline win, and DiagD graduates from reserve to required. Note DiagD scales *better* at the larger grid: 23 diagonals for a 12x12 grid versus 144 sequential steps is a 6.3x reduction, against 4.3x on an 8x8 grid.
+At 144 tokens, **overhead exceeds the entire budget.** Graph capture becomes mandatory rather than the headline win, and diagonal decoding (DiagD) moves from reserve to required. DiagD scales *better* on the larger grid: 23 diagonals for a 12x12 grid instead of 144 sequential steps is a 6.3x reduction, against 4.3x on an 8x8 grid.
 
 **Decision rule:** train the tokenizer at 64x64 first. If held-out PSNR clears 30 dB, keep 64 tokens. If not, move to 96x96 and accept the harder budget. Decide with data, not now.
 
@@ -147,7 +147,7 @@ At 144 tokens, **overhead exceeds the entire budget.** Graph capture becomes man
 
 ## Add-backs if Phase 2 lands early
 
-1. **Third link on the arm** — richer dynamics, same everything else
-2. **Block-block collision** — one flag in the XML
-3. **Moving camera** — reintroduces the harder memory problem
-4. **First-person / wrist camera** — the impressive version, expensive on tokens
+1. **Third link on the arm** - richer dynamics, same everything else
+2. **Block-block collision** - one flag in the XML
+3. **Moving camera** - brings back the harder memory problem
+4. **First-person / wrist camera** - the impressive version, expensive in tokens
