@@ -913,7 +913,30 @@ def _self_check() -> None:
     # A hand-computable case: total SSE 1.0 over 100 values, so MSE = 1/100.
     assert abs(psnr_db(1.0, 100) - 10 * math.log10(255 * 255 * 100)) < 1e-9
     print("psnr_db agrees with 10*log10(255^2 / MSE) by hand")
-    print("fsq self-check ok (5a, 5b, and encode; no data touched)")
+
+    # `train` must refuse a run that would take zero optimizer steps rather than
+    # log it as finished. The shard loaders are swapped for stubs so this stays
+    # data-free (the palette comes from the committed scene XML): the guard only
+    # reads `len(train_idx)`, so any array with the right frame count reaches it
+    # through the real `train`.
+    saved = {name: getattr(data, name) for name in ("load_shards", "episode_index", "preload")}
+    lut_stub = np.zeros((7, 3), np.uint8)
+    try:
+        data.load_shards = data.episode_index = lambda *a, **k: []
+        for n_train, batch, want in ((0, 128, "train split is empty"),
+                                     (5, 128, "batch (128) is larger than train frames (5)")):
+            frames = np.zeros((n_train, h, w), np.uint8)
+            data.preload = lambda *a, frames=frames, **k: (frames, lut_stub)
+            try:
+                train("r1", cfg, epochs=1, batch=batch, device="cpu")
+                raise AssertionError(f"train ran with {n_train} train frames at batch {batch}")
+            except ValueError as e:
+                assert want in str(e), f"train raised {e!r}, expected {want!r}"
+    finally:
+        for name, fn in saved.items():
+            setattr(data, name, fn)
+    print("train refuses an empty train split and a batch larger than it")
+    print("fsq self-check ok (5a, 5b, encode, and the train guard; no data touched)")
 
 
 def main() -> None:
