@@ -548,6 +548,9 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
     `stride` > 1 scores the generated frame on every stride-th window only - the
     fallback for when the strict arm's 64-pass decode costs too much. It is
     recorded in the result, and every other number is still over all windows.
+    The block arm is always decoded on the full batch and then subsampled: its
+    one pass costs nothing to keep, and a sub-batch shape can pick different
+    bf16 kernels and break its exact generated == teacher-forced control.
     """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = d or Data(cfg)
