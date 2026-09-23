@@ -561,15 +561,17 @@ kind of project fails.
   draw, and temperature, and the measurement harness refuses to start if the card
   is not at full power or its clocks are below a configured fraction of maximum.
 - **Why** this came out of a real, invalid measurement. We measured raw memory
-  bandwidth at 66-77 GB/s against an assumed 448 (since refuted - the real ceiling is 384 and the card delivers 308.3; that first attempt was invalid because it was drawing **6.16
-  watts** at 36% of its maximum clock speed during a heavy computation - it never
-  left a low-power state. That does not refute the assumed figure; it means the
-  measurement was meaningless. Two consequences beyond the number itself: the
-  "any measurement repeats within 5%" requirement is *unachievable* while the
-  clock drifts, since the swing is more than an order of magnitude; and the
-  slowest-1% requirement can be blown by a single power-state transition
-  mid-run, which would look exactly like a programming problem. Cost of the fix:
-  one system query per run, outside the timed section.
+  bandwidth at 66-77 GB/s against an assumed 448. (The 448 has since been refuted:
+  the real ceiling is 384, and the card delivers 308.3.) That first attempt was
+  invalid because the card was drawing **6.16 watts** at 36% of its maximum clock
+  speed during a heavy computation - it never left a low-power state. So that
+  attempt did not refute the assumed figure; the measurement was meaningless.
+
+  Two consequences beyond the number itself. The "any measurement repeats within
+  5%" requirement *cannot be met* while the clock drifts, since the swing is more
+  than an order of magnitude. And the slowest-1% requirement can be blown by a
+  single power-state change mid-run, which would look exactly like a programming
+  problem. Cost of the fix: one system query per run, outside the timed section.
 - **Wrong if** the laptop simply cannot *sustain* full power through a
   thousand-picture run. That is a project-level constraint worth discovering in
   week one rather than week ten, because it compresses every performance margin
@@ -690,8 +692,7 @@ kind of project fails.
 > per picture. On the measure this whole decision was written around, it is the
 > better option.
 >
-> It **fails a different check entirely**, and one nobody had it under suspicion
-> for. The compressor is supposed to spread its work across its 512-value
+> It **fails a different check entirely**, one nobody suspected. The compressor is supposed to spread its work across its 512-value
 > vocabulary reasonably evenly; at the smaller size it uses 74% of the available
 > evenness, and at the larger size only 55%, against a bar of 70%.
 >
@@ -756,10 +757,11 @@ kind of project fails.
   re-checked on 2026-08-28 and withdrawn - they came from a sloppier way of
   building that dictionary, not from the pictures.) So it is not a formality, but
   the shortfall is about one point rather than four. Second, and decisively - this
-  part re-measured and confirmed - **99.9% of that shortfall sits at the
-  boundaries between objects** rather than in flat areas. Misplaced edges are precisely what the larger size fixes. So the branch
-  this note used to treat as the unlikely one is the branch the evidence points
-  at, and holding the larger size "in reserve" would mean discovering that late.
+  part was re-measured and confirmed - **99.9% of that shortfall sits at the
+  boundaries between objects** rather than in flat areas. Misplaced edges are
+  exactly what the larger size fixes. So the branch this note used to treat as
+  the unlikely one is the branch the evidence points at, and holding the larger
+  size "in reserve" would mean discovering that late.
 
   Measuring both costs one settings file, about 45 seconds of regenerating
   pictures, and one extra training run of about six minutes. Against that, what
@@ -809,15 +811,16 @@ kind of project fails.
   away information at the same time as it lowers the bar, and here it throws away
   more than it saves - the first step down the ladder scores **worse**, not
   better. So the perverse incentive this note worried about does not exist in the
-  direction it feared, and the ladder is not the free move it was assumed to be. It is kept as a pass/fail bar anyway, because the failure it is
-  really watching for - the compressor ignoring almost all of its vocabulary - is
-  a genuine failure whichever way the bar is phrased.
+  direction it feared, and the ladder is not the free move it was assumed to be.
+  The check is kept as a pass/fail bar anyway, because the failure it is really
+  watching for - the compressor ignoring almost all of its vocabulary - is a
+  genuine failure whichever way the bar is phrased.
 - **Fallback** (1) Report the number of vocabulary entries in real use alongside
   the evenness figure, so a reader can see which of the two is doing the work.
   (2) If shrinking all the way to 64 still fails, that is evidence the compressor
   itself is too weak, and the answer moves to I1's first fallback. **Never
   exercised, and now known to be untestable the cheap way**: at the larger picture
-  size the whole ladder was priced by arithmetic in 2026-08-29's r45 and no rung
+  size the whole ladder was priced by arithmetic on 2026-08-29 and no rung
   passes, so "shrink until it works" was never a live option there. At the smaller
   picture size the check passes and the ladder stays untouched.
 - **Watch for** changing the vocabulary size quietly changes how strongly the
