@@ -49,7 +49,7 @@ Everything flows one direction. Nothing calls backwards.
 | `mirage/configs/base.json` | after item 6, the calibrated `validator` thresholds | the measurement that produced them |
 
 `preload` belongs in `data.py`, not `fsq.py`, because Phase 2 will want the same
-palette-index array for its own eval frames. A copy in two files is the same
+palette-index array for its own eval frames, and a copy in two files is the same
 class of bug as two validator implementations.
 
 ---
@@ -348,7 +348,7 @@ one `.npy` of `uint16` per shard, `(frames, 8, 8)`, in a directory named by the
 per-shard frame counts. 38.4 MB total.
 
 Per-shard and not one flat array, because a flat array needs a cumulative frame
-offset to address, and that invites off-by-one bugs. Per-shard makes
+offset to address, and that is an off-by-one factory. Per-shard makes
 `len(tokens) == shard.frames` a loud assert. Named by run and not by
 `tokenizer_hash`, because two runs at identical config and different seeds share
 a hash and produce different tokens. The architecture doc settled this, and the
