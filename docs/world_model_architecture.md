@@ -2,62 +2,67 @@
 
 ## Context
 
-`mirage` is greenfield: three planning docs, zero code, one commit. The docs
+`mirage` started greenfield: three planning docs, zero code, one commit. The docs
 (`world_model_requirements.md`, `world_model_ingredients.md`,
-`world_model_learning_roadmap.md`) settle the *ML and systems choices* - MuJoCo +
-flat render + EGL, FSQ tokenizer at 512 codes / stride 8, a 384d x 8L decoder-only
-dynamics transformer, the 5-rung inference ladder, a 12-week phase order, and the
-target hardware (RTX 5060, sm_120, WSL2).
+`world_model_learning_roadmap.md`) settle the *ML and systems choices*: MuJoCo +
+flat render + EGL, an FSQ tokenizer at 512 codes / stride 8, a 384d x 8-layer
+decoder-only dynamics transformer, the 5-rung inference ladder, a 12-week phase
+order, and the target hardware (RTX 5060, sm_120, WSL2).
 
 **Superseded 2026-08-21: EGL and WSL2 are out.** WSL2's GPU graphics path is broken
-on this machine - no `/dev/dri` node, Mesa falls back to a CPU rasterizer - so the
-project runs natively on Windows, where MuJoCo's only viable backend is GLFW.
-Measured, not assumed; evidence in `CLAUDE.md` and `bench/egl_probe.py`. Read every
-"EGL" below as "the offscreen GL context"; the render-path section records what this
-changed.
+on this machine - no `/dev/dri` node, and Mesa falls back to a CPU rasterizer - so
+the project runs natively on Windows, where MuJoCo's only usable backend is GLFW.
+This was measured, not assumed; the evidence is in `CLAUDE.md` and
+`bench/egl_probe.py`. Read every "EGL" below as "the offscreen GL context". The
+render-path section records what this changed.
 
-They say nothing about **how the pieces meet**. Every remaining architectural
-question is an interface question. This doc records those decisions so Phase 0 can
-start without re-deriving them, and so the few cross-cutting constraints that are
-expensive to retrofit are in place from the first commit.
+The planning docs say nothing about **how the pieces meet**. Every remaining
+architecture question is an interface question. This doc records those decisions,
+so Phase 0 can start without re-deriving them and so the few cross-cutting
+constraints that are expensive to add later are in place from the first commit.
 
 ## Constraints that must hold from commit 1
 
-- **No hardcoded shapes.** Image size, token grid, context length, action count
-  all derive from config; checkpoints store the config that produced them.
-  Required by the live 64x64 / 96x96 fork and by F-13.
-- **Model forward takes an explicit attention mask:** `(tokens, cache, mask)`. A
-  hardcoded causal mask blocks Diagonal Decoding at the model level regardless of
-  how the engine schedules, and DiagD is *required* on the 144-token path.
-- **KV cache, when enabled, is statically allocated and masked - never growing.**
-  A growing cache breaks CUDA graph capture (roadmap, Track E). This is not "the
-  cache is always on": F-15 needs a no-cache full-recompute path as rung 1's
-  baseline. Both ship; the cached one is static.
+- **No hardcoded shapes.** Image size, token grid, context length and action count
+  all come from config, and checkpoints store the config that produced them. The
+  open 64x64 / 96x96 fork needs this, and so does configurable context length
+  (F-13).
+- **The model's forward pass takes an explicit attention mask:**
+  `(tokens, cache, mask)`. A hardcoded causal mask rules out diagonal decoding
+  (DiagD) inside the model, however the engine schedules, and DiagD is *required*
+  on the 144-token path.
+- **The KV cache, when enabled, is allocated once at a fixed size and masked. It
+  never grows.** A growing cache breaks CUDA graph capture (roadmap, Track E).
+  This does not mean "the cache is always on": the inference ladder (F-15) needs
+  a no-cache, full-recompute path as rung 1's baseline. Both ship; the cached one
+  is static.
 - **Every artifact's filename carries the hash of what determined its contents,
-  and every artifact stores the git SHA that produced it.** The hash gives
-  staleness-by-construction; the SHA gives provenance when config alone cannot
-  explain a result.
-- **Sanitizers available from the first C++ file** (`/W4 /WX /fsanitize=address`),
-  as a separate build type rather than the default - the production run needs `/O2`
-  to hit P-6. MSVC has no UBSan; see the sanitizer-cost section.
+  and every artifact stores the git SHA that produced it.** The hash means a stale
+  artifact is never found by name. The SHA gives provenance when config alone
+  cannot explain a result.
+- **Sanitizers are available from the first C++ file** (`/W4 /WX /fsanitize=address`),
+  as a separate build type rather than the default. The production run needs `/O2`
+  to meet the generation throughput bar (P-6). MSVC has no UBSan; see the
+  sanitizer-cost section.
 
 ## Scope
 
-**Phase 0 plus cross-cutting concerns, designed fully. Seams only for Phases 1-4.**
-Per the roadmap's own "just-in-time, not up front" rule.
+**Phase 0 plus cross-cutting concerns, designed fully. Only the seams for Phases
+1-4.** This follows the roadmap's own "just-in-time, not up front" rule.
 
 ## C++/Python boundary: standalone binary, no bindings
 
-`gen_data` is an executable writing shards to disk; Python only reads files. No
-pybind11.
+`gen_data` is an executable that writes shards to disk. Python only reads files.
+No pybind11.
 
-Decisive argument is **E-3** (ASan clean on the full data-generation run):
-ASan through a Python extension module requires preloading the ASan runtime before
-the interpreter starts, plus typically a suppression file for interpreter
-internals, whereas ASan on a standalone binary is `./gen_data`. The magnitude of
-that gap is unverified (see verification log) and the decision does not depend on
-it - the binary is simpler regardless, and it makes "delete the simulator"
-literal: after Phase 0 nothing in the Python tree imports MuJoCo.
+The deciding argument is the sanitizer requirement (E-3: ASan clean on the full
+data-generation run). ASan inside a Python extension module needs the ASan
+runtime preloaded before the interpreter starts, and usually a suppression file
+for interpreter internals. ASan on a standalone binary is just `./gen_data`. How
+big that gap is has not been verified (see the verification log), and the
+decision does not depend on it: the binary is simpler either way. It also makes
+"delete the simulator" literal. After Phase 0, nothing in the Python tree imports
+MuJoCo.
 
 ## Shard format: structure-of-arrays, three files per shard
 
@@ -69,30 +74,32 @@ literal: after Phase 0 nothing in the Python tree imports MuJoCo.
 
 Meta record: `action` u8; `qpos[2]` f32; `block_xy[3][2]` f32; `visible_px[3]` u16;
 `contact_mask` u8; `episode_id` u32; `step_idx` u16. **46 B, 0.37% of pixel bytes.**
-Under R-4's 20 GB with room for the 96x96 fallback (8.294 GB).
+That fits under the 20 GB dataset ceiling (R-4) with room for the 96x96 fallback
+(8.294 GB).
 
-`contact_mask` is **two fields in one byte**: bits 0..6 are "block *i* touches the
-arm", bit 7 is "this episode is the scripted-reach half of the 50/50 mix". Packed
-rather than given its own `u8`, which would take the record to 47 B for one
-boolean. `sim/truth.cpp` refuses a scene with more than seven blocks, so the two
-cannot collide, and `sim/shard_writer.cpp` aborts if a block bit ever reaches bit
-7 anyway. **Every reader must mask** - `contact_mask != 0` on the raw byte reads
-every scripted frame as a contact and takes F-6 from 16.6% to over 50% without
-failing anything. The constant has exactly two homes, `kScriptedBit` in
-`sim/shard_writer.h` and `SCRIPTED_BIT` in `mirage/data.py`, which is one per
-language and the same arrangement `meta_dtype` uses.
+`contact_mask` packs **two fields into one byte**. Bits 0..6 mean "block *i*
+touches the arm". Bit 7 means "this episode is the scripted-reach half of the
+50/50 mix". It is packed rather than given its own `u8`, which would take the
+record to 47 B for one boolean. `sim/truth.cpp` refuses a scene with more than
+seven blocks, so the two cannot collide, and `sim/shard_writer.cpp` aborts if a
+block bit ever reaches bit 7 anyway.
+
+**Every reader must mask.** Testing `contact_mask != 0` on the raw byte reads
+every scripted frame as a contact. That takes the contact rate (F-6) from 16.6%
+to over 50% without failing anything. The constant has exactly two homes,
+`kScriptedBit` in `sim/shard_writer.h` and `SCRIPTED_BIT` in `mirage/data.py`:
+one per language, the same arrangement `meta_dtype` uses.
 
 As written by `sim/shard_writer.cpp`, the sidecar carries `frames`, `height`,
 `width`, `channels`, `pixel_dtype`, `meta_record_bytes`, `meta_joints`,
 `meta_blocks`, `seed`, `shard_index`, `data_hash`, `git_sha`. The three `meta_*`
-fields are what let the reader build its dtype from the file instead of
-hardcoding 46 - the "no hardcoded shapes" rule, applied across the language
-boundary. The object is flat and every value is an integer or a
-character-checked atom, so the writer needs no JSON library and no escaping;
-nesting anything in it is the trigger to use `nlohmann/json`, which the config
-reader already links.
+fields let the reader build its dtype from the file instead of hardcoding 46 -
+the "no hardcoded shapes" rule, applied across the language boundary. The object
+is flat, and every value is an integer or a character-checked atom, so the writer
+needs no JSON library and no escaping. Nesting anything in it is the trigger to
+use `nlohmann/json`, which the config reader already links.
 
-Field justifications, one each - a field with no named consumer does not ship:
+Each field has a named consumer. A field without one does not ship:
 
 | Field | Consumer |
 |---|---|
@@ -104,37 +111,39 @@ Field justifications, one each - a field with no named consumer does not ship:
 | `contact_mask` bit 7 (scripted) | which half of the policy mix produced the episode - per-half breakdowns of F-6, Q-4 and window coverage, none of which the dataset could answer before |
 | `episode_id`, `step_idx` | prevents a training window spanning a reset |
 
-Three non-obvious choices:
+Three choices that are not obvious:
 
 - **Store `visible_px` counts, not an `is_occluded` boolean.** A boolean bakes in a
-  threshold; counts let F-7 and Q-6 be re-derived at any threshold without
-  regenerating.
-- **`episode_id` + `step_idx` are mandatory.** With ctx=15 a window straddling a
-  reset is noise, and without these fields the dataloader cannot detect it.
-  Absence produces plausible-looking loss curves - the worst failure mode
-  available.
-- **SoA over AoS, for simplicity not speed.** Measured (numpy + torch 2.9.1): a
-  structured field view is non-contiguous as expected (`C_CONTIGUOUS: False`), but
-  `torch.from_numpy` on it *succeeds*; the cost is one extra host memcpy before
-  H2D, ~197 KB at batch 16, i.e. noise. Separate files win because
-  `np.memmap(...).reshape(-1,H,W,3)` needs no stride math and no structured-dtype
-  subtleties - not because of throughput.
+  threshold. Counts let the occlusion rate and object permanence be re-derived at
+  any threshold without regenerating.
+- **`episode_id` + `step_idx` are mandatory.** With a 15-frame context, a window
+  that straddles a reset is noise, and without these fields the dataloader cannot
+  detect it. Leaving them out produces plausible-looking loss curves, the worst
+  kind of failure.
+- **Structure-of-arrays over array-of-structures, for simplicity, not speed.**
+  Measured with numpy + torch 2.9.1: a structured field view is non-contiguous as
+  expected (`C_CONTIGUOUS: False`), but `torch.from_numpy` on it *succeeds*. The
+  cost is one extra host memcpy before the copy to the GPU, ~197 KB at batch 16,
+  which is noise. Separate files win because `np.memmap(...).reshape(-1,H,W,3)`
+  needs no stride math and no structured-dtype subtleties - not because of
+  throughput.
 
-Sidecar JSON is written *after* the blobs close, so its existence is the commit
-marker: a crashed run leaves a shard with no JSON and the loader skips it. No
-lockfiles.
+The sidecar JSON is written *after* the blobs close, so its existence marks the
+shard as complete. A crashed run leaves a shard with no JSON, and the loader
+skips it. No lockfiles.
 
 ## Render path and occlusion measurement (F-7)
 
-Verified against MuJoCo docs: `mjtRndFlag` includes `mjRND_SEGMENT` and
+Verified against the MuJoCo docs: `mjtRndFlag` includes `mjRND_SEGMENT` and
 `mjRND_IDCOLOR` ("segmentation with segid+1 color"), set via `mjvScene.flags`. So
-per frame: render RGB, render segmentation, count pixels per block segid, store
-the counts, discard the mask. Full occlusion is `visible_px == 0` - exactly what
-F-7 and Q-6 need, with no baseline-area render. Storing masks would double dataset
-size for nothing.
+each frame: render RGB, render segmentation, count pixels per block segid, store
+the counts, discard the mask. Full occlusion is `visible_px == 0`, which is
+exactly what the occlusion rate and object permanence need, with no separate
+baseline-area render. Storing masks would double the dataset size for nothing.
 
-**Two passes. Measured 2026-08-23, and the switch trigger did not fire.** P-6's
-500 fps allows 2 ms per frame total; two passes cost 7.6% of it.
+**Two passes. Measured 2026-08-23, and the trigger to switch did not fire.** The
+500 fps generation bar allows 2 ms per frame in total; two passes cost 7.6% of
+it.
 
 | Arm, 64x64, median of 5 x 1000 calls | us | spread |
 |---|---|---|
@@ -142,66 +151,69 @@ size for nothing.
 | `mjr_readPixels`, RGB + depth | 49.6 | 10% |
 | `mjr_render` + `mjr_readPixels`, RGB + depth | 75.8 | 65% |
 
-Two passes per frame = 151.6 us of the 2000 us budget, **13x margin**. Dropping
-depth would save 2.4% - take it only if `sim/truth.*` turns out not to need depth,
-do not contort anything for it. Conditions: RTX 5060 Laptop, GLFW offscreen FBO,
-Windows, **P2 / ~2500 MHz** (not P0 - readback is driver-bound, so the P0 rerun is
-expected to move this little). Probe: `bench/readback_probe.py`.
+Two passes per frame = 151.6 us of the 2000 us budget, a **13x margin**. Dropping
+depth would save 2.4%. Take that only if `sim/truth.*` turns out not to need
+depth; do not contort anything for it. Conditions: RTX 5060 Laptop, GLFW
+offscreen FBO, Windows, **P2 / ~2500 MHz**. Not P0, but readback is driver-bound,
+so a P0 rerun is expected to move this little. Probe: `bench/readback_probe.py`.
 
 **The ~30 ms figure from MuJoCo discussion #2222 does not reproduce here.** The real
 fixed cost was MuJoCo's own visual defaults, `shadowsize=4096` and `offsamples=4`.
 Setting both to 0 cut `mjr_render` from 316 to 26 us (12x) and readback from 71 to
-25 us (2.8x). The readback half of that was an **MSAA resolve** - with `offsamples=4`,
-`mjr_readPixels` must collapse a 4x multisampled buffer before it can transfer
-anything. So `<quality offsamples="0" shadowsize="0"/>` is **required** in
-`scene/arm_blocks.xml`, not cosmetic: it is what buys the P-6 margin, and
-`offsamples="0"` is independently required for F-2's <=24-colour palette.
+25 us (2.8x). The readback half of that was an **MSAA resolve**: with
+`offsamples=4`, `mjr_readPixels` must collapse a 4x multisampled buffer before it
+can transfer anything. So `<quality offsamples="0" shadowsize="0"/>` is
+**required** in `scene/arm_blocks.xml`, not cosmetic. It is what buys the margin
+on the generation bar, and `offsamples="0"` is separately required for F-2's
+<=24-colour palette.
 
-`castshadow="false"` was listed here too and is wrong: `castshadow` is an attribute
-of `<light>`, and MuJoCo's compiler rejects it on a geom. The scene declares no
-`<light>` elements, so shadow casting has no source to disable. The second real
-requirement is an **ambient-only headlight** (`diffuse="0 0 0" specular="0 0 0"`):
-diffuse shading varies per face, so one `rgba` becomes three palette entries per
-box. Measured 2026-08-23 on the first working scene - adding the `<visual>` block
-took the colour count from 28 to 6.
+`castshadow="false"` was listed here too, and that was wrong: `castshadow` is an
+attribute of `<light>`, and MuJoCo's compiler rejects it on a geom. The scene
+declares no `<light>` elements, so there is no shadow source to disable. The
+second real requirement is an **ambient-only headlight**
+(`diffuse="0 0 0" specular="0 0 0"`). Diffuse shading varies per face, so without
+it one `rgba` becomes three palette entries per box. Measured 2026-08-23 on the
+first working scene: adding the `<visual>` block took the colour count from 28
+to 6.
 
-Two limits on reusing these numbers. Readback cost is per-pixel and per-call, so
-25/50 us holds for any 64x64 scene - but the 26 us render is **one sphere and is a
-floor**; two arm links plus blocks will cost more, so re-run the render arm once
-`arm_blocks.xml` exists. And the 65% spread on the render arm is shrinking signal,
-not growing jitter (absolute jitter stayed ~40 us throughout); at 13x margin, record
-the spread next to the median and move on.
+Two limits on reusing these numbers. Readback cost is per pixel and per call, so
+25/50 us holds for any 64x64 scene. But the 26 us render was **one sphere and is
+a floor**; two arm links plus blocks will cost more, so re-run the render arm once
+`arm_blocks.xml` exists. And the 65% spread on the render arm comes from a
+shrinking signal, not growing jitter (absolute jitter stayed ~40 us throughout).
+At a 13x margin, record the spread next to the median and move on.
 
 **Retired triggers, kept for the record.** Readback above ~0.5 ms/call would have
-forced the single-pass palette render below; near ~30 ms would have forced a
-hand-rolled WGL pbuffer context (`wglCreateContext`, `wglMakeCurrent`,
+forced the single-pass palette render below. Readback near ~30 ms would have
+forced a hand-rolled WGL pbuffer context (`wglCreateContext`, `wglMakeCurrent`,
 `WGL_ARB_pbuffer` via `ctypes` on `opengl32.dll`), the 3-to-5-day detour in
-`timeline.md`. Neither fired, so neither gets built. OSMesa remains an explicit
-anti-choice regardless: it is a CPU rasterizer.
+`timeline.md`. Neither fired, so neither gets built. OSMesa stays ruled out
+regardless: it is a CPU rasterizer.
 
-**Single-pass alternative, held in reserve: render segmentation only and synthesize
+**Single-pass alternative, held in reserve: render segmentation only and build
 RGB from a palette lookup.** Under F-2's config - ambient-only light, no shadows,
 no textures, no skybox, `offsamples=0` - every pixel belongs to exactly one geom or
-the background with no blended edges, so the RGB frame *is* a palette lookup over
-the segmentation frame. Benefits: F-2's <=24-colour ceiling becomes structural
-rather than tested, F-4 determinism strengthens because no float shading math
-touches the pixel path, and occlusion counts stop costing a pass. Cost is
-reversibility - a shaded or textured variant needs the second pass back. Switching
-later costs one regeneration, ~10 minutes.
+the background, with no blended edges. So the RGB frame *is* a palette lookup over
+the segmentation frame. The benefits: F-2's <=24-colour ceiling holds by
+construction instead of by test, determinism (F-4) gets stronger because no float
+shading math touches the pixel path, and occlusion counts stop costing a pass.
+The cost is reversibility: a shaded or textured variant needs the second pass
+back. Switching later costs one regeneration, ~10 minutes.
 
-Either way, visualization decorations (contact points, joint axes) must stay off
-- they pollute both the palette and the segmentation. **They already are:
-`mjv_defaultOption` leaves every decoration off, so the correct action is to call
-it and change nothing.** Do not zero the flag array to "make sure": that also
+Either way, visualization decorations (contact points, joint axes) must stay off,
+because they pollute both the palette and the segmentation. **They already are
+off: `mjv_defaultOption` leaves every decoration off, so the right move is to call
+it and change nothing.** Do not zero the flag array to "make sure". That also
 clears `mjVIS_STATIC`, and every worldbody geom silently stops drawing. Measured
 2026-08-23; the row is in the verification log.
 
 ## Provenance and artifact naming
 
 Config is a sectioned JSON (`sim`/`data`/`tokenizer`/`dynamics`/`engine`/`validator`),
-`nlohmann/json` single header in C++, stdlib `json` in Python. Hashes form a **tree
-rooted at `data_hash`**, which is what makes re-tuning a validator threshold and
-retraining the tokenizer mutually non-invalidating:
+read with the `nlohmann/json` single header in C++ and stdlib `json` in Python.
+The hashes form a **tree rooted at `data_hash`**. That is what lets you re-tune a
+validator threshold without invalidating the tokenizer, and retrain the tokenizer
+without invalidating the validator thresholds:
 
 ```
 data_hash = sha256(canon(sim) + canon(data) + arm_blocks.xml)
@@ -211,19 +223,21 @@ data_hash = sha256(canon(sim) + canon(data) + arm_blocks.xml)
 └── validator_hash = sha256(data_hash + canon(validator))
 ```
 
-The scene XML is inside `data_hash` or E-4 has a hole - a bench number from a
-different scene is not comparable. Its bytes enter **with CRLF normalised to LF**
-(`mirage.config.scene_bytes`), which is not cosmetic: it was measured on
-2026-08-28 that a CRLF working tree and an LF one hash the same scene to
-`219ab0af` and `18a76531`. `.gitattributes` sets `eol=lf` to prevent exactly that
-and could not, because git applies `eol` only at checkout and never rewrites a
-working tree that already exists. The attribute stays for readable diffs;
-provenance no longer depends on it. `validator_hash` branches off `data_hash`
-rather than standing alone because the palette lives in the XML, so a palette
-change alters what the measurements *mean*; and it stays out of `dynamics_hash` so
-that re-tuning a threshold does not invalidate a checkpoint whose rollouts never
-changed. Eval rows are stamped `(dynamics_hash, validator_hash)`, so recomputing
-Q-3 under new thresholds is a new row against the same checkpoint. ~20 lines total.
+The scene XML must be inside `data_hash`, or bench reproducibility (E-4) has a
+hole: a bench number from a different scene is not comparable. Its bytes enter
+**with CRLF normalised to LF** (`mirage.config.scene_bytes`). That is not
+cosmetic. It was measured on 2026-08-28 that a CRLF working tree and an LF one
+hash the same scene to `219ab0af` and `18a76531`. `.gitattributes` sets `eol=lf`
+to prevent exactly that, and could not, because git applies `eol` only at checkout
+and never rewrites a working tree that already exists. The attribute stays for
+readable diffs, but provenance no longer depends on it.
+
+`validator_hash` branches off `data_hash` rather than standing alone because the
+palette lives in the XML, so a palette change alters what the measurements
+*mean*. It stays out of `dynamics_hash` so that re-tuning a threshold does not
+invalidate a checkpoint whose rollouts never changed. Eval rows are stamped
+`(dynamics_hash, validator_hash)`, so recomputing the coherence horizon (Q-3)
+under new thresholds is a new row against the same checkpoint. ~20 lines total.
 
 | Artifact | Name | Keyed by |
 |---|---|---|
@@ -235,101 +249,110 @@ Q-3 under new thresholds is a new row against the same checkpoint. ~20 lines tot
 | Bench row | `engine_hash` | full upstream chain + engine flags |
 
 **The token cache is keyed by `ckpt_hash = sha256(checkpoint bytes)`, not by
-`tokenizer_hash`.** The config-derived version is a bug: two runs with identical
+`tokenizer_hash`.** Keying it by config would be a bug. Two runs with identical
 config but different seeds share a `tokenizer_hash` and produce different tokens,
-so Phase 2 would silently load the wrong cache - precisely the failure this scheme
-exists to prevent. The checkpoint stores `tokenizer_hash` inside it for provenance.
-Content-addressed by weights, provenance-linked by config.
+so Phase 2 would silently load the wrong cache - the exact failure this scheme
+exists to prevent. The checkpoint stores `tokenizer_hash` inside it for
+provenance. Content is addressed by weights; provenance is linked by config.
 
-What it buys: **no invalidation code exists** - a stale artifact is unreachable
-because nothing computes its name; "already computed?" is `os.path.exists`;
-concurrent runs cannot collide; every number walks back to its frames.
+What this buys: **no invalidation code exists.** A stale artifact cannot be
+reached, because nothing computes its name. "Already computed?" is
+`os.path.exists`. Concurrent runs cannot collide. Every number traces back to its
+frames.
 
 **The one real limit: the hash covers config, not code.** Change an
-implementation without touching its config and the hash is identical while
-behaviour differs. That splits into *detecting* staleness (not cheaply solvable)
-and *diagnosing* provenance (solvable). Store the **git SHA inside each artifact**
-- not in the hash, which would invalidate everything every commit - and accept
-that detection stays manual. No `version` integers: seven hand-bumped ints across
-seven sections will rot, and they only ever gave a partial answer to the
-unsolvable half.
+implementation without touching its config, and the hash stays the same while
+the behaviour differs. That splits into two problems. *Detecting* staleness has no
+cheap solution. *Diagnosing* provenance does. Store the **git SHA inside each
+artifact** - not in the hash, which would invalidate everything on every commit -
+and accept that detection stays manual. No `version` integers: seven hand-bumped
+ints across seven sections will rot, and they only ever gave a partial answer to
+the unsolvable half.
 
 ## Policy mixing is per-episode, not per-frame
 
-A scripted reach needs consecutive steps to complete; coin-flipping per frame
-destroys the property the 50/50 mix exists for. F-5's near-uniform action
-histogram still holds in aggregate because the random half carries it. Corollary:
-keep episodes >> ctx. At 300 steps, 4.7% of frames are lost to boundaries; at 100
-steps, 14%. **`steps_per_episode` is 600, not 200**: at 200 steps the episode is
-0.4 s of sim time and the arm cannot cross to a block, so the scripted half
-completes 13% of the time instead of 44%. 500 x 600 is the same 300k frames.
+A scripted reach needs consecutive steps to complete. Flipping a coin per frame
+destroys the very property the 50/50 mix exists for. F-5's near-uniform action
+histogram still holds in aggregate, because the random half carries it.
+
+A consequence: keep episodes much longer than the context. At 300 steps, 4.7% of
+frames are lost to episode boundaries; at 100 steps, 14%. **`steps_per_episode` is
+600, not 200.** At 200 steps an episode is 0.4 s of sim time and the arm cannot
+cross to a block, so the scripted half completes 13% of the time instead of 44%.
+500 x 600 is the same 300k frames.
 
 ## F-5's threshold is the knee of a measured curve, not a round number
 
 The scripted reach can only ever emit a **corner** action - both joints driven -
 because it commands `sign(gain)` and a double is never exactly zero. Measured over
-120k steps: the four corners took 70.6% against a uniform 44.4%, max/min 4.26.
+120k steps, the four corners took 70.6% of actions against a uniform 44.4%, a
+max/min ratio of 4.26.
 
 Two knobs move it, measured across 14 configurations at 600 steps:
 
-- **Jacobian deadband.** Command zero when a joint moves the tip less than the
-  threshold. State-dependent and physically correct - the joint really cannot
-  help. At 0.04 m/rad: ratio 4.26 -> 2.55, arrival 44% -> 42.5%.
-- **Per-digit noise** instead of whole-action replacement. Corrupting one joint
-  leaves the other steering. Dominates whole-action noise at every setting once
-  the deadband is on: 2.09 at 39% arrival, against 2.17 at 33.5%.
+- **Jacobian deadband.** Command zero when moving a joint would move the tip less
+  than a threshold. It depends on the arm's state and is physically correct: the
+  joint really cannot help. At 0.04 m/rad the ratio goes 4.26 -> 2.55 and arrival
+  44% -> 42.5%.
+- **Per-digit noise** instead of replacing the whole action. Corrupting one joint
+  leaves the other steering. Once the deadband is on, it beats whole-action noise
+  at every setting: 2.09 at 39% arrival, against 2.17 at 33.5%.
 
-The frontier has a knee. Arrival is flat at 42.5-44% down to ratio 2.44, then
-falls off - 33.5% at 2.17, 29.5% at 1.87. **2.5 is the flattest point reachable
-without paying reach quality**, which is why the threshold sits there rather than
-at an aesthetically rounder 1.5.
+The trade-off curve has a knee. Arrival stays flat at 42.5-44% down to a ratio of
+2.44, then falls off: 33.5% at 2.17, 29.5% at 1.87. **2.5 is the flattest point
+reachable without giving up reach quality.** That is why the threshold sits there
+rather than at a rounder 1.5.
 
-Below ~1.7 is unreachable by any tuning. At deadband 0.04 the corner-vs-edge
-problem is already gone (corners 48.4% against 44.4%); what remains is same-sign
-corners at 19,200 against opposite-sign at 9,300, because a two-link planar arm
-reaching outward turns both hinges the same way. That is kinematics. A threshold
-under 1.7 would be a requirement nothing can satisfy.
+No tuning reaches below ~1.7. At deadband 0.04 the corner-versus-edge problem is
+already gone (corners 48.4% against 44.4%). What remains is same-sign corners at
+19,200 against opposite-sign at 9,300, because a two-link planar arm reaching
+outward turns both hinges the same way. That is kinematics. A threshold under 1.7
+would be a requirement nothing can meet.
 
 **Shipped: `jacobian_deadband = 0.04`, `reach_digit_noise_prob = 0.15`.** Verified
-at F-5's own sample size, 2,000 episodes x 600 steps: min share **7.15%**, ratio
-**2.06**, both inside the thresholds with margin. The cost is arrival 44% -> 35.7%
-and median closest 0.042 -> 0.052 m. Arrival is a diagnostic, not a requirement -
-F-6's contact rate is the number that would make this a bad trade, and `truth.cpp`
-does not measure it yet. Re-check when it does.
+at F-5's own sample size, 2,000 episodes x 600 steps: minimum share **7.15%**,
+ratio **2.06**, both inside the thresholds with margin. The cost is arrival
+44% -> 35.7% and median closest approach 0.042 -> 0.052 m. Arrival is a
+diagnostic, not a requirement. The contact rate (F-6) is the number that would
+make this a bad trade, and `truth.cpp` does not measure it yet. Re-check when it
+does.
 
-The 5% floor is a different quantity - coverage, not balance. It puts >= 15,000
-frames of the rarest action in a 300k set, against roughly 1,000 per class that
-Q-4's balanced eval subset needs. **The link from examples-per-action to Q-4
-accuracy is unverified**: no inverse dynamics model exists yet. Trigger to raise
-it: Q-4 misses 90% and its confusion matrix concentrates on the rare actions.
+The 5% floor measures something different: coverage, not balance. It puts
+>= 15,000 frames of the rarest action in a 300k set, against the roughly 1,000 per
+class that action-following's balanced eval subset (Q-4) needs. **The link from
+examples-per-action to action-following accuracy is unverified**: no inverse
+dynamics model exists yet. Trigger to raise the floor: Q-4 misses 90% and its
+confusion matrix concentrates on the rare actions.
 
 **Rejected: a compensating prior on the random half.** Solving
 `r = (1/9 - s*q)/(1 - s)` for the random half's distribution makes the total
-histogram exactly flat at zero cost to the reach, and every weight comes out
+histogram exactly flat at no cost to the reach, and every weight comes out
 positive, so it is feasible. It would also drop actions 0 and 8 to ~1.3% of random
-draws and raise action 4 to 20% - random episodes would coast a fifth of the time
-and almost never sweep both joints together. That buys a flat action marginal by
-distorting state visitation, which is what the pixel model actually learns from.
-Revisit only if the residual same-sign bias is measured hurting Q-4.
+draws and raise action 4 to 20%. Random episodes would coast a fifth of the time
+and almost never sweep both joints together. That buys a flat action histogram by
+distorting which states get visited, and the states are what the pixel model
+actually learns from. Revisit only if the leftover same-sign bias is measured
+hurting action-following.
 
 ## Parallelism and replay: both deleted
 
-Single process to start. If P-6's 500 fps is missed, the fallback is N processes
-with shard *i* seeded `base + i` - GL contexts are per-thread so processes are the
-right unit regardless, and the shard being simultaneously the unit of determinism
-and the unit of parallelism keeps this a config change. Whether it is needed
-depends on the day-1 numbers. Readback is no longer a candidate cause - it is 7.6%
-of the frame budget - so the trigger is now `mj_step` time and end-to-end fps.
+Single process to start. If the 500 fps generation bar is missed, the fallback is
+N processes with shard *i* seeded `base + i`. GL contexts are per thread, so
+processes are the right unit anyway, and because the shard is both the unit of
+determinism and the unit of parallelism, the switch is a config change. Whether
+it is needed depends on the day-1 numbers. Readback is no longer a suspect - it is
+7.6% of the frame budget - so the trigger is now `mj_step` time and end-to-end
+fps.
 
-No `--replay` mode: F-4 is tested by generating twice with the same seed and
-`cmp`-ing the pixel blobs. README states the caveat - bit-exactness holds for a
-fixed driver and build, and `/fp:fast` stays off.
+No `--replay` mode. Determinism (F-4) is tested by generating twice with the same
+seed and `cmp`-ing the pixel blobs. The README states the caveat: bit-exactness
+holds for a fixed driver and build, and `/fp:fast` stays off.
 
 ## Validator: emit measurements, not verdicts
 
-Python only. The validator is a feature extractor, not a predicate: per frame it
-emits a fixed vector, and "the validator failed" is a threshold expression over
-that vector, defined in config rather than in code.
+Python only. The validator is a feature extractor, not a pass/fail check. Per
+frame it emits a fixed vector, and "the validator failed" is a threshold
+expression over that vector, defined in config rather than in code.
 
 | Field | Per | Detects |
 |---|---|---|
@@ -341,76 +364,79 @@ that vector, defined in config rather than in code.
 | `offpalette_px` | frame | palette violation (F-9) |
 | `n_unique_colors` | frame | F-2's <=24 bar, mode 1 only |
 
-Three properties this buys:
+This buys three things:
 
-- **Q-3 becomes recomputable without re-running rollouts.** Store the vectors per
-  rollout frame and the coherence horizon re-derives under any threshold set. Cost:
-  500 frames x 100 rollouts x ~15 floats ≈ 3 MB. Same principle as storing
-  `visible_px` counts rather than a boolean.
-- **Connected-component labelling never becomes a commitment.** It is deferred
-  entirely, and adding it later as a *diagnostic on already-failing frames* -
-  "block 2 fragmented into 5 pieces, largest 12 px" - invalidates no earlier
-  measurement. Designing that against real Phase 2 failures beats designing it now
-  against guesses.
-- **Q-4 needs no inverse dynamics model.** Actions are joint deltas in
-  `{-1,0,+1}`, and the PCA machinery that produces `link_extent` yields
-  `link_angle` for free. Action-following is `sign(θ_t+1 − θ_t)` against the
-  commanded sign. This is also *better* than an IDM: a model trained on
-  ground-truth frames and applied to generated frames carries an unquantified
-  generalization gap that a geometric measurement does not.
+- **The coherence horizon (Q-3) can be recomputed without re-running rollouts.**
+  Store the vectors for every rollout frame, and the horizon re-derives under any
+  threshold set. Cost: 500 frames x 100 rollouts x ~15 floats ≈ 3 MB. The same
+  principle as storing `visible_px` counts rather than a boolean.
+- **Connected-component labelling (CC) never becomes a commitment.** It is
+  deferred entirely. Adding it later as a *diagnostic on frames that already
+  fail* - "block 2 fragmented into 5 pieces, largest 12 px" - invalidates no
+  earlier measurement. Designing it against real Phase 2 failures beats designing
+  it now against guesses.
+- **Action-following (Q-4) needs no inverse dynamics model (IDM).** Actions are
+  joint deltas in `{-1,0,+1}`, and the PCA machinery that produces `link_extent`
+  gives `link_angle` for free. Action-following is `sign(θ_t+1 − θ_t)` against
+  the commanded sign. This is also *better* than an IDM. A model trained on
+  ground-truth frames and applied to generated ones carries an unmeasured
+  generalization gap; a geometric measurement does not.
 
   **Run the same measurement on ground-truth frames and report both numbers.**
-  The metric has a ceiling below 100% that has nothing to do with the model: for
+  The metric has a ceiling below 100% that has nothing to do with the model. For
   about one joint settling time after each commanded sign flip, the joint is
-  still moving the old way, so the sign disagrees with the command in the
-  simulator itself. Measured 2026-08-28 at 83.1% under the shipped
-  `action_hold_steps`. **Q-4 is therefore scored as a fraction of that ceiling,
-  not against an absolute 90%** - an absolute bar above the ceiling fails a model
-  that is exactly right. Recompute the ceiling whenever the scene or the hold
-  changes; `bench/hold_probe.py` produces it.
+  still moving the old way, so in the simulator itself the sign disagrees with
+  the command. Measured 2026-08-28 at 83.1% under the shipped
+  `action_hold_steps`. **So Q-4 is scored as a fraction of that ceiling, not
+  against an absolute 90%.** An absolute bar above the ceiling fails a model that
+  is exactly right. Recompute the ceiling whenever the scene or the hold changes;
+  `bench/hold_probe.py` produces it.
 
-**Why colour counting and not CC for the verdict** - the argument is correctness,
+**Why colour counting and not CC for the verdict.** The argument is correctness,
 not effort. F-7 requires full occlusion in >=3% of frames, so partial occlusion is
 common. An arm crossing a block splits it into two disconnected same-colour blobs,
 and CC reports that as **two blocks** - a phantom object. Suppressing it needs a
-"same-colour blobs are one object" merge rule, which reduces CC back to colour
-counting with a labelling pass in front. Colour counting is immune by construction.
+"same-colour blobs are one object" merge rule, which turns CC back into colour
+counting with a labelling pass in front. Colour counting cannot make this mistake.
 
-`compactness` is the fragmentation detector CC would have provided: an intact
-flat-rendered box sits near 1.0, confetti near 0.05. **It uses an oriented bbox
-from PCA on the mask coordinates, not an axis-aligned one** - both arm links
-revolve and a free-joint block rotates when pushed, and an axis-aligned bbox around
-a square rotated 45 degrees has 2x the area, giving ~0.5 and colliding with the
-occluded case. PCA is rotation-invariant by construction, ~5 lines, and shares
+`compactness` is the fragmentation detector CC would have provided. An intact
+flat-rendered box sits near 1.0; confetti sits near 0.05. **It uses an oriented
+bbox from PCA on the mask coordinates, not an axis-aligned one.** Both arm links
+rotate, and a free-joint block rotates when pushed. An axis-aligned bbox around a
+square rotated 45 degrees has 2x the area, which gives ~0.5 and collides with the
+occluded case. PCA is rotation-invariant by construction, ~5 lines, and reuses
 machinery `link_extent` and `link_angle` already need.
 
 ### Pixel-to-colour mapping order
 
 **Nearest-palette assignment, not exact RGB equality** (`np.argmin` over squared
 distances). If the model generates a block in a slightly off shade, exact equality
-counts zero pixels and reports "block missing," conflating two distinct failures.
+counts zero pixels and reports "block missing", mixing up two different failures.
 Nearest-palette separates *palette adherence* from *block count*.
 
-Order matters and is fixed: **raw frame → `n_unique_colors`**, then
+The order matters and is fixed: **raw frame → `n_unique_colors`**, then
 **nearest-palette-with-distance → `offpalette_px`, `px_count`, `bbox`,
-`compactness`**. Post-mapping, `n_unique_colors` cannot exceed the palette size, so
-it must be computed first to serve F-2; and `offpalette_px` means "distance to
-nearest palette entry exceeds tau," since after mapping every pixel has a nearest
-entry.
+`compactness`**. After mapping, `n_unique_colors` cannot exceed the palette size,
+so it must be computed first to serve F-2. And `offpalette_px` means "distance to
+the nearest palette entry exceeds tau", since after mapping every pixel has a
+nearest entry.
 
-`n_unique_colors` is measured in both modes but **thresholded only in mode 1**. F-2's
-<=24 bar is a statement about the renderer, and an FSQ decoder emits hundreds of
+`n_unique_colors` is measured in both modes but **thresholded only in mode 1**.
+F-2's <=24 bar is a statement about the renderer. An FSQ decoder emits hundreds of
 unique RGB values by construction, so the field is large on reconstructions and
-rollouts without that being a violation. General rule: **the measurement vector is
-generous; the verdict expression is minimal and built from uncorrelated fields.**
-Under a verdict of "fail if any measurement exceeds its threshold," false-positive
-risk rises monotonically with threshold count, so every added threshold makes F-9's
-"zero false positives" strictly harder - and `offpalette_px` already responds to the
-same colour-mush failure.
+rollouts without that being a violation.
+
+The general rule: **the measurement vector is generous; the verdict expression is
+minimal and built from uncorrelated fields.** Under a verdict of "fail if any
+measurement exceeds its threshold", the false-positive risk rises with every
+threshold added. So each extra threshold makes F-9's "zero false positives"
+strictly harder, and `offpalette_px` already responds to the same colour-mush
+failure.
 
 ### Two modes, split by whether ground truth exists
 
-This is what makes F-9's acceptance test executable rather than a judgement call.
+This is what makes F-9's acceptance test something you can run rather than a
+judgement call.
 
 | Mode | Inputs | Used in |
 |---|---|---|
@@ -418,22 +444,23 @@ This is what makes F-9's acceptance test executable rather than a judgement call
 | `measure_pixels_only(frame)` | nothing | Phases 2, 3, 4 |
 
 F-9's "zero false positives on ground-truth frames" is literally a threshold sweep
-of mode 2 against mode 1. Without both modes there is no procedure for that
-criterion. Occlusion-aware calibration is legitimate because mode 1 knows when a
-block is occluded; mode 2 inherits the calibrated number and needs no gate.
+of mode 2 against mode 1. Without both modes there is no way to run that test.
+Calibrating with occlusion in mind is legitimate, because mode 1 knows when a
+block is occluded. Mode 2 inherits the calibrated number and needs no gate.
 
-**Calibrate twice.** Ground-truth frames are perfectly rendered while Q-3's inputs
-carry decoder artifacts, so zero false positives on clean frames does not bound the
-rate on generated ones. Sweep against Phase 0 ground truth *and* against Phase 1
-tokenizer reconstructions - Phase 1 produces those anyway for Q-1's PSNR, they carry
-real artifacts, and they exist before Phase 2 needs them.
+**Calibrate twice.** Ground-truth frames are perfectly rendered, while the
+coherence horizon's inputs carry decoder artifacts, so zero false positives on
+clean frames says nothing about the rate on generated ones. Sweep against Phase 0
+ground truth *and* against Phase 1 tokenizer reconstructions. Phase 1 produces
+those anyway for its PSNR, they carry real artifacts, and they exist before Phase
+2 needs them.
 
 Build order: measurement vector plus both modes (~50 lines, no deps) → calibrate
 against Phase 0 truth → recalibrate against Phase 1 reconstructions → ship.
 
 ## Observability: jsonl always, W&B behind a flag
 
-Three layers, only the last two of which were in question:
+Three layers. Only the last two were in question:
 
 | Layer | What | Status |
 |---|---|---|
@@ -441,101 +468,104 @@ Three layers, only the last two of which were in question:
 | 2 | Machine metrics stream (loss, lr, grad norm, VRAM) | jsonl, always |
 | 3 | Live curves, image history, cross-run comparison | W&B, when flagged |
 
-One `log(dict)` writes jsonl unconditionally and forwards to `wandb.log` when
-enabled, ~15 lines. jsonl stays the source of truth so history survives independently
-of the account, and F-17's ladder table is a jsonl-to-markdown script - no UI
+One `log(dict)` writes jsonl every time and forwards to `wandb.log` when enabled,
+~15 lines. jsonl stays the source of truth, so history survives without the
+account. The bench's ladder table (F-17) is a jsonl-to-markdown script; no UI
 produces it.
 
-Three disciplines, all tied to Must-tier numbers:
+Three rules, each tied to a Must-tier number:
 
-- **Nothing logs inside the Phase 4 timed region.** P-2 (p99 <= 40 ms) and P-4
-  (p99/p50 <= 1.3) are tail-latency requirements; an occasional 1 ms hitch is 2.5%
-  of the frame budget and lands in p99, not p50. The bench loop records into a
-  preallocated array and writes after.
+- **Nothing logs inside the Phase 4 timed region.** The p99 frame-time bar (P-2,
+  <= 40 ms) and the p99/p50 ratio (P-4, <= 1.3) are tail-latency requirements. An
+  occasional 1 ms hitch is 2.5% of the frame budget, and it lands in p99, not p50.
+  The bench loop records into a preallocated array and writes afterwards.
 - **Disable W&B's system-metrics collector for bench runs** (`x_disable_stats` or
-  `mode="disabled"`). Verified against the W&B source: a background process samples
-  CPU/GPU/disk/network on its own schedule, and sampling the GPU during a
-  tail-latency measurement inflates p99 quietly.
-- **R-1 / R-2 use `torch.cuda.max_memory_allocated()`, not W&B's GPU metric.** W&B
-  samples driver-reported usage on an interval and can miss a transient peak; the
-  allocator high-water mark cannot.
+  `mode="disabled"`). Verified against the W&B source: a background process
+  samples CPU/GPU/disk/network on its own schedule, and sampling the GPU during a
+  tail-latency measurement quietly inflates p99.
+- **The VRAM bars (R-1, R-2) use `torch.cuda.max_memory_allocated()`, not W&B's GPU
+  metric.** W&B samples driver-reported usage on an interval and can miss a brief
+  peak. The allocator's high-water mark cannot.
 
-Offline mode is available if the network is a problem - verified to write a durable
-local transaction log and sync later.
+Offline mode is available if the network is a problem. It was verified to write a
+durable local transaction log and sync later.
 
 ## Seams for Phases 1-4 (sketch only)
 
-Model is a pure function `(tokens, cache, mask) -> logits`; engine owns the loop,
-cache memory, graph capture, and decode schedule. That line assigns the ladder:
-**KV cache, CUDA graphs, and DiagD are engine**; **INT8 and the fused Triton block
-are model** (a weight transform at load, and a module swap). F-15's five flags
-therefore never produce 32 code paths - they select two submodule implementations
-plus three engine behaviours.
+The model is a pure function `(tokens, cache, mask) -> logits`. The engine owns
+the loop, the cache memory, graph capture, and the decode schedule. That line
+decides who owns each ladder rung: **KV cache, CUDA graphs, and DiagD belong to
+the engine**; **INT8 and the fused Triton block belong to the model** (a weight
+transform at load time, and a module swap). So the ladder's five flags (F-15)
+never produce 32 code paths. They select two submodule implementations plus three
+engine behaviours.
 
-Two consequences traced during review:
+Two consequences found during review:
 
-- **Inference needs a seed clip, so the dataset outlives the simulator.** F-14
-  drives the model with MuJoCo absent, but the model needs ~15 frames of context
-  before predicting anything, and those come from a real episode. "Delete the
-  simulator" is exact; "delete the data" is not. R-5's 10-second cold start
-  includes loading that clip.
-- **On the 144-token path, "plain MHA" must mean `F.scaled_dot_product_attention`.**
-  See the fork table below - materialized attention caps training batch size there.
+- **Inference needs a seed clip, so the dataset outlives the simulator.** The
+  control loop (F-14) drives the model with MuJoCo absent, but the model needs ~15
+  frames of context before predicting anything, and those come from a real
+  episode. "Delete the simulator" is exact; "delete the data" is not. The
+  10-second cold-start bar (R-5) includes loading that clip.
+- **On the 144-token path, "plain MHA" must mean `F.scaled_dot_product_attention`
+  (SDPA).** See the fork table below: materialized attention caps the training
+  batch size there.
 
 ## The 64x64 vs 96x96 fork
 
-> ## RESOLVED 2026-08-29: **64x64**. `runs.jsonl` r44 (the arm) and r45 (the decision).
+> ## RESOLVED 2026-08-29: **64x64**.
 >
-> **It was not decided by PSNR, which is what this section expected.** 96x96 wins
-> on PSNR - 32.501 dB against 31.095, **+1.406 dB for 2.25x the tokens**, both
-> rungs converged with every other knob identical. It loses on a requirement
-> nobody had it under suspicion for: **token entropy falls 74.1% -> 55.4% and
-> gate row 3 fails Q-2.**
+> **PSNR did not decide it, although this section expected it to.** 96x96 wins on
+> PSNR: 32.501 dB against 31.095, **+1.406 dB for 2.25x the tokens**, with both
+> rungs converged and every other knob identical. It loses on a requirement nobody
+> suspected: **token entropy falls 74.1% -> 55.4%, and gate row 3 fails the 70%
+> entropy bar (Q-2).**
 >
-> **One mechanism, two opposite signs.** An 8x8 patch covers 2.25x less scene at
-> 96x96, so 73.09% of patches are a single flat colour against 63.47%. That makes
-> the held-out k-means floor *rise* to 29.97 dB - easier patches, which is why
-> gate row 2's bar there is a nearly vacuous +0.03 dB - and it concentrates the
-> token distribution at the same time.
+> **One mechanism, two opposite effects.** An 8x8 patch covers 2.25x less scene
+> at 96x96, so 73.09% of patches are a single flat colour, against 63.47%. That
+> makes the held-out k-means floor *rise* to 29.97 dB, because the patches are
+> easier - which is why gate row 2's bar there is a nearly empty +0.03 dB. At the
+> same time it concentrates the token distribution.
 >
-> **It is skew, not collapse**: 0 of 512 codes unused, 422 live, and the 4.018-bit
-> shortfall is 2.922 marginal skew + 1.096 redundancy against 1.440 + 0.890 at
-> 64x64. The skew term doubled; redundancy barely moved.
+> **It is skew, not collapse.** 0 of 512 codes are unused and 422 are live. The
+> 4.018-bit shortfall is 2.922 bits of marginal skew + 1.096 of redundancy,
+> against 1.440 + 0.890 at 64x64. The skew term doubled; redundancy barely moved.
 >
-> **Both remedies this project had written down are refuted by arithmetic, at
-> zero GPU cost** (`bench/entropy_shrink_est.py`, r45):
+> **Both remedies this project had written down are ruled out by arithmetic, at
+> zero GPU cost** (`bench/entropy_shrink_est.py`):
 >
-> - **Attention cannot pass, ever.** `H_joint <= sum of the channel marginals` is
->   an identity; that sum is `NUM-TOK-MARGSUM-96` = 67.5%, below the 70% bar. A
->   perfect decorrelator lands at 67.5%. The R2 rung at 96x96 was therefore never
->   run, and not running it is the result.
+> - **Attention can never pass.** Joint entropy `H_joint` is at most the sum of
+>   the channel marginals; that is an identity. At 96x96 the sum is 6.078 bits,
+>   67.5%, below the 70% bar. A perfect decorrelator lands at 67.5%. So the R2
+>   rung at 96x96 was never run, and not running it is the result.
 > - **The shrink ladder dies at its first step.** Coarsening only destroys
->   information, so `NUM-TOK-SHRINK240-UB` = 63.0% bounds `[8,6,5]` from above and
->   is already under the bar. Only 125 codes or fewer are even possible, at 71.5%
->   upper bound - 1.5 pp of slack demanding a shrink that loses essentially
->   nothing, where the coarsening model says it loses 1.64 bits.
+>   information, so 63.0% (the 96x96 entropy's bits over `log2(240)`) caps
+>   `[8,6,5]` from above, and that cap is already under the bar. Only 125 codes
+>   or fewer are even possible, with a 71.5% upper bound. That is 1.5 pp of slack,
+>   and it would need a shrink that loses almost nothing, where the coarsening
+>   model says it loses 1.64 bits.
 >
-> Neither lever touches skew, which is the actual failure. The one instrument that
+> Neither lever touches skew, which is the actual failure. The one tool that
 > would - an entropy auxiliary loss - is ruled out in I2 of `decision_notes.md`
 > because it undoes the reason FSQ was chosen over VQ, **and that ruling is not
 > revisited**.
 >
-> **Recorded and deliberately not acted on:** against Q-2's stated *purpose* -
-> that Phase 2 not inherit a shrunken vocabulary - 96x96 delivers
-> `NUM-TOK-BITSFRAME-96`, 1.68x the bits per frame, with zero dead codes. The
-> statistic fails while the rationale is satisfied. **The bar is not moved.**
-> Moving a bar because a run missed it is the failure mode this project's
-> evidence discipline exists to prevent.
+> **Recorded, and deliberately not acted on:** measured against the entropy bar's
+> stated *purpose* - that Phase 2 not inherit a shrunken vocabulary - 96x96
+> delivers 717.4 bits per frame against 426.9 at 64x64, 1.68x, with zero dead
+> codes. The statistic fails while its rationale is satisfied. **The bar is not
+> moved.** Moving a bar because a run missed it is the failure this project's
+> evidence rules exist to prevent.
 >
-> **What would reopen this:** a lever that recovers marginal skew - 1.318 of the
+> **What would reopen this:** a lever that recovers marginal skew. 1.318 of the
 > 2.922 bits, 45% of it, is enough, and fixing skew entirely would give 87.8%.
 > None is currently proposed, and Phase 2 is budgeted against the 64-token path.
-> Reopening also costs the 144-token consequences in the table below, which were
+> Reopening also brings the 144-token consequences in the table below, which were
 > always the expensive half: DiagD from reserve to required, F-16 to **M**, and
 > CUDA graphs from headline win to table stakes.
 
-The pre-decision reasoning is kept below, unedited. It is wrong about *which
-number decides*, and that is the point of keeping it.
+The reasoning from before the decision is kept below, unedited. It is wrong about
+*which number decides*, and that is the point of keeping it.
 
 Decided by Phase 1's PSNR. Recorded so the decision is mechanical when the number
 arrives.
@@ -610,107 +640,109 @@ number.
 
 ## Phase 1 decisions: the tokenizer
 
-Recorded here so item 5 of `phase1_structural_plan.md` does not re-derive them. Each
-carries the trigger that would reverse it.
+Recorded here so item 5 of `phase1_structural_plan.md` does not re-derive them.
+Each carries the trigger that would reverse it.
 
 ### Q-1 is the phase's real risk, and Q-2 is at risk for the opposite reason
 
-Both claims are measured, over the 300,000 frames on disk, before any of Phase 1
-exists.
+Both claims were measured over the 300,000 frames on disk, before any of Phase 1
+existed. Q-1 is the 30 dB held-out PSNR bar; Q-2 is the 70% token-entropy bar.
 
-**Q-1.** A patch-independent tokenizer cannot pass. k-means with 512 centroids over
-real 8x8 patches, **fit on the 473 train episodes and scored on the 27 val ones**,
-reaches **28.27 dB** against Q-1's 30 dB; 1,024 centroids reach **29.39 dB** and
-still miss, so vocabulary is not the lever. The whole **1.73 dB** has to come from
-the 22x22 receptive field, the attention layer and a shared decoder - the 64 codes
-describing the frame *jointly* rather than independently, since 28.27 dB *is* the
-independent number. Restated physically, because a wrong pixel costs **47,814**
-squared error on this palette: the floor gets ~25 of 4,096 pixels wrong and the bar
-is ~17.
+**PSNR (Q-1).** A tokenizer that codes each patch independently cannot pass.
+k-means with 512 centroids over real 8x8 patches, **fit on the 473 train episodes
+and scored on the 27 val ones**, reaches **28.27 dB** against the 30 dB bar.
+1,024 centroids reach **29.39 dB** and still miss, so vocabulary size is not the
+lever. The whole **1.73 dB** has to come from the 22x22 receptive field, the
+attention layer and a shared decoder: the 64 codes describing the frame
+*jointly* rather than independently, since 28.27 dB *is* the independent number.
+In pixel terms, because one wrong pixel costs **47,814** squared error on this
+palette: the floor gets ~25 of 4,096 pixels wrong, and the bar allows ~17.
 
 **That floor moved twice and the claim survived both moves, which is why it is
 quoted with its method attached.** 26.39 dB came from a k-means run whose
 initialisation nobody recorded. k-means++ on the same patches gives 29.02 dB, but
-that was fit *and* scored on a sample straddling the split. Only the train-fit,
-val-scored number is the one a tokenizer is charged against. All three rows are in
-the verification log at the end of this file.
+that was fit *and* scored on a sample straddling the train/val split. Only the
+train-fit, val-scored number is the one a tokenizer is measured against. All
+three rows are in the verification log at the end of this file.
 
-**Q-2.** The data does not force low entropy. Only **20.28%** of interior cells have
-a fully flat 22x22 receptive field (all of them table, none of them void), which puts
-the provable entropy ceiling at **94.3% of uniform** at 512 codes - cells whose
-receptive fields hold identical pixels must get identical codes, and that is the only
-hard constraint the data imposes. What is at risk is that the scene does not *need*
-512 codes: the exact-8x8-patch distribution carries just **4.40 bits** of entropy
-against the 9 available.
+**Entropy (Q-2).** The data does not force low entropy. Only **20.28%** of interior
+cells have a fully flat 22x22 receptive field (all of them table, none of them
+void). That puts the provable entropy ceiling at **94.3% of uniform** at 512
+codes: cells whose receptive fields hold identical pixels must get identical
+codes, and that is the only hard constraint the data imposes. The risk is that
+the scene does not *need* 512 codes. The distribution of exact 8x8 patches
+carries just **4.40 bits** of entropy against the 9 available.
 
-**The direct evidence for a collapse is gone, and Q-2 is now an open question rather
-than a prediction.** The 150-of-512 live-centroid figure that made it a prediction was
-the unrecorded random init again; k-means++ keeps **486 of 512** alive on held-out
-patches. Q-2 is a statement about a *trained tokenizer's* code usage rather than about
-k-means, so neither figure settles it - what changed is that nothing now argues for
-shrinking the vocabulary pre-emptively.
+**The direct evidence for a collapse is gone, and Q-2 is now an open question
+rather than a prediction.** The 150-of-512 live-centroid figure that made it a
+prediction came from the unrecorded random init again; k-means++ keeps **486 of
+512** alive on held-out patches. Q-2 is about a *trained tokenizer's* code usage,
+not about k-means, so neither figure settles it. What changed is that nothing now
+argues for shrinking the vocabulary in advance.
 
 **If Q-2 misses, shrink the vocabulary. Do not add an entropy loss.** An auxiliary
 loss undoes the reason FSQ was chosen over VQ, and it makes the collapse question
-permanently unanswerable. Ladder, in order: `[8,8,8]`=512 -> `[8,6,5]`=240 ->
-`[5,5,5]`=125 -> `[4,4,4]`=64. Token count never changes, so inference cost is
+permanently unanswerable. The ladder, in order: `[8,8,8]`=512 -> `[8,6,5]`=240 ->
+`[5,5,5]`=125 -> `[4,4,4]`=64. The token count never changes, so inference cost is
 untouched and the output head shrinks.
 
-**Trigger to revisit:** if R0 - the continuous-bottleneck control - also misses 30 dB,
-then neither of the above is the problem and the encoder is. Fix capacity before
-touching levels.
+**Trigger to revisit:** if R0 - the continuous-bottleneck control - also misses
+30 dB, then neither of the above is the problem; the encoder is. Fix capacity
+before touching levels.
 
 ### The straight-through gradient is not 1.0, and it moves with the levels table
 
-Measured by running it: the gradient of the quantizer output with respect to its
-input, at zero, is **0.858** for `[8,8,8]`, **1.001** for `[5,5,5]` and **0.668** for
-`[4,4,4]`. The straight-through estimator bypasses only the rounding, so the `tanh`
-derivative inside `bound` stays in the path, and it depends on `levels` through
-`half_l` and `offset`.
+Measured by running it: the gradient of the quantizer's output with respect to its
+input, at zero, is **0.858** for `[8,8,8]`, **1.001** for `[5,5,5]` and **0.668**
+for `[4,4,4]`. The straight-through estimator skips only the rounding, so the
+`tanh` derivative inside `bound` stays in the path, and it depends on `levels`
+through `half_l` and `offset`.
 
-Consequence: **walking the shrink ladder rescales the effective bottleneck learning
-rate by up to 1.5x**, and a comparison run at one LR reports a levels result that is
-partly an LR result. Run each variant at the base LR and at the base LR scaled by
-`0.858 / g_new`. This is the one place in the phase where a plausible-looking
-experiment silently answers a different question than the one asked.
+The consequence: **walking the shrink ladder rescales the bottleneck's effective
+learning rate by up to 1.5x**, so a comparison run at one LR reports a levels
+result that is partly an LR result. Run each variant at the base LR and at the
+base LR scaled by `0.858 / g_new`. This is the one place in the phase where a
+plausible-looking experiment silently answers a different question from the one
+asked.
 
 ### Loss is plain MSE, and the F-9 recalibration is its counterweight
 
-PSNR is a monotone function of MSE, so the loss *is* the gate. No perceptual term, no
-GAN, and none of FSQ's absent auxiliary losses.
+PSNR is a monotone function of MSE, so the loss *is* the gate. No perceptual term,
+no GAN, and none of the auxiliary losses FSQ does without.
 
-**Per-pixel 7-way cross-entropy was considered and loses.** It would give hard edges,
-which is attractive given where the error lives. But a misclassified pixel costs the
-full 47,814, so classification needs ~99.6% pixel accuracy to clear 30 dB, while
-regression can hedge with a blend and pay far less. CE is worse aligned with the gate,
-not better.
+**Per-pixel 7-way cross-entropy was considered, and loses.** It would give hard
+edges, which is attractive given where the error lives. But a misclassified pixel
+costs the full 47,814, so classification needs ~99.6% pixel accuracy to clear
+30 dB, while regression can hedge with a blend and pay far less. Cross-entropy is
+worse aligned with the gate, not better.
 
-**The hole this leaves is real: MSE rewards blurring edges, and edges carry 99.86% of
-the error.** A model could clear Q-1 by hedging every boundary. The counterweight is
-the F-9 recalibration - `offpalette_px` over reconstructions counts exactly the
-pixels a blend produces, so PSNR and `offpalette_px` cannot both be gamed. **Report
-them together or neither means much.** This is what turns the leftover Phase 0
-calibration item into a load-bearing part of Phase 1 rather than a chore.
+**This leaves a real hole: MSE rewards blurring edges, and edges carry 99.86% of
+the error.** A model could clear the PSNR bar by hedging every boundary. The
+counterweight is recalibrating the frame validator (F-9) on reconstructions:
+`offpalette_px` over reconstructions counts exactly the pixels a blend produces,
+so PSNR and `offpalette_px` cannot both be gamed. **Report them together, or
+neither means much.** This turns the leftover Phase 0 calibration item into a
+load-bearing part of Phase 1 rather than a chore.
 
-**Trigger:** if Q-1 passes while `offpalette_px` on reconstructions is far worse than
-the render-rounding baseline, add a small cross-entropy term as an auxiliary and
-re-measure both. Not before that evidence exists.
+**Trigger:** if the PSNR bar passes while `offpalette_px` on reconstructions is far
+worse than the render-rounding baseline, add a small cross-entropy term as an
+auxiliary and re-measure both. Not before that evidence exists.
 
 ### Decoder upsampling is nearest-plus-conv, never transposed
 
-`ConvTranspose2d` checkerboarding presents as misplaced edges. Misplaced edges are
-the exact signal that decides the 64-vs-144 fork, and the fork costs a week and
-reshapes Phase 4. A checkerboard artifact would therefore not merely add noise - it
-would produce a *false positive on the one diagnostic the phase exists to read*. No
-trigger reverses this; the cost of being wrong is asymmetric.
+`ConvTranspose2d` checkerboarding shows up as misplaced edges. Misplaced edges are
+exactly the signal that decides the 64-vs-144 fork, and the fork costs a week and
+reshapes Phase 4. So a checkerboard artifact would not just add noise. It would
+produce a *false positive on the one diagnostic the phase exists to read*. No
+trigger reverses this; the cost of being wrong is lopsided.
 
 ### One self-attention layer on the 8x8 grid
 
-64 positions, so the attention matrix is 64x64 and the cost is negligible against
-three conv stages. It is also the only mechanism in the design by which codes
-cooperate, which the 28.27 dB held-out floor establishes is the whole game. It is a ladder
-rung (R2) rather than an assumption, so its contribution is measured rather than
-asserted.
+64 positions, so the attention matrix is 64x64 and the cost is negligible next to
+three conv stages. It is also the only mechanism in the design through which
+codes cooperate, and the 28.27 dB held-out floor shows that cooperation is the
+whole game. It is a ladder rung (R2) rather than an assumption, so its
+contribution is measured rather than asserted.
 
 **Trigger to add more:** if R2 still falls short, residual blocks at the bottleneck
 come before wider channels, and both come before touching `levels`.
@@ -718,147 +750,159 @@ come before wider channels, and both come before touching `levels`.
 ### Phase 2 inherits R1, and the encoder keeps `GroupNorm`
 
 **Decided 2026-08-30.** The tokenizer Phase 2 builds on is **R1
-`20260829-005439-r1`** - FSQ `[8,8,8]`, no attention, `GroupNorm` in the encoder,
-60 epochs. Two alternatives were on the table and both are closed.
+`20260829-005439-r1`**: FSQ `[8,8,8]`, no attention, `GroupNorm` in the encoder,
+60 epochs. Two alternatives were on the table, and both are closed.
 
-**Not R2**, although R2 wins both reported gate numbers. Its Q-1 margin is
-**+0.087 dB for +263,680 parameters**, which is about a sixth of this file's own
-"within ~0.5 dB means tied" threshold and therefore a measured non-lever. The
-decision rests on the other two differences. R2's encoder attention makes tokens
-**batch-size dependent** - `F.scaled_dot_product_attention` returns batch-shaped
-floating point and ~2 latent values in 100,000 sit close enough to a rounding
-boundary to move - and **Phase 3 encodes a seed clip at batch 1**, so R2 carries
-an E-1 exposure that R1 structurally cannot have. R2 is also **twice as unstable**
-in time: 18.75% of its token transitions flip with no change in the cell's own
-receptive field, against R1's 8.86% (`runs.jsonl` r46). Attention adds global
-coupling on top of `GroupNorm`'s.
+**Not R2**, even though R2 wins both reported gate numbers. Its PSNR margin is
+**+0.087 dB for +263,680 parameters**. That is about a sixth of this file's own
+"within ~0.5 dB means tied" threshold, so it is a measured non-lever. The
+decision rests on the two other differences:
 
-**Not r1c**, the channel-only-normalisation rung, which eliminates spurious flips
-outright - 0 of 396,013 quiet-field transitions - for only 0.282 dB of Q-1. It
-**fails Q-2 at 54.6%** against the 70% bar, and unlike the 96x96 arm it has no
-"the statistic is measuring the wrong thing" defence: it delivers **314.2 bits per
-frame against R1's 426.9**, so it fails the bar *and* the rationale the bar exists
-to serve. `NUM-BAR-Q2` is not moved for it.
+- **R2's encoder attention makes tokens depend on batch size.**
+  `F.scaled_dot_product_attention` returns results whose floating point depends on
+  the batch shape, and ~2 latent values in 100,000 sit close enough to a rounding
+  boundary to move. **Phase 3 encodes a seed clip at batch 1**, so R2 carries a
+  determinism risk (E-1) that R1 structurally cannot have.
+- **R2 is twice as unstable over time.** 18.75% of its token transitions flip with
+  no change in the cell's own receptive field, against R1's 8.86%
+  (`bench/token_stability_probe.py`). Attention adds global coupling on top of
+  `GroupNorm`'s.
+
+**Not r1c**, the rung that normalises per channel only. It eliminates spurious
+flips outright - 0 of 396,013 quiet-field transitions - for only 0.282 dB of
+PSNR. But it **fails the entropy bar at 54.6%** against 70%, and unlike the 96x96
+arm it cannot argue that the statistic measures the wrong thing. It delivers
+**314.2 bits per frame against R1's 426.9**, so it fails the bar *and* the
+purpose the bar exists to serve. The 70% bar is not moved for it.
 
 **What this decision does not claim.** Token stability is a **tiebreaker here, not
 a driver.** Nothing has measured what spurious flips cost a dynamics model, in
-either direction - they are deterministic functions of the whole frame, and a
+either direction. They are deterministic functions of the whole frame, and a
 transformer over the full sequence can in principle see everything it needs. The
-stability numbers agree with a choice the E-1 argument already decided; they
+stability numbers agree with a choice the determinism argument already made; they
 should not be quoted as though they carried it.
 
-**Trigger, and it is one-directional: a rung may promote itself above R1, never
-demote R1.** Any tokenizer that passes *every* gate row and shows materially fewer
-spurious flips than 8.86% is a legitimate replacement, since it would be strictly
-better at the same parameter count. `r1w3` - the 3x3 local-window rung, whose one
-latent cell sees 1,849 px against R1's whole frame and r1c's 225 - is the only such
-candidate running, and it is the **only** interior point the architecture admits: a
-K x K window adds `2*(K-1)*7` px to the 15 px conv field, so K=5 already overshoots
-the 64 px frame. If it misses Q-2 it joins r1c as curve evidence and **no further
-rungs should be run chasing this**. **Second trigger:** Phase 2 evidence that token
-instability actually costs prediction accuracy would turn the tiebreaker into a
-driver and is worth reopening on. **Third:** if Phase 3 ever encodes its seed clip
-at the training batch size, R2's determinism objection weakens and only the
-stability gap and the parameter cost remain.
+**Trigger, and it only works one way: a rung may promote itself above R1, but
+nothing demotes R1.** Any tokenizer that passes *every* gate row and shows
+materially fewer spurious flips than 8.86% is a legitimate replacement, since it
+would be strictly better at the same parameter count. `r1w3` - the 3x3
+local-window rung, whose one latent cell sees 1,849 px against R1's whole frame
+and r1c's 225 - is the only such candidate running. It is also the **only**
+in-between point the architecture allows: a K x K window adds `2*(K-1)*7` px to
+the 15 px conv field, so K=5 already overshoots the 64 px frame. If it misses the
+entropy bar it joins r1c as evidence on the curve, and **no further rungs should
+be run chasing this**.
+
+**Second trigger:** Phase 2 evidence that token instability actually costs
+prediction accuracy would turn the tiebreaker into a driver, and is worth
+reopening on. **Third:** if Phase 3 ever encodes its seed clip at the training
+batch size, R2's determinism objection weakens, and only the stability gap and the
+parameter cost remain.
 
 ### fp32 for Phase 1, not bf16
 
 `world_model_ingredients.md` specifies bf16 training. That line is about the
-15M-parameter dynamics model at context 1024, where it is necessary. The tokenizer is
-~1.5M parameters with ~400 MB of activations at batch 128, so fp32 costs nothing
-against R-1's 7.5 GB and removes a class of numerical doubt from the single number
-the whole phase turns on - an MSE around 1e-3 has little headroom in an 8-bit
-mantissa.
+15M-parameter dynamics model at context 1024, where bf16 is necessary. The
+tokenizer is ~1.5M parameters with ~400 MB of activations at batch 128, so fp32
+costs nothing against the 7.5 GB training VRAM bar (R-1). It also removes a class
+of numerical doubt from the single number the whole phase turns on: an MSE around
+1e-3 has little headroom in an 8-bit mantissa.
 
-**Trigger:** a measured step time that makes the ladder inconvenient. Then autocast
-the forward pass only, keep the loss reduction in fp32, and re-run one rung both ways
-to confirm the PSNR is unchanged.
+**Trigger:** a measured step time that makes the ladder inconvenient. Then
+autocast the forward pass only, keep the loss reduction in fp32, and re-run one
+rung both ways to confirm the PSNR is unchanged.
 
 ### PSNR is computed on uint8-rounded reconstructions
 
 The float decoder output is not what the pipeline delivers, and it is not what the
-validator sees. Rounding first costs ~0.01 dB of optimism and makes rows 1 and 6 of
-the gate describe the same frames. Cheap, and the alternative is a number that is
-quietly about something else.
+validator sees. Rounding first costs ~0.01 dB of optimism and makes rows 1 and 6
+of the gate describe the same frames. It is cheap, and the alternative is a number
+that is quietly about something else.
 
 ### The scene XML is frozen, and the offscreen size moves to config
 
 `data_hash` is `sha256(canon(sim) + canon(data) + xml_bytes)`, so **any** byte of
-`scene/arm_blocks.xml` - including a comment - changes it and orphans 300,000 frames.
-The 96x96 arm needs `offwidth`/`offheight` at 96, which the XML currently states
+`scene/arm_blocks.xml` - including a comment - changes it and orphans 300,000
+frames. The 96x96 arm needs `offwidth`/`offheight` at 96, and the XML states them
 literally at 64.
 
 **Resolved by writing `model->vis.global.offwidth`/`offheight` from config between
-`mj_loadXML` and context creation.** They are plain mutable `int` fields on `mjModel`
-(`mjmodel.h`, `struct mjVisual_`), read by `mjr_makeContext`. Both existing guards
-keep their teeth: `gl_context.cpp` still compares `mjr_maxViewport` against
-`model->vis.global.offwidth`, now the config value, and `main.cpp` still cross-checks
-the viewport against `cfg.width`/`cfg.height`. Cost is three lines and both
-resolutions become a config-only change; the alternative was regenerating the
-existing dataset in order to make a second one possible.
+`mj_loadXML` and context creation.** They are plain mutable `int` fields on
+`mjModel` (`mjmodel.h`, `struct mjVisual_`), read by `mjr_makeContext`. Both
+existing guards still work. `gl_context.cpp` still compares `mjr_maxViewport`
+against `model->vis.global.offwidth`, which is now the config value, and
+`main.cpp` still cross-checks the viewport against `cfg.width`/`cfg.height`. The
+cost is three lines, and both resolutions become a config-only change. The
+alternative was regenerating the existing dataset in order to make a second one
+possible.
 
-**Consequence to carry: the XML's literal `offwidth="64"` is now decorative, and the
-comment explaining that cannot be added to the XML.** It lives in `main.cpp` and
-here.
+**A consequence to carry: the XML's literal `offwidth="64"` is now decorative, and
+the comment explaining that cannot be added to the XML.** It lives in `main.cpp`
+and here.
 
 ### Frames are preloaded as palette indices, not RGB
 
-The loader reads **6,804 frames/s cold against 109,682 warm** at ctx=0, and training
-needs ~13,000. With ~4.9 GB free against a 3.5 GB working set the page cache sits
-exactly on the boundary, so the cold case is a real failure mode rather than a
-first-epoch transient.
+The loader reads **6,804 frames/s cold against 109,682 warm** at ctx=0, and
+training needs ~13,000. With ~4.9 GB free against a 3.5 GB working set, the page
+cache sits right on the edge, so the cold case is a real failure mode rather than
+a first-epoch blip.
 
-**The union of distinct byte triples over all 300,000 frames is exactly 7**, one per
-palette entry, worst distance 0.75 - measured as a union over the whole set, not a
-per-frame count, because "at most 7 per frame" would permit a larger union and make a
-7-entry LUT lossy. So one byte per pixel is lossless and the train split preloads in
-**1.16 GB instead of 3.49 GB**.
+**The union of distinct byte triples over all 300,000 frames is exactly 7**, one
+per palette entry, with a worst distance of 0.75. It was measured as a union over
+the whole set, not a per-frame count, because "at most 7 per frame" would allow a
+larger union and make a 7-entry lookup table lossy. So one byte per pixel is
+lossless, and the train split preloads in **1.16 GB instead of 3.49 GB**.
 
-Two things this must not get wrong: the blob is bottom-up and `preload` bypasses the
-sampler's flip, and nearest-palette-by-argmin is required because `rgba * 255` does
-not land on integers. Both are assertions in the function, not comments.
+Two things this must not get wrong. The blob is stored bottom-up, and `preload`
+bypasses the sampler's flip. And nearest-palette-by-argmin is required, because
+`rgba * 255` does not land on integers. Both are assertions in the function, not
+comments.
 
-**Trigger:** a scene change that adds a distinctly-coloured object raises the LUT
-size. It stays a `uint8` index up to 256 entries, well past F-2's 24-colour ceiling.
+**Trigger:** a scene change that adds a distinctly-coloured object raises the
+lookup-table size. It stays a `uint8` index up to 256 entries, well past F-2's
+24-colour ceiling.
 
 ### The token cache is per-shard and named by the run
 
-One `.npy` of `uint16` per shard, shape `(frames, 8, 8)`, in a directory named by run
-id, plus a manifest carrying `tokenizer_hash`, the checkpoint and per-shard frame
-counts. 38.4 MB total.
+One `.npy` of `uint16` per shard, shape `(frames, 8, 8)`, in a directory named by
+run id, plus a manifest carrying `tokenizer_hash`, the checkpoint and per-shard
+frame counts. 38.4 MB total.
 
 Per-shard rather than one flat array, because a flat array is addressed through a
-cumulative frame offset and that is an off-by-one factory; per-shard makes
+cumulative frame offset, and that invites off-by-one bugs. Per-shard makes
 `len(tokens) == shard.frames` a loud assert. Named by run rather than by
-`tokenizer_hash` for the reason already recorded under provenance: two runs at
+`tokenizer_hash` for the reason already given under provenance: two runs at
 identical config and different seeds share a hash and produce different tokens.
 
 ## Sanitizer cost, and keeping E-3 cheap
 
-E-3 requires ASan clean on the **full** data-generation run, plus 64-bit shard
-offsets carrying a bounds assert. **MSVC provides ASan only.** Microsoft lists
-`/fsanitize=undefined` and `/fsanitize=leak` among sanitizers it may ship *later*,
-so this toolchain has no UBSan and no leak detection.
+The sanitizer requirement (E-3) asks for ASan clean on the **full** data-generation
+run, plus 64-bit shard offsets carrying a bounds assert. **MSVC provides ASan
+only.** Microsoft lists `/fsanitize=undefined` and `/fsanitize=leak` among
+sanitizers it may ship *later*, so this toolchain has no UBSan and no leak
+detection.
 
 **Decided 2026-08-26: E-3 drops the UBSan half rather than adding a clang-cl
 configuration.** Of the UBSan classes that apply to this code - MuJoCo calls, a
 pixel buffer, segid integer math, appending to a blob - ASan already covers
-out-of-bounds and use-after-free, and `/W4 /WX` rejects the sloppy casts
+out-of-bounds access and use-after-free, and `/W4 /WX` rejects the sloppy casts
 (`/w14242` lossy conversion, `/w14826` sign extension). The one real gap is
-**signed overflow on shard byte offsets**: 300k frames at 64x64x3 is 3.6 GB
+**signed overflow on shard byte offsets**. 300k frames at 64x64x3 is 3.6 GB
 against `2^31` = 2.1e9, so an offset held in a signed 32-bit int wraps somewhere
-past frame ~175k and silently corrupts the back half of a shard. That single class
-is closed by typing every offset and frame counter `size_t`/`int64_t` and
-asserting the computed offset against the mapped blob size before each append -
-a check that runs in the optimised build, which a side-configuration sanitizer
-would not. The alternative costs a second set of flag spellings and a second set
-of MuJoCo/GLFW link quirks, to instrument ~200 lines of loop arithmetic.
+past frame ~175k and silently corrupts the back half of a shard.
 
-**Trigger to revisit:** UB suspected in code ASan does not cover - alignment or
-type-punning on the pixel buffer, or arithmetic outside the offset math above.
-Whether clang-cl's UBSan works on Windows in diagnostic mode or only in trap mode
-(`-fsanitize-trap=undefined`) is **unverified**; check it if the trigger fires,
-not before.
+That one class is closed by typing every offset and frame counter
+`size_t`/`int64_t`, and asserting the computed offset against the mapped blob size
+before each append. That check runs in the optimised build, which a side
+sanitizer configuration would not. The alternative costs a second set of flag
+spellings and a second set of MuJoCo/GLFW link quirks, to instrument ~200 lines of
+loop arithmetic.
+
+**Trigger to revisit:** undefined behaviour suspected in code ASan does not cover -
+alignment or type-punning on the pixel buffer, or arithmetic outside the offset
+math above. Whether clang-cl's UBSan works on Windows in diagnostic mode or only
+in trap mode (`-fsanitize-trap=undefined`) is **unverified**. Check it if the
+trigger fires, not before.
 
 Published overheads, for the ASan half that does exist:
 
@@ -867,38 +911,39 @@ Published overheads, for the ASan half that does exist:
 | ASan | **73% average** on SPEC CPU2006 (original paper), worst case 2.6x; 103% average in a later study |
 | UBSan, full set | **up to 228%** on SPEC2006 across all 19 sub-sanitizers; 59% average elsewhere - no longer applicable, kept as the cost the clang-cl route would have carried |
 
-Both are pure-CPU benchmarks, and this loop is dominated by GPU render and pixel
-readback which ASan does not instrument, so end-to-end slowdown should land well
-below them. Measure; do not extrapolate from SPEC.
+Both are pure-CPU benchmarks. This loop is dominated by the GPU render and the
+pixel readback, which ASan does not instrument, so the end-to-end slowdown should
+land well below them. Measure; do not extrapolate from SPEC.
 
 - **`/Zi` plus linker `/DEBUG` are not optional.** MSVC emits `C5072` without debug
-  info and `/WX` makes it fatal; the LLVM symbolizer also needs the PDB, or the
-  stacks are useless and you pay the run twice.
+  info, and `/WX` makes that fatal. The LLVM symbolizer also needs the PDB, or the
+  stacks are useless and you pay for the run twice.
 - **`/fsanitize=address` is incompatible with `/RTC`, incremental linking,
   edit-and-continue, and PGO.** The middle two are Debug defaults, and CMake sets
-  `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` to EditAndContinue on new projects - leaving
-  it there is a silent failure.
-- **The ASan runtime DLL has to be findable.** MSVC links it dynamically regardless
-  of `/MD` or `/MT`, and it sits next to `cl.exe`, on `PATH` only inside a Developer
-  prompt. `sim/CMakeLists.txt` copies it beside the binary.
-- **Collect every finding in one pass** for the gate run rather than stopping at the
-  first. MSVC honours a subset of `ASAN_OPTIONS` and documents `ASAN_SAVE_DUMPS`;
-  confirm the continue-on-error spelling against the MSVC docs before relying on it.
-- **MuJoCo stays uninstrumented** (prebuilt `mujoco.lib`) - not your code, and the
-  case that matters is still caught, because ASan intercepts `malloc` globally so
+  `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` to EditAndContinue on new projects. Leaving
+  it there fails silently.
+- **The ASan runtime DLL has to be findable.** MSVC links it dynamically whether
+  you use `/MD` or `/MT`, and it sits next to `cl.exe`, which is on `PATH` only
+  inside a Developer prompt. `sim/CMakeLists.txt` copies it beside the binary.
+- **Collect every finding in one pass** for the gate run, rather than stopping at
+  the first. MSVC honours a subset of `ASAN_OPTIONS` and documents
+  `ASAN_SAVE_DUMPS`. Confirm the continue-on-error spelling against the MSVC docs
+  before relying on it.
+- **MuJoCo stays uninstrumented** (prebuilt `mujoco.lib`). It is not your code, and
+  the case that matters is still caught: ASan intercepts `malloc` globally, so
   MuJoCo writing past the end of *your* buffer trips a redzone.
 - **No leak checking here**, so the LSan suppression file a Linux run would need
-  against the NVIDIA driver does not apply. A process that exits after one shard is
-  also where leaks matter least.
-- **Phase 0 is the only phase where this is clean: no CUDA in it.** ASan and CUDA
-  coexist poorly - another reason to confine all C++ to Phase 0.
+  against the NVIDIA driver does not apply. A process that exits after one shard
+  is also where leaks matter least.
+- **Phase 0 is the only phase where this is clean, because it has no CUDA.** ASan
+  and CUDA coexist poorly - another reason to keep all C++ in Phase 0.
 
 ## Benchmark validity: the measurement environment is a requirement, not a detail
 
 Measured on the target machine (RTX 5060 **Laptop** GPU, driver 610.62, torch
 2.9.1+cu130, sm_120 confirmed): device-copy bandwidth came out at 66-77 GB/s and
 fp16 matmul at 1.4 TFLOP/s. **Both numbers are invalid as statements about the
-hardware** - the diagnostic says why:
+hardware**, and the diagnostics say why:
 
 | Signal | Observed under sustained load | Expected |
 |---|---|---|
@@ -908,30 +953,31 @@ hardware** - the diagnostic says why:
 | `pstate` | **P4** | P0 |
 | `temperature.gpu` | 55-59 C | cool, so not thermal |
 
-6 W during an 8192-cube fp16 matmul is conclusive: the device never left a
-low-power state. Two-second sustained warmups did not ramp it, and ~50 desktop
-processes (browsers, Teams, Slack, Discord, NVIDIA and Overwolf overlays) hold GPU
-contexts under WDDM. **The ingredients doc's 448 GB/s was therefore neither confirmed
-nor refuted by this attempt.** It has since been **refuted** by a clocked-up rerun:
-the part peaks at 384 GB/s and delivers 308.3 GB/s streaming reads. See the
-verification log. Note the table above already recorded `clocks.max.memory` as
-12001 MHz - the refutation was sitting in the data nobody divided.
+6 W during an 8192-cube fp16 matmul settles it: the device never left a low-power
+state. Two-second sustained warmups did not ramp it up, and ~50 desktop processes
+(browsers, Teams, Slack, Discord, NVIDIA and Overwolf overlays) hold GPU contexts
+under WDDM. **So this attempt neither confirmed nor refuted the ingredients doc's
+448 GB/s.** A later run with the clocks up **refuted** it: the part peaks at
+384 GB/s and delivers 308.3 GB/s on streaming reads. See the verification log.
+Note that the table above already recorded `clocks.max.memory` as 12001 MHz - the
+refutation was sitting in data nobody had divided.
 
 The finding that matters is not the bandwidth number:
 
-1. **E-4 ("rerun matches within 5%") is unachievable without pinning the clock
-   state.** A GPU drifting between idle and boost clocks varies by more than an
-   order of magnitude, not 5%. This is a statement about *clocks*; the pstate
-   label is not the way to check it - see the correction under item 3.
-2. **P-4 (p99/p50 <= 1.3) can be blown by a single boost transition mid-run**,
-   independent of any kernel. On a laptop with dynamic boost this is the most
-   likely cause of a failed P-4, and it would look exactly like a kernel problem.
-3. **Therefore the bench harness must record `pstate`, `clocks.current.sm`,
+1. **Bench reproducibility (E-4, "rerun matches within 5%") cannot be met without
+   pinning the clock state.** A GPU drifting between idle and boost clocks varies
+   by more than an order of magnitude, not 5%. This is a statement about *clocks*.
+   The pstate label is not the way to check it - see the correction under item 3.
+2. **The p99/p50 ratio bar (P-4, <= 1.3) can be blown by a single boost transition
+   mid-run**, whatever the kernels do. On a laptop with dynamic boost this is the
+   most likely cause of a P-4 failure, and it would look exactly like a kernel
+   problem.
+3. **So the bench harness must record `pstate`, `clocks.current.sm`,
    `clocks.current.memory`, `power.draw`, and `temperature.gpu` on every timing
    row, and refuse to run when the relevant clock domain sits below a configured
-   fraction of max.** A timing without its clock state is not reproducible, so by
-   E-4 it is not a valid number. This is cheap - one `nvidia-smi` query per run,
-   outside the timed region per the observability rules.
+   fraction of max.** A timing without its clock state is not reproducible, so
+   under E-4 it is not a valid number. This is cheap: one `nvidia-smi` query per
+   run, outside the timed region, per the observability rules.
 
    **Corrected 2026-08-23: this item originally said "refuse to run when
    `pstate != P0`", and that gate is refuted.** The reported pstate follows the
@@ -944,24 +990,26 @@ The finding that matters is not the bandwidth number:
    `clocks.current.memory == clocks.max.memory`. `bench/gpu_probe.py` runs both
    phases; the refutation is the `pstate == P0` row in the verification log.
 4. **Preconditions for any Phase 3/4 measurement, documented in the README:** mains
-   power, Windows/NVIDIA performance profile, `nvidia-smi --lock-gpu-clocks` and
-   `--lock-memory-clocks` for the run (needs admin), desktop GPU consumers closed.
+   power, the Windows/NVIDIA performance profile, `nvidia-smi --lock-gpu-clocks`
+   and `--lock-memory-clocks` for the run (needs admin), and desktop GPU consumers
+   closed.
 5. **Day-1 addition: re-measure bandwidth and matmul throughput at P0** before
-   trusting any budget term. If the laptop cannot *sustain* P0 under a 1000-frame
+   trusting any budget term. If the laptop cannot *sustain* P0 through a 1000-frame
    run, that is a project-level constraint worth knowing in week 1 rather than
-   week 10 - it would compress every margin in the fork table simultaneously.
+   week 10: it would shrink every margin in the fork table at once.
 
-Environment otherwise checks out: sm_120 is confirmed at capability (12, 0), and
-CUDA 13.0 clears the docs' 12.8 requirement for Blackwell.
+Otherwise the environment checks out: sm_120 is confirmed at capability (12, 0),
+and CUDA 13.0 clears the docs' 12.8 requirement for Blackwell.
 
 **Corrected 2026-08-21:** the earlier claim that "WSL2 Ubuntu-24.04 is running, so
 Phase 0's EGL path has a home" was wrong. WSL2 has a home for CUDA, not for
-rendering: `dxgkrnl` fails adapter enumeration (`Ioctl failed: -22`), no `/dev/dri`
-node appears, and Mesa reports `Falling back to surfaceless swrast without DRM`.
-Two restarts, `wsl --update --pre-release`, and every platform and driver override
-were tried. Everything now runs natively on Windows. **The C++ toolchain question
-is closed**: MSVC via CMake generator `Visual Studio 18 2026`, C++20 confirmed by
-`sim/main.cpp` printing `202002`, with `sim/build/` and `sim/build-asan/` both
+rendering: `dxgkrnl` fails adapter enumeration (`Ioctl failed: -22`), no
+`/dev/dri` node appears, and Mesa reports
+`Falling back to surfaceless swrast without DRM`. Two restarts,
+`wsl --update --pre-release`, and every platform and driver override were tried.
+Everything now runs natively on Windows. **The C++ toolchain question is closed**:
+MSVC via the CMake generator `Visual Studio 18 2026`, with C++20 confirmed by
+`sim/main.cpp` printing `202002`, and `sim/build/` and `sim/build-asan/` both
 building and running. MinGW was never needed.
 
 ## Feasibility cross-check, and what the project argues
@@ -973,34 +1021,35 @@ Computed from the roadmap's own MineWorld reference:
 | MineWorld 300M @ 5.9 fps, 340 tok/frame | 499 us/token | 300M |
 | mirage target, 30 fps, 64 tok/frame | 521 us/token | ~15M |
 
-**The target is essentially the same per-token latency as a 20x larger model.** That
-is only possible - and only necessary - because both systems are
-fixed-overhead-bound rather than compute-bound. It sharpens the thesis: not "a small
-model can be fast," but "fixed overhead is what makes a small model no faster than a
-big one, and here is how to remove it." Precisely what the ladder attacks.
+**The target has essentially the same per-token latency as a model 20x larger.**
+That is possible - and necessary - only because both systems are limited by fixed
+overhead rather than by compute. It sharpens the project's thesis. Not "a small
+model can be fast", but "fixed overhead is what makes a small model no faster than
+a big one, and here is how to remove it." That is exactly what the ladder attacks.
 
-- **At 64 tokens, P-1 needs graph capture and nothing beyond it; P-5 is the binding
-  requirement after that.** **Corrected 2026-08-28 - this bullet still carried the
-  pre-recalculation numbers and, worse, the conclusion they supported.** It read
-  "~400-495 us against a 520 us budget, so the Phase 3 baseline lands near 30 fps
-  *before* any optimization." Against the measured 308.3 GB/s the naive path is
-  **~535 us against a 520.8 us budget, 103%**, so **the Phase 3 baseline does not
-  reach 30 fps unoptimized** - that is what the fork table's "CUDA graphs are now
+- **At 64 tokens, the 30 fps bar (P-1) needs graph capture and nothing beyond it;
+  after that, the 3x speedup bar (P-5) is the one that binds.** **Corrected
+  2026-08-28: this bullet still carried the numbers from before the
+  recalculation, and worse, the conclusion they supported.** It read "~400-495 us
+  against a 520 us budget, so the Phase 3 baseline lands near 30 fps *before* any
+  optimization." Against the measured 308.3 GB/s, the naive path is **~535 us
+  against a 520.8 us budget, 103%**, so **the Phase 3 baseline does not reach
+  30 fps unoptimized.** That is what the fork table's "CUDA graphs are now
   required on both paths" means in Phase 3 terms. After graphs the 64 path sits at
-  ~185 us, 36% of budget, and that is where the headroom for P-5's 3x comes from.
-  At 144 tokens naive is **251%** of budget and still 100% *after* graphs, which is
-  why DiagD is the only thing between that path and the wall.
+  ~185 us, 36% of budget, and that is where the headroom for the 3x speedup comes
+  from. At 144 tokens naive is **251%** of budget and still 100% *after* graphs,
+  which is why DiagD is the only thing between that path and the wall.
 
-  Kept as a worked example of the drift this doc is meant to prevent: the
+  Kept as a worked example of the drift this doc is meant to prevent. The
   2026-08-23 re-measurement updated the fork table and `world_model_ingredients.md`
-  where 448 GB/s appeared literally, but missed every place the old figure had
-  already been *propagated into a consequence* - this bullet, plus two sites in the
+  where 448 GB/s appeared literally. It missed every place the old figure had
+  already been *carried into a consequence*: this bullet, plus two sites in the
   derived docs. A number is easy to grep for; a conclusion that silently inverted
   is not. **When a verification-log row refutes a prior value, search for the
   consequences by concept, not by digit.**
-- **Prediction to validate the instrumentation:** F-17's first measurement at 64
-  tokens should show roughly 80% CPU dispatch, 20% GPU busy. A very different split
-  means suspect the measurement before the model.
+- **A prediction to check the instrumentation:** the bench's first CPU/GPU split
+  (F-17) at 64 tokens should show roughly 80% CPU dispatch, 20% GPU busy. A very
+  different split means suspect the measurement before the model.
 
 ## Which later-phase plans can be drafted now
 
@@ -1012,44 +1061,45 @@ big one, and here is how to remove it." Precisely what the ladder attacks.
 | 3 Playable | Yes | nothing |
 | 4 Engine | **No** | the Phase 3 profile, which does not exist yet |
 
-Phase 0's *results* gate almost nothing; what gates Phases 2 and 4 is Phase 1's PSNR
-number. Next step: a full Phase 0 plan plus a thin Phase 1 plan, since the Phase 0
-to 1 handoff is the token cache and that seam should be right. Leave 2-4 undrafted -
-"profile before changing anything" applied to planning.
+Phase 0's *results* gate almost nothing. What gates Phases 2 and 4 is Phase 1's
+PSNR number. Next step: a full Phase 0 plan plus a thin Phase 1 plan, since the
+Phase 0 to 1 handoff is the token cache and that seam should be right. Leave 2-4
+undrafted - "profile before changing anything", applied to planning.
 
 ## Findings that change the scene XML
 
-- **Colour the two arm links differently.** Q-5 (link-length drift), Q-4
-  (`link_angle`), and `compactness[link]` all become few-line pixel measurements
-  per link. A shared arm colour would require segmenting one blob into two links.
+- **Colour the two arm links differently.** Link-length drift (Q-5), `link_angle`
+  (Q-4), and `compactness[link]` then each become a few lines of pixel
+  measurement per link. A shared arm colour would need one blob segmented into two
+  links.
 - Distinct saturated colours per block make "block count" a per-colour pixel
   threshold rather than connected-component labelling. **No scipy in the shipped
   design** - it appears only if the deferred CC diagnostic is added in Phase 2.
 - **The palette has exactly one home: the XML's `rgba` attributes**, plus one
   entry no `rgba` can name. The validator reads the attributes with
   `xml.etree.ElementTree` (stdlib, ~5 lines) rather than duplicating the list in
-  config JSON. Duplication here is the same class of bug as two validator
-  implementations - the copies drift, and the symptom is a validator reporting
+  config JSON. Duplicating it would be the same class of bug as two validator
+  implementations: the copies drift, and the symptom is a validator reporting
   "block missing" for a block that is present.
 
   **Measured correction 2026-08-27: the palette is the six `rgba` colours plus
-  an implicit black void.** 14.1% of a frame is `(0,0,0)` - the framebuffer
-  clear colour, showing past the far edge of a finite table with no skybox - and
-  it appears in no `rgba` attribute. Without the extra entry `offpalette_px`
-  reads ~578 px on a flawless frame and F-9 can never reach zero false
-  positives. The entry lives in `mirage/validator.py` (`VOID_RGB`), not in the
-  scene: adding a black geom to the XML would change `data_hash` and invalidate
-  300k frames to fix a reader's bookkeeping. Also **keep the palette unrounded**
-  - comparing against `0.90 * 255 = 229.5` rather than `230` halves every
-  distance, and the worst a rendered pixel then sits from its own entry is 0.75
-  over 8,000 frames.
-- Keep the palette under F-2's 24-colour ceiling. Current count is ~7 (background,
-  table, 2 arm links, 3 blocks), so there is headroom, but every new
-  distinctly-coloured object spends from a budget that also protects the tokenizer.
+  an implicit black void.** 14.1% of a frame is `(0,0,0)` - the framebuffer clear
+  colour, showing past the far edge of a finite table with no skybox - and it
+  appears in no `rgba` attribute. Without the extra entry, `offpalette_px` reads
+  ~578 px on a flawless frame, and F-9 can never reach zero false positives. The
+  entry lives in `mirage/validator.py` (`VOID_RGB`), not in the scene: adding a
+  black geom to the XML would change `data_hash` and invalidate 300k frames to fix
+  a reader's bookkeeping. Also **keep the palette unrounded**. Comparing against
+  `0.90 * 255 = 229.5` rather than `230` halves every distance, and the worst a
+  rendered pixel then sits from its own entry is 0.75 over 8,000 frames.
+- Keep the palette under F-2's 24-colour ceiling. The current count is ~7
+  (background, table, 2 arm links, 3 blocks), so there is headroom, but every new
+  distinctly-coloured object spends from a budget that also protects the
+  tokenizer.
 
 ## Repo layout
 
-Two build systems, no monorepo tooling. `sim/` is deletable after Phase 0 and
+Two build systems, no monorepo tooling. `sim/` can be deleted after Phase 0, and
 nothing in `mirage/` imports MuJoCo.
 
 ```
@@ -1101,31 +1151,33 @@ Each **M** requirement gets one runnable check. Phase 0's gate is these passing.
 | Occlusion rate | fraction of frames with any `visible_px[i] == 0` **where that block is visible again later in the episode**, assert >= 3%. `mirage.data.seen_later` owns the split and both `mirage/validator.py` and `bench/occlusion_probe.py` call it. Counting every zero-pixel frame reads **19.83%** against the restated **5.35%**, and 73% of the difference is blocks that never return | F-7 |
 | Validator false positives | threshold sweep of mode 2 against mode 1, zero FP on ground truth; repeat against Phase 1 reconstructions | F-9 |
 
-The occlusion and contact checks are the two most likely to fail on the first scene,
-and both are fixed by editing the XML - arm reach versus block placement - not by
-changing code. Budget an iteration or two.
+The occlusion and contact checks are the two most likely to fail on the first
+scene. Both are fixed by editing the XML - arm reach against block placement - not
+by changing code. Budget an iteration or two.
 
 ## Verification log
 
-What has been checked and how, so future sessions neither re-derive nor over-trust.
+What has been checked and how, so future sessions neither re-derive nor
+over-trust it. The rows below are evidence and are kept as written.
 
-**"Asserted at" is not optional on a row that refutes or corrects something.** This
-log is append-only and the rest of the tree is not, so recording *what came back
-wrong* does nothing to retract the places that still say the wrong thing. Twelve
-such places were found on 2026-08-28 and ten were real - the audit is D8 in
-`phase0_debt_checklist.md`. The rule that follows from it:
+**"Asserted at" is required on any row that refutes or corrects something.** This
+log is append-only and the rest of the tree is not. Recording *what came back
+wrong* here does nothing to fix the places that still say the wrong thing. Twelve
+such places were found on 2026-08-28, and ten were real - the audit is D8 in
+`phase0_debt_checklist.md`. The rules that follow:
 
-- **A row reporting a refutation lists every site that asserts the refuted claim**,
-  cited as `file, "Section name"` and never as a line number, which rots. Mark each
-  corrected or still-standing. A row with nothing to retract gets `-`.
-- **Fill it when the row is written**, not later. Later means someone greps this
-  row's wording, and the assertion is phrased differently - which is exactly how
+- **A row reporting a refutation lists every site that asserts the refuted
+  claim**, cited as `file, "Section name"`, never as a line number, which rots.
+  Mark each one corrected or still standing. A row with nothing to retract gets
+  `-`.
+- **Fill it in when the row is written**, not later. Later means someone greps for
+  this row's wording while the claim is phrased differently - which is exactly how
   the `mjvOption` and `record.cc` sites survived.
 - **A finding with no site is a finding nobody will act on.** Two silent-failure
-  gotchas here - `mjv_updateScene` before `mj_forward`, and `targetbody` without
-  `target` - lived only in this table until they were routed into
+  gotchas - `mjv_updateScene` before `mj_forward`, and `targetbody` without
+  `target` - lived only in this table until they were moved into
   `phase0_structural_plan.md`, "Found by running Phase 0". If a row's sites column
-  would be empty, that is the signal to give the finding a home.
+  would be empty, give the finding a home.
 
 | Claim | Method | Result | Asserted at |
 |---|---|---|---|
