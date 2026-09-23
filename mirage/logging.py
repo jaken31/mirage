@@ -1,24 +1,22 @@
-"""One `log(dict)` that always writes jsonl, and mirrors to W&B when asked.
+"""One `log(dict)` that always writes a jsonl file, and copies to W&B if asked.
 
-Three layers of observability are named in the architecture doc; this file is
-the second. The first is `runs.jsonl` at the repo root - the hand-authored E-5
-lab notebook, one line per *decision*, which no tool produces and which this
-file must not touch. The third is W&B, which is a viewer over this one.
+There are three kinds of record in this project. `runs.jsonl` at the repo root
+is the hand-written lab notebook, one line per *decision*; no tool writes it
+and this file must not touch it. This module writes the per-run metrics. W&B,
+when enabled, is only a viewer over those metrics.
 
-jsonl stays the source of truth, so the history survives independently of any
-account, and F-17's ladder table is a jsonl-to-markdown script rather than a
-screenshot. W&B is a flag, never a dependency: the whole module imports and runs
-with `wandb` absent from the environment; the mirror itself is verified
-offline against 0.29.0 by the self-check.
+The jsonl file is the source of truth, so the history does not depend on any
+account, and benchmark tables can be generated from it by script. W&B is an
+option, never a dependency: this module imports and runs without `wandb`
+installed. The self-check tests the W&B copy offline against wandb 0.29.0.
 
-Every record carries the run id and whatever hashes the caller names, so E-4
-("reproducible from a config hash") and E-5 hold by construction rather than by
-remembering to write them down. A single line out of the middle of a training
-run identifies which run and which config produced it.
+Every record carries the run id and any hashes the caller passes, so any single
+line from the middle of a run says which run and which config produced it,
+without anyone having to remember to write that down.
 
-**Do not call this inside a timed region.** P-2 and P-4 are tail-latency
-requirements and an occasional 1 ms write lands in p99, not p50; the Phase 4
-bench loop records into a preallocated array and writes afterwards.
+**Do not call this inside a timed region.** Frame-time targets are judged on
+the slowest 1% of frames, and an occasional 1 ms write lands right there. Timed
+benchmark loops should record into a preallocated array and write afterwards.
 
     with Run("r0", {"tokenizer_hash": cfg.tokenizer_hash}) as run:
         run.log({"step": step, "loss": float(loss)})
@@ -34,25 +32,25 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Sibling of runs.jsonl, and deliberately not inside it. The trailing slash in
-# .gitignore keeps `runs/` from matching the file, but the two names sitting
-# side by side is a real trap - read the note there before "fixing" either.
+# Next to runs.jsonl, deliberately not inside it. The trailing slash in
+# .gitignore stops `runs/` from also ignoring runs.jsonl, but the two similar
+# names are a real trap; read the note there before "fixing" either.
 RUNS_DIR = ROOT / "runs"
 
-# How long the W&B login prompt may block a training run before it is treated as
-# a failure. Only reached on a terminal with no key configured; every other
-# credential outcome fails in under a second. Generous enough to paste a key
-# into, short enough that an unattended run gives up rather than sitting there.
+# How long the W&B login prompt may block a run before it counts as a failure.
+# Only reached on a terminal with no key set; every other credential problem
+# fails in under a second. Long enough to paste a key, short enough that an
+# unattended run gives up instead of waiting forever.
 WANDB_LOGIN_TIMEOUT_S = 30
 
 
 def _jsonable(value: Any) -> Any:
-    """Last-resort coercion for things `json` refuses.
+    """Fallback conversion for values `json` cannot serialise.
 
-    numpy scalars and 0-d arrays, torch tensors and `Path` are what actually
-    turn up in a training loop. Anything else becomes its `repr` rather than
-    raising, because losing a whole run's log to one unserialisable field in one
-    record is a worse failure than one ugly string.
+    Handles what actually shows up in a training loop: numpy scalars and arrays,
+    torch tensors, and `Path`. Anything else becomes its `repr` instead of
+    raising, because losing a whole run's log over one odd field is worse than
+    one ugly string.
     """
     for attr in ("item", "tolist"):  # numpy scalar / 0-d array, torch tensor
         fn = getattr(value, attr, None)
@@ -62,8 +60,8 @@ def _jsonable(value: Any) -> Any:
             except Exception:
                 pass
     if isinstance(value, Path):
-        # as_posix, not str: everything here runs on Windows, and str() would
-        # put backslashes in a log that is meant to be read anywhere.
+        # as_posix, not str: this runs on Windows, and str() would put
+        # backslashes in a log meant to be read anywhere.
         return value.as_posix()
     return repr(value)
 
@@ -81,16 +79,15 @@ def git_sha() -> str | None:
 
 
 class Run:
-    """A run-scoped jsonl, plus a `meta.json` that makes the directory readable.
+    """One run's jsonl metrics file, plus a `meta.json` describing the run.
 
-    The directory is named by run id and not by a config hash, for the reason
-    the architecture doc settled: two runs at identical config and different
-    seeds share a hash and produce different results, so a hash-named directory
-    would have them overwrite each other. The hash lives *in* the records.
+    The directory is named by run id, not config hash: two runs with the same
+    config but different seeds share a hash yet give different results, so
+    hash-named directories would overwrite each other. The hash goes *inside*
+    each record instead.
 
-    Creating a run whose directory already exists raises rather than appending.
-    Two processes interleaving lines into one metrics file is the same class of
-    bug as two generation runs writing one shard directory, and it is silent.
+    Creating a run whose directory already exists raises instead of appending.
+    Two processes mixing lines into one metrics file would be a silent bug.
     """
 
     def __init__(
@@ -126,88 +123,66 @@ class Run:
                 encoding="utf-8", newline="\n",
             )
 
-            # Imported here, not at module scope: the flag is the whole point, and a
-            # top-level `import wandb` would make an optional viewer a hard
-            # dependency of every training run.
+            # Imported here, not at the top of the module: a top-level `import wandb`
+            # would make an optional viewer a hard dependency of every run.
             #
-            # Verified 2026-08-29 against wandb 0.29.0 by the offline branch of
-            # `_self_check`: this init, three `log` calls and `finish` all run, and
-            # the jsonl path is unaffected. The credential failures are verified
-            # 2026-08-30 and all three land here, at init, before step 0 - see the
-            # `wandb.login` note below. **The upload is verified 2026-08-30 too**,
-            # by `--network` below: a three-record run reached the server, and its
-            # history read back through `wandb.Api()` matched what was logged while
-            # the jsonl underneath stayed intact. So: the offline init/log/finish
-            # path, the credential paths, and the scalar upload. Resume, artifacts,
-            # media and a mid-run network drop are deliberately not verified - the
-            # verification log says which, and why each is a different measurement.
+            # Tested against wandb 0.29.0: the offline init/log/finish path (by
+            # `_self_check`), the credential failures (all fail here, at init, before
+            # step 0; see the `wandb.login` note below), and a real upload (by
+            # `--network`, which reads the history back through `wandb.Api()`).
+            # Resume, artifacts, media and a network drop mid-run are deliberately
+            # not tested; the verification log says why.
             self._wandb = None
             if wandb_project is not None:
                 import wandb  # noqa: PLC0415
 
-                # `wandb.init` authenticates implicitly, and with no key configured
-                # that means an **interactive prompt with no timeout**: a run
-                # launched from a terminal sits at "Enter your choice:" forever,
-                # having logged nothing. That is the one credential outcome worse
-                # than crashing, and it is the default. `Settings(login_timeout=)`
-                # does not reach the prompt - only an explicit `login(timeout=)`
-                # does. Measured 2026-08-30 against 0.29.0; see the verification log.
+                # `wandb.init` logs in implicitly, and with no key set that means an
+                # **interactive prompt with no timeout**: a run started from a
+                # terminal waits at "Enter your choice:" forever, having logged
+                # nothing. That is worse than crashing, and it is the default.
+                # `Settings(login_timeout=)` does not affect that prompt; only an
+                # explicit `login(timeout=)` does (tested on 0.29.0).
                 #
-                # `login` returning False is the other quiet case: `init` would
-                # then succeed and mirror nothing at all. Raise instead. A mirror
-                # that is silently off is worse than a run that refuses to start,
-                # because the run it was meant to record is the multi-hour one.
-                # The False carries no reason with it - the prompt may have timed
-                # out, the operator may have declined to paste a key, or a wandb
-                # run may already be active in this process - so the message names
-                # the possibilities rather than picking one. Reading which of them
-                # happened would mean reading wandb's private login internals, and
-                # this module does not do that.
+                # `login` returning False is the other quiet failure: `init` would
+                # then succeed and send nothing. So raise instead. A W&B copy that is
+                # silently off is worse than a run that refuses to start, because the
+                # run it was meant to record is the multi-hour one. False comes with
+                # no reason (the prompt timed out, the user declined to paste a key,
+                # or a W&B run is already active in this process), so the message
+                # lists all three rather than guess. Telling them apart would mean
+                # reading wandb's private internals.
                 #
-                # Offline and disabled runs are exempt on purpose: neither contacts
+                # Offline and disabled modes are exempt on purpose: neither talks to
                 # the server, so neither needs a key, and the offline self-check
-                # below is exactly that case. The exemption is asked of wandb
-                # rather than spelled out here, because the mode literals are its
-                # to name: `_offline` is `mode in ("offline", "dryrun")` and
-                # `_noop` is `mode == "disabled"` in 0.29.0, so `dryrun` - an
-                # offline alias that `login` refuses on principle - is covered
-                # without this guard having to track the list. Measured
-                # 2026-08-31, both attributes read off `wandb.Settings(mode=m)`
-                # for every one of the six mode literals 0.29.0 accepts; see the
-                # verification log. They are private, so a wandb upgrade can move
-                # them - `_bad_credentials_check` refuses to pass on an
-                # `AttributeError` for exactly that reason. Known consequence,
-                # accepted: `login` verifies against the server and wandb reports
-                # unreachability as an auth error, so a transient outage also
-                # stops the run here, labelled auth. The mirror is opt-in and the
-                # jsonl needs no network, so re-running without `wandb_project`
-                # is the way out.
+                # relies on that. We ask wandb which mode is active instead of
+                # listing mode names here. In 0.29.0 `_offline` means "offline" or
+                # "dryrun" and `_noop` means "disabled" (checked for all six mode
+                # names), so the "dryrun" alias is covered too. These attributes are
+                # private and an upgrade could rename them, which is why
+                # `_bad_credentials_check` fails on an `AttributeError`. Accepted
+                # side effect: wandb reports "server unreachable" as an auth error,
+                # so a brief outage also stops the run here, labelled as auth. The
+                # W&B copy is optional, so re-run without `wandb_project`.
                 wandb_settings = wandb.setup().settings
                 if not (
                     wandb_settings._offline or wandb_settings._noop
                 ) and not wandb.login(timeout=WANDB_LOGIN_TIMEOUT_S):
-                    # A failed `login` does not just return False: it writes
-                    # `mode` on the process-global session it was handed -
-                    # `disabled` on timeout, `offline` when the prompt was
-                    # declined (0.29.0, `sdk/wandb_login.py`). Those are the two
-                    # attributes the guard above reads, and `wandb.init` copies
-                    # that mode too, so a second `Run(..., wandb_project=...)`
-                    # in this interpreter - a notebook cell, a retry, a sweep
-                    # driver - would be exempted by the guard and mirror
-                    # nothing, silently, which is the outcome this guard exists
-                    # to prevent. Tearing the session down makes the next
-                    # `wandb.setup()` re-resolve the mode from the environment,
-                    # so the retry gets the same refusal rather than a quiet
-                    # non-mirror. Printed, not raised, for the same reason as
-                    # the teardowns in the self-checks: it must not replace the
-                    # login error the operator needs to read.
+                    # A failed `login` does more than return False: it changes
+                    # the mode of wandb's process-wide session (`disabled` on
+                    # timeout, `offline` when declined; see 0.29.0
+                    # `sdk/wandb_login.py`). The guard above reads exactly that,
+                    # so a second `Run(..., wandb_project=...)` in this process
+                    # (a notebook cell, a retry, a sweep) would be exempted and
+                    # silently send nothing. Tearing the session down makes the
+                    # next `wandb.setup()` re-read the mode from the
+                    # environment, so a retry fails the same way. A teardown
+                    # failure is printed, not raised, so it cannot hide the
+                    # login error the user needs to read.
                     #
-                    # The third cause is exempt, and must be: `login` returns
-                    # False for an already-active run before it reads the
-                    # singleton at all, so there is nothing poisoned to clear -
-                    # and `teardown` "completes any runs that were not
-                    # explicitly finished", which would finish that caller's
-                    # live mirror with exit code 0 while it keeps training.
+                    # Skip the teardown when a run is already active: `login`
+                    # returns False in that case without touching the session,
+                    # and `teardown` would finish that caller's live run with
+                    # exit code 0 while it is still training.
                     if wandb.run is None:
                         try:
                             wandb.teardown()
@@ -224,34 +199,28 @@ class Run:
                         "which is not a credential problem: finish that run first."
                     )
 
-                # x_disable_stats kills the background system-metrics sampler. It
-                # samples CPU/GPU/disk on its own schedule, and sampling the GPU
-                # during a tail-latency measurement inflates p99 quietly.
+                # x_disable_stats turns off wandb's background CPU/GPU/disk
+                # sampler, which would quietly slow the worst frame times during
+                # latency measurements.
                 self._wandb = wandb.init(
                     project=wandb_project, name=self.run_id,
                     config=dict(config or {}) | self.hashes,
                     settings=wandb.Settings(x_disable_stats=True),
                 )
         except BaseException:
-            # `__init__` raising means `__enter__`/`__exit__` never run, so both
-            # the open handle and the directory this call just created would be
-            # left behind - and a retry inside the same wall-clock second
-            # rebuilds the identical timestamped `run_id` and dies on
-            # `mkdir(exist_ok=False)`, which reads like the two-processes
-            # interleaving bug the class docstring warns about rather than like
-            # a login failure. Both are released here. Removing the directory is
-            # safe precisely because `exist_ok=False` above proves this call
-            # created it: it did not exist a moment ago, so nothing else's data
-            # can be in it. The two files are unlinked by name and the directory
-            # `rmdir`-ed rather than deleted recursively - an unexpected file in
-            # there should stop the cleanup, not be silently swept away. A
-            # failure to clean up is dropped rather than raised, because the
-            # login error is the one the operator needs to see - but it is
-            # printed, so a leftover directory has a stated reason instead of
-            # surfacing later as that misleading `FileExistsError`. `close()`
-            # sits inside the same guard: a raising close must not replace the
-            # login error nor skip the warning, and `self._file` is `None` when
-            # the open itself is what failed.
+            # If `__init__` raises, `__exit__` never runs, so the open file and
+            # the new directory would be left behind. A retry within the same
+            # second would then build the same timestamped `run_id` and fail on
+            # `mkdir(exist_ok=False)`, which looks like the two-writers bug from
+            # the class docstring rather than a login failure. So clean up here.
+            #
+            # Removing the directory is safe because `exist_ok=False` proved
+            # this call created it, so nothing else can be in it. The two files
+            # are removed by name and the directory with `rmdir`, not a
+            # recursive delete, so an unexpected file stops the cleanup instead
+            # of being swept away. A cleanup failure is printed, not raised, so
+            # the login error stays visible. `close()` is inside the same guard
+            # for the same reason; `self._file` is `None` if opening it failed.
             try:
                 if self._file is not None:
                     self._file.close()
@@ -266,16 +235,14 @@ class Run:
     def log(self, record: Mapping[str, Any]) -> dict:
         """Append one record. Returns the line as written, parsed back.
 
-        Returning the round-trip and not the input dict is deliberate. The
-        caller passes numpy scalars and arrays, which `_jsonable` coerces during
-        `dumps` - so the dict handed in and the line on disk are *not* the same
-        object, and a caller that asserts against the input is asserting against
-        something that was never written. The self-check caught exactly that.
+        Returns the parsed line, not the input dict, on purpose. Callers pass
+        numpy values that `_jsonable` converts while writing, so the input and the
+        line on disk differ, and checking against the input would check something
+        that was never written.
 
-        Flushed per line, not buffered: a run that dies at epoch 12 should still
-        have epochs 1-11 on disk, and that is worth more than the syscalls.
-        `t` is seconds since the run started, so a record is readable without
-        knowing when the run began.
+        Flushed after every line: a run that dies at epoch 12 should still have
+        epochs 1-11 on disk, which is worth the extra writes. `t` is seconds since
+        the run started, so a record reads fine without knowing the start time.
         """
         line = json.dumps(
             {
@@ -292,14 +259,11 @@ class Run:
             self._wandb.log(dict(record))
         return json.loads(line)
 
-    # wandb treats a *missing* `exit_code` as 0, so a run killed mid-training was
-    # stamped `finished` server-side and `wandb.Api().run(...).state` reported a
-    # crash as a completed run - two runs were logged that way before `__exit__`
-    # started passing one. The default stays 0 because `close()` has callers that
-    # are not `__exit__`. `_self_check`'s stub branch asserts what this module
-    # passes, with no wandb and no account; the keyword is exercised against the
-    # installed wandb only by the offline mirror branch, which leaves its
-    # `with Run(...)` cleanly and so reaches the real `finish(exit_code=0)`.
+    # wandb treats a *missing* `exit_code` as 0, so a crashed run used to show as
+    # `finished` on the server. `__exit__` now passes the real code. The default
+    # stays 0 because `close()` is also called directly. `_self_check` tests what
+    # this passes with a stub (no wandb, no account); only the offline branch calls
+    # the real `finish(exit_code=0)`.
     def close(self, exit_code: int = 0) -> None:
         if not self._file.closed:
             self._file.close()
@@ -311,25 +275,24 @@ class Run:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        # Returns None, deliberately: a crashed run must be recorded as failed
-        # *and* still raise. Swallowing here would turn every training crash
+        # Returns None on purpose: a crashed run must be marked failed *and*
+        # still raise. Swallowing the exception would turn every training crash
         # into a silent early return.
         self.close(exit_code=1 if exc_type is not None else 0)
 
 
 def _self_check() -> None:
-    """The plan's working-when, against a throwaway directory.
+    """Checks this module works, in a throwaway directory.
 
-    Four branches, in order: the jsonl path, which must work with W&B absent
-    entirely; the exit-code contract, against a stub handle so it needs neither
-    the package nor an account; the mirror against a local directory,
-    `WANDB_MODE=offline`; and the credential path, `_bad_credentials_check`,
-    which contacts the server.
-    W&B is no longer absent from this environment - `requirements.txt` names
-    the installed version - so the mirror branch runs rather than skipping.
-    The upload itself is not here; it needs a key, and `--network <project>`
-    is the command for it. See the verification log at the end of
-    `docs/world_model_architecture.md` for what each of those measured.
+    Four parts, in order: the jsonl path, which must work without W&B at all;
+    exit codes, using a stub so no wandb package or account is needed; the W&B
+    copy in offline mode against a local directory; and bad credentials
+    (`_bad_credentials_check`), which contacts the server. The W&B parts are
+    skipped only if wandb is not installed.
+
+    Real uploads are not tested here because they need a key; run
+    `--network <project>` for that. The verification log at the end of
+    `docs/world_model_architecture.md` records what each part measured.
     """
     import tempfile
 
@@ -360,22 +323,22 @@ def _self_check() -> None:
         assert meta["run_id"] == run_id and meta["hashes"] == hashes
         print(f"meta.json: run_id, git_sha {str(meta['git_sha'])[:8]}, hashes, config")
 
-        # A run must not reopen a directory that already holds one, or two
-        # processes interleave lines into one file and neither says so.
+        # A run must not reuse an existing run directory, or two processes
+        # would silently mix lines into one file.
         try:
             run_dir.mkdir(parents=True, exist_ok=False)
             raise AssertionError("re-creating an existing run directory did not raise")
         except FileExistsError:
             print("a second run cannot reopen an existing run directory")
 
-        # The plan names pandas explicitly, so it is checked and not assumed.
+        # The metrics file must be readable by pandas, which is what will read it.
         df = pd.read_json(path, lines=True)
         assert len(df) == 5 and df["step"].tolist() == list(range(5))
         assert set(hashes) <= set(df.columns), "pandas lost the hash columns"
         print(f"pandas.read_json(lines=True): {df.shape[0]} rows x {df.shape[1]} columns, "
               f"columns {sorted(df.columns)}")
 
-        # Coercion, on the things a training loop actually produces.
+        # Conversion of the value types a training loop actually produces.
         with Run("coerce", root=tmp) as run2:
             got = run2.log({"a": np.float32(0.5), "b": np.arange(3), "c": Path("x/y"),
                             "d": object()})
@@ -387,10 +350,9 @@ def _self_check() -> None:
         assert on_disk == got, "the coerced return value differs from the line on disk"
         print("coercion: numpy scalar, numpy array, Path and an opaque object all survive")
 
-        # A crashed run must reach `finish()` with a nonzero exit_code, a clean
-        # one with 0, and the exception must still propagate - none of which
-        # needs a real wandb handle, so a stub stands in for it and this
-        # touches no network or credentials.
+        # A crashed run must call `finish()` with a nonzero exit_code, a clean
+        # one with 0, and the exception must still propagate. A stub stands in
+        # for wandb, so this needs no network or credentials.
         class _StubWandb:
             def __init__(self) -> None:
                 self.exit_codes: list[int] = []
@@ -422,13 +384,11 @@ def _self_check() -> None:
         print("exit_code: crash -> finish(exit_code=1) with the exception still propagating, "
               "clean exit and a bare close() -> finish(exit_code=0)")
 
-    # The W&B mirror, exercised end to end in **offline** mode. Offline is not a
-    # weaker check of the thing that was actually at risk: the risk was never the
-    # network, it was that `wandb.init(...)`/`Settings(x_disable_stats=...)` might
-    # not match the installed version's signature and would blow up at run start,
-    # killing a multi-hour training run at minute zero. Offline runs the same
-    # constructor and the same `log`/`finish` calls against a local directory.
-    # What offline does NOT check is upload or the server-side view.
+    # The W&B copy, end to end in **offline** mode. That still tests the real
+    # risk: that `wandb.init(...)` or `Settings(x_disable_stats=...)` does not
+    # match the installed version and crashes at the start of a multi-hour run.
+    # Offline makes the same calls against a local directory. It does NOT test
+    # upload or what the server sees.
     try:
         import wandb  # noqa: PLC0415
     except ImportError:
@@ -437,10 +397,10 @@ def _self_check() -> None:
         prev = os.environ.get("WANDB_MODE")
         os.environ["WANDB_MODE"] = "offline"
         try:
-            # ignore_cleanup_errors, and not by preference: on Windows wandb
-            # still holds `wandb/offline-run-*/logs/debug-internal.log` open
-            # after `finish()` returns, so the rmtree raises WinError 32 and
-            # fails a self-check whose subject already passed. Verified 0.29.0.
+            # ignore_cleanup_errors is needed: on Windows, wandb 0.29.0 keeps
+            # `wandb/offline-run-*/logs/debug-internal.log` open after
+            # `finish()`, so deleting the directory raises WinError 32 and
+            # would fail a check that already passed.
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
                 os.environ["WANDB_DIR"] = tmp
                 with Run("wandb", root=Path(tmp), hashes={"h": "0" * 8},
@@ -461,11 +421,10 @@ def _self_check() -> None:
             else:
                 os.environ["WANDB_MODE"] = prev
 
-        # teardown, and not for tidiness: `wandb.setup()` caches a
-        # process-global session on first use and then **ignores** later
-        # WANDB_MODE changes - it says so, as a warning. Without this the next
-        # check inherits `offline` from the block above, skips the online guard
-        # it exists to test, and passes for the wrong reason. It did.
+        # Not just tidiness: `wandb.setup()` caches a process-wide session on
+        # first use and then **ignores** later WANDB_MODE changes. Without this
+        # teardown the next check inherits `offline` from above, skips the online
+        # guard it exists to test, and passes for the wrong reason. It did once.
         wandb.teardown()
         _bad_credentials_check()
 
@@ -473,29 +432,24 @@ def _self_check() -> None:
 
 
 def _bad_credentials_check() -> None:
-    """A wrong key must fail at construction, before a single record.
+    """A wrong key must make `Run` fail at construction, before any record.
 
-    The credential failure this guards against is not the crash - it is the
-    *quiet* outcome, where the mirror turns itself off and the run trains for
-    hours reporting to nothing. Both wrong-key and no-key land here, at `Run`
-    construction; the no-key-on-a-terminal case is the one that used to hang,
-    and it cannot be exercised without a terminal, so this checks the one that
-    can be.
+    The danger is not a crash. It is the *quiet* failure, where the W&B copy
+    switches itself off and the run trains for hours reporting to nothing.
+    Wrong-key and no-key both fail at `Run` construction. No-key on a terminal
+    is the case that used to hang, but it needs a terminal to test, so this
+    tests the wrong-key case.
 
-    **What this cannot tell you:** whether the credential was what failed.
-    wandb raises `AuthenticationError` both when the server rejects a key and
-    when the server cannot be reached - `_verify_login`'s own docstring says
-    "rejects the credentials or cannot be reached", and it converts connection
-    failures to that type deliberately, to keep its contract. So on a machine
-    with no network this check sees the same exception type it sees on a
-    rejection. Narrowing the `except` to `AuthenticationError`/`UsageError` was
-    tried and abandoned for exactly that reason; do not re-attempt it, and do
-    not discriminate on the message text either - a check that silently breaks
-    when wandb rephrases a string is worse than one that reads honestly.
+    **What this cannot tell you:** whether the key was the cause. wandb raises
+    `AuthenticationError` both when the server rejects a key and when it cannot
+    be reached (on purpose; see `_verify_login`). So with no network this sees
+    the same error as a rejection. Catching only `AuthenticationError` /
+    `UsageError` was tried and dropped for that reason. Do not retry it, and do
+    not match on the message text either: a check that breaks when wandb
+    rewords a string is worse than an honest broad one.
 
-    What it therefore proves: `Run` refuses to construct, before step 0, rather
-    than starting a mirror that is silently off. What it does not prove: that
-    the refusal was caused by the credential.
+    So it proves `Run` refuses to start before step 0 instead of running with
+    the W&B copy silently off. It does not prove the key caused the refusal.
     """
     import tempfile
 
@@ -510,17 +464,17 @@ def _bad_credentials_check() -> None:
             try:
                 Run("badkey", root=Path(tmp), wandb_project="mirage-selfcheck")
             except Exception as exc:  # noqa: BLE001 - see the docstring
-                # The constructor is the only thing that could have created a
-                # `*-badkey` directory here, so any survivor is an orphan its
-                # failure path failed to remove - the leak that makes the next
-                # retry inside the same second die on `mkdir(exist_ok=False)`.
+                # Only the constructor could have created a `*-badkey`
+                # directory here, so any that remains was left behind by its
+                # failure path. That leak would make a retry in the same second
+                # fail on `mkdir(exist_ok=False)`.
                 orphans = [str(d) for d in Path(tmp).glob("*-badkey")]
                 assert not orphans, f"failed Run() left its directory behind: {orphans}"
-                # A bare programming error is not a credential refusal. The
-                # online guard reads two attributes wandb does not promise, and
-                # this is the only check that ever evaluates them; without this
-                # line a rename would surface as a green "refused to construct"
-                # for a mirror that cannot start at all.
+                # A plain programming error is not a credential refusal. The
+                # online guard reads two private wandb attributes, and this is
+                # the only check that exercises them. Without this line, a
+                # rename in wandb would show up as a passing "refused to
+                # construct" for a W&B copy that cannot start at all.
                 assert not isinstance(exc, (AttributeError, TypeError, NameError)), (
                     f"Run() failed with {type(exc).__name__}, which is mirage's "
                     f"own bug, not a credential refusal: {exc}"
@@ -540,12 +494,10 @@ def _bad_credentials_check() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = prev
-        # Symmetric with the teardown before this check, and for the same
-        # reason: this one leaves a session cached with the bogus key inside it,
-        # which the next check would silently inherit. Running last in a
-        # `finally`, it must not replace whatever this check was reporting - the
-        # sentence naming the defect is worth more than a wedged-service
-        # traceback - so a failure here is printed, not raised.
+        # Same reason as the teardown before this check: this one leaves a
+        # cached session holding the fake key, which the next check would
+        # silently inherit. It runs last, in a `finally`, so a failure here is
+        # printed rather than raised and cannot hide this check's own result.
         try:
             wandb.teardown()
         except Exception as teardown_exc:  # noqa: BLE001 - must not mask the check
@@ -554,11 +506,11 @@ def _bad_credentials_check() -> None:
 
 
 def _network_check(project: str) -> None:
-    """The one thing offline cannot check: a real run, uploaded and read back.
+    """What offline cannot check: a real run, uploaded and read back.
 
-    Deliberately tiny - three records, no GPU. Reading the history back through
-    the public API is the point: `finish()` returning is not evidence that
-    anything arrived, only that nothing raised on the way out.
+    Deliberately tiny: three records, no GPU. Reading the history back through
+    the public API is the point, because `finish()` returning only shows that
+    nothing raised, not that anything arrived.
     """
     import tempfile
 
@@ -581,7 +533,7 @@ def _network_check(project: str) -> None:
         finally:
             os.environ.pop("WANDB_DIR", None)
 
-        # The local log is authoritative and must be untouched by the mirror.
+        # The local log is the source of truth and the W&B copy must not change it.
         rows = [json.loads(line) for line in
                 path.read_text(encoding="utf-8").strip().splitlines()]
         assert len(rows) == len(records), f"{len(rows)} local lines for {len(records)} logs"
@@ -593,7 +545,7 @@ def _network_check(project: str) -> None:
         print(f"local jsonl intact underneath the mirror: {len(rows)} records, "
               f"each carrying run_id and {', '.join(hashes)}")
 
-    # Server-side, through the public API - a different process's view.
+    # The server's view, through the public API, as another process would see it.
     api_run = wandb.Api().run(f"{entity}/{project}/{wid}")
     history = list(api_run.scan_history(keys=["step", "loss"]))
     assert api_run.state == "finished", f"server reports state {api_run.state!r}"
@@ -607,11 +559,10 @@ def _network_check(project: str) -> None:
 
 if __name__ == "__main__":
     # `--network <project>` needs a real key, from the environment or `wandb
-    # login` - never from a file in this repo. Everything else runs without one.
-    # Anything that is neither that nor a bare invocation is rejected: falling
-    # through to the offline check would answer a mistyped `--netowrk` with a
-    # green result from a check that never contacted the server, which is the
-    # silent degradation this module exists to prevent.
+    # login`, never from a file in this repo. Everything else runs without one.
+    # Any other argument is rejected: falling through to the offline check would
+    # answer a typo like `--netowrk` with a pass from a check that never
+    # contacted the server.
     usage = "usage: python -m mirage.logging [--network <project>]"
     if sys.argv[1:2] == ["--network"]:
         if len(sys.argv) != 3 or not sys.argv[2].strip():
