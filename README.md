@@ -135,9 +135,9 @@ Windows set. The Intel integrated GPU did not: 442 frames differ by one pixel, a
 compiler do not. Whether the driver version matters is still open: Linux ran
 NVIDIA 610.57.04, but nobody recorded which driver made the Windows set, so both
 may have run the same version. Shards now carry it in their sidecar
-(`gl_version`), so the next comparison can say. Determinism (requirement F-4: same seed, same bytes) is tested
-by generating twice at one seed and comparing the pixel blobs - there is no
-`--replay` mode.
+(`gl_version`), so the next comparison can say. Determinism (requirement F-4:
+same seed, same bytes) is tested by generating twice at one seed and comparing
+the pixel blobs - there is no `--replay` mode.
 
 ## Build
 
