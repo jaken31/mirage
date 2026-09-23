@@ -1,33 +1,33 @@
-"""Can Q-3's coherence horizon see a dynamics failure at all?
+"""Can a validator-based rollout horizon detect a dynamics failure at all?
 
-Q-3 is "frames until the F-9 validator fails", accepted at >= 200.  F-9's
-decoder-output verdict is a **per-frame palette-adherence** test - off-palette
-share above `validator.offpalette_frac_max` at `validator.offpalette_tau` - and
-it never compares a frame to a reference.  So the question this probe asks is:
-if a rollout drifted to a completely wrong but perfectly *plausible* frame,
-would F-9 notice?
+The original rollout quality measure was "frames until the validator fails",
+with a target of at least 200. On decoder output the validator only checks
+**each frame's colours against the palette** (off-palette share above
+`validator.offpalette_frac_max` at `validator.offpalette_tau`) and never
+compares a frame with the right answer. So: if a rollout drifted to a
+completely wrong but perfectly *plausible* frame, would the validator notice?
 
-The substitution makes that concrete without training a dynamics model.  Take
-the reconstruction of frame `t + lag` and offer it as the prediction for frame
-`t`.  That is the worst dynamics failure available - the arm is somewhere else
-entirely - while remaining a real decoder output, exactly what a well-trained
-model would emit after drifting.  If the fire rate is unchanged, Q-3 terminates
-on decoder artifacts and nothing else, and its 200-frame horizon is not a
-statement about dynamics.
+A substitution tests that without training a dynamics model. Take the
+reconstruction of frame `t + lag` and offer it as the prediction for frame
+`t`. That is the worst possible dynamics failure (the arm is somewhere else
+entirely) while still being real decoder output, exactly what a good model
+would produce after drifting. If the failure rate does not change, the horizon
+only ever stops on decoder artifacts and says nothing about dynamics.
 
-Decoding by round-tripping frame `t + lag`'s pixels rather than by decoding its
-cached token row: encoding is deterministic at a pinned batch (gate row 5), so
-the two are the same frame, and this path reuses `fsq_eval.reconstruct` instead
-of adding a second decode implementation.
+Frame `t + lag` is re-encoded and decoded from its pixels rather than decoded
+from the cached tokens. Encoding is deterministic at a fixed batch size, so
+both give the same frame, and this reuses `fsq_eval.reconstruct` instead of a
+second decode path.
 
-**Two controls, because a bare 0.0% is indistinguishable from a broken verdict.**
+**Two controls, because a plain 0.0% looks the same as a broken check.**
 
-1. *The verdict fires on something.*  The same expression is run on a noised
-   reconstruction (sigma 16), which `bench/palette_pctl_probe.py` measured F-9
-   catching at 100%.  If that does not fire here, the probe is wrong, not Q-3.
-2. *The substituted frames really are different.*  Reports the share of pixels
-   that differ between the ground truth at `t` and at `t + lag`.  A near-zero
-   fire rate on near-identical frames would prove nothing.
+1. *The check fires on something.* The same rule runs on a noised
+   reconstruction (sigma 16), which `bench/palette_pctl_probe.py` found the
+   validator catches 100% of the time. If that does not fire here, the probe
+   is broken, not the measure.
+2. *The substituted frames really differ.* Reports the share of pixels that
+   differ between the ground truth at `t` and at `t + lag`. A near-zero rate
+   on near-identical frames would prove nothing.
 
     python bench/q3_blind_probe.py 20260829-005439-r1 [--lag 300]
 """
@@ -42,14 +42,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mirage import config, data, fsq_eval, validator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-LAG = 300         # "300 steps later" - half an episode at steps_per_episode 600
+LAG = 300         # "300 steps later": half an episode at steps_per_episode 600
 STRIDE = 10       # every 10th start, so the pairs are not 600 near-copies
-NOISE_SIGMA = 16  # the corruption F-9 was measured catching at 100%
+NOISE_SIGMA = 16  # noise the validator was measured catching 100% of the time
 
 
 def _fires(frames: np.ndarray, palette: validator.Palette, tau: float,
            frac_max: float) -> np.ndarray:
-    """F-9's decoder-output verdict, per frame. One expression, used three times."""
+    """The validator's decoder-output pass/fail rule, per frame. One rule, used three times."""
     return np.array([
         validator.measure_pixels_only(f, palette, tau).offpalette_frac > frac_max
         for f in frames
@@ -68,8 +68,8 @@ def probe(run_id: str, cfg: config.Config, lag: int = LAG,
     tau = cfg.validator["offpalette_tau"]
     frac_max = cfg.validator["offpalette_frac_max"]
 
-    # Row offsets of each val episode inside val_idx - preload concatenates
-    # split_episodes in index order, so the offsets are a running sum of lengths.
+    # Where each validation episode starts in val_idx. preload joins
+    # split_episodes in order, so the offsets are a running sum of lengths.
     eps = data.split_episodes(index, "val", cfg.data["val_fraction"])
     offsets = np.concatenate(([0], np.cumsum([e.length for e in eps])))
     assert offsets[-1] == len(val_idx), "episode lengths do not sum to the val split"

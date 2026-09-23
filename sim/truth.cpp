@@ -5,27 +5,26 @@
 #include <cstring>
 
 namespace {
-    // Block bits available in the meta record's contact_mask. Seven, not eight:
+    // Block bits available in the stored contact_mask byte. Seven, not eight:
     // shard_writer.h reserves the high bit for the scripted-episode flag.
     constexpr int kContactMaskBits = 7;
 
-    // Largest value the meta record's u16 visible_px field holds, and therefore
-    // the largest frame this file can count pixels over.
+    // Largest value the meta record's 16-bit visible_px field can hold, so also
+    // the largest frame (in pixels) this file can count over.
     constexpr int kVisiblePxMax = 65535;
 
-    // mjv_makeScene's buffer size. Twelve geoms in arm_blocks.xml against a
-    // one-off allocation - no reason to compute it.
+    // Scene buffer size for mjv_makeScene. The scene has twelve geoms and this
+    // is allocated once, so a generous constant beats computing it.
     constexpr int kMaxSceneGeom = 1000;
 
-    // Where the dry run parks a block to check that an invisible block reads
-    // zero: below the table and outside the camera frustum, not merely behind
-    // something.
+    // Where the dry run parks a block to check that a hidden block reads zero:
+    // below the table and outside the camera's view, not just behind something.
     constexpr mjtNum kOutOfFrameZ = -5.0;
 
     // Full-torque control for one actuator, used only by the dry run's sweep.
-    // Reads ctrlrange rather than writing 1.0 so that editing the XML's drive
-    // strength changes the sweep instead of saturating against it - the same
-    // rule policy.cpp's ActuatorRange follows.
+    // Reads the actuator's control range instead of hardcoding 1.0, so changing
+    // the drive strength in the XML changes the sweep too. policy.cpp's
+    // ActuatorRange follows the same rule.
     mjtNum FullDrive(const mjModel* model, mjtSize i) {
         if (!model->actuator_ctrllimited[i]) {
             return 1.0;
@@ -33,16 +32,16 @@ namespace {
         return model->actuator_ctrlrange[2*i + 1];
     }
 
-    // The dry run's own scene refresh. pert is null because nothing is being
-    // dragged; mjCAT_ALL because a geom left out of the scene carries segid -1
-    // and would read as permanently occluded.
+    // Scene refresh for the dry run. No perturbation (nothing is being dragged
+    // with the mouse). mjCAT_ALL because a geom left out of the scene gets
+    // segmentation id -1 and would look permanently hidden.
     void UpdateScene(const mjModel* model, mjData* data, const mjvOption* opt,
                      mjvCamera* camera, mjvScene* scene) {
         mjv_updateScene(model, data, opt, nullptr, camera, mjCAT_ALL, scene);
     }
 
-    // qpos address of a block's free joint, checked rather than assumed - the
-    // dry run writes into the z slot and a hinge has no such slot.
+    // qpos address of a block's free joint. Checked, not assumed: the dry run
+    // writes the block's z position, and only a free joint has one.
     int FreeJointQposAdr(const mjModel* model, int body) {
         const int joint = model->body_jntadr[body];
         if (joint < 0 || model->jnt_type[joint] != mjJNT_FREE) {
@@ -65,11 +64,11 @@ Truth::Truth(const mjModel* model, const GlContext& gl)
                   viewport_.width, viewport_.height, kVisiblePxMax);
     }
 
-    // Discovered by name, exactly as policy.cpp does it and for the same reason:
-    // F-6 and F-7 are both fixed by editing the scene XML, so the set of blocks
-    // is the thing most likely to change out from under this code. The two loops
-    // must agree on the prefix, or block index i names a different block in the
-    // meta record than it does in the action stream.
+    // Find blocks by name, exactly as policy.cpp does. Contact and occlusion
+    // rates are tuned by editing the scene XML, so the set of blocks is what is
+    // most likely to change under this code. Both loops must use the same name
+    // prefix, or block index i means a different block in the meta record than
+    // in the policy.
     for (int i = 0; i < model_->nbody; ++i) {
         const char* name = mj_id2name(model_, mjOBJ_BODY, i);
         if (name && std::strncmp(name, "block", 5) == 0) {
@@ -85,13 +84,13 @@ Truth::Truth(const mjModel* model, const GlContext& gl)
                   "is the scripted-episode flag)", block_count(), kContactMaskBits);
     }
 
-    // geom -> block, and by omission geom -> arm. A geom on the world body is
-    // scenery (the table); a geom on a moving body that is not a block is arm.
+    // Map each geom to its block. Anything else is either scenery (a geom on
+    // the world body, like the table) or arm (a geom on any other moving body).
     //
-    // ponytail: "not world, not block" is the whole arm test. It is right for
-    // any scene where the arm is the only other moving thing. Add a second
-    // movable object - a distractor, a second arm - and it reads as arm, which
-    // inflates F-6. Derive the arm from the actuated chain if that day comes.
+    // ponytail: "not world, not block" is the entire arm test. It holds while
+    // the arm is the only other moving thing. Add a second movable object (a
+    // distractor, a second arm) and it counts as arm, which inflates the
+    // contact rate. If that happens, find the arm through its actuated joints.
     block_of_geom_.assign(static_cast<std::size_t>(model_->ngeom), -1);
     for (int b = 0; b < block_count(); ++b) {
         const int body = block_body_ids_[static_cast<std::size_t>(b)];
@@ -106,9 +105,9 @@ Truth::Truth(const mjModel* model, const GlContext& gl)
         }
     }
 
-    // Every 1-DOF joint, in model order - the two arm hinges here. Derived
-    // rather than named so the meta record's qpos field follows the XML; the
-    // blocks' free joints have 7 qpos each and are skipped by the type test.
+    // Every 1-DOF joint in model order (here, the two arm hinges). Found by type
+    // rather than by name so the stored joint angles follow the XML. The
+    // blocks' free joints have 7 qpos values each and the type test skips them.
     for (int j = 0; j < model_->njnt; ++j) {
         const int type = model_->jnt_type[j];
         if (type == mjJNT_HINGE || type == mjJNT_SLIDE) {
@@ -141,8 +140,8 @@ int Truth::block_body_id(int block) const {
 }
 
 void Truth::read(const mjData* data, mjvScene* scene, TruthFrame* out) {
-    // Resizes are no-ops from the second frame on, which is why one TruthFrame
-    // is meant to be reused for the whole run.
+    // These resizes do nothing after the first frame, which is why one
+    // TruthFrame should be reused for the whole run.
     out->joint_qpos.resize(joint_qposadr_.size());
     out->block_xy.resize(static_cast<std::size_t>(2 * block_count()));
     out->visible_px.resize(static_cast<std::size_t>(block_count()));
@@ -158,18 +157,18 @@ void Truth::read(const mjData* data, mjvScene* scene, TruthFrame* out) {
         out->block_xy[2*block + 1] = xpos[1];
     }
 
-    // Contact. mjData.contact holds ncon entries whatever the solver did with
-    // them, so exclude is checked: a contact in the gap or with no DOFs was
-    // detected but generates no force, and F-6 is about the arm actually
-    // touching a block.
+    // Contact. mjData.contact lists every detected contact, including ones the
+    // solver ignores, so check exclude: a contact inside the margin gap or with
+    // no free DOFs applies no force, and we want the arm actually touching a
+    // block.
     out->contact_mask = 0;
     for (int i = 0; i < data->ncon; ++i) {
         const mjContact& contact = data->contact[i];
         if (contact.exclude != 0) {
             continue;
         }
-        // Either side of the pair can be the block, so both orderings are
-        // tested rather than assuming MuJoCo orders the pair by geom id.
+        // Either geom in the pair can be the block, so test both orders rather
+        // than assume MuJoCo sorts the pair.
         for (int side = 0; side < 2; ++side) {
             const int block_geom = contact.geom[side];
             const int other_geom = contact.geom[1 - side];
@@ -190,10 +189,10 @@ void Truth::read(const mjData* data, mjvScene* scene, TruthFrame* out) {
 }
 
 void Truth::count_visible_pixels(mjvScene* scene, TruthFrame* out) {
-    // segid -> block, rebuilt every frame. mjv_updateScene reassigns segids, so
-    // a table built once in the constructor would silently start naming a
-    // different geom the first time the scene's geom order changed. The scene
-    // holds ~12 geoms, so this is an assign() over a handful of ints.
+    // Segmentation id -> block, rebuilt every frame. mjv_updateScene can
+    // reassign segmentation ids, so a table built once would silently point at
+    // the wrong geom the first time the scene's geom order changed. With about
+    // 12 geoms, rebuilding costs almost nothing.
     int max_segid = -1;
     for (int i = 0; i < scene->ngeom; ++i) {
         max_segid = std::max(max_segid, scene->geoms[i].segid);
@@ -210,17 +209,16 @@ void Truth::count_visible_pixels(mjvScene* scene, TruthFrame* out) {
         }
     }
 
-    // The segmentation pass. Flags are saved and restored rather than assumed
-    // clear, so a caller who renders segmentation for its own reasons does not
-    // get the flags this function wanted left behind.
+    // The segmentation pass: each geom is drawn in a flat colour that encodes
+    // its id. The flags are saved and restored, not assumed off, so a caller
+    // that uses segmentation itself gets its own settings back.
     const mjtByte saved_segment = scene->flags[mjRND_SEGMENT];
     const mjtByte saved_idcolor = scene->flags[mjRND_IDCOLOR];
     scene->flags[mjRND_SEGMENT] = 1;
     scene->flags[mjRND_IDCOLOR] = 1;
     mjr_render(viewport_, scene, con_);
-    // No depth buffer: the id colour is the whole measurement. Skipping it saves
-    // 2.4% of the frame budget - world_model_architecture.md, "Render path and
-    // occlusion measurement (F-7)".
+    // No depth readback: the id colour is all we need, and skipping depth saves
+    // about 2.4% of the per-frame time budget.
     mjr_readPixels(rgb_.data(), nullptr, viewport_, con_);
     scene->flags[mjRND_SEGMENT] = saved_segment;
     scene->flags[mjRND_IDCOLOR] = saved_idcolor;
@@ -229,12 +227,11 @@ void Truth::count_visible_pixels(mjvScene* scene, TruthFrame* out) {
     const std::size_t pixels = rgb_.size() / 3;
     const std::size_t table_size = block_of_segid_.size();
     for (std::size_t p = 0; p < pixels; ++p) {
-        // mjRND_IDCOLOR writes segid+1 across r, g, b low byte first, so an
-        // unshown geom and the background both read 0 and the decode is exact
-        // rather than a nearest-colour match. This is the one assumption in the
-        // file that no header states; truth_dry_run's first check is what holds
-        // it - a reversed channel order puts every decoded id outside the table,
-        // and every count reads zero.
+        // mjRND_IDCOLOR writes segid+1 across r, g, b, low byte first. So the
+        // background and hidden geoms both read 0, and decoding is exact rather
+        // than a nearest-colour guess. No header documents this byte order;
+        // truth_dry_run's first check guards it, because a reversed order
+        // puts every decoded id outside the table and every count reads zero.
         const int encoded = rgb_[3*p] |
                             (rgb_[3*p + 1] << 8) |
                             (rgb_[3*p + 2] << 16);
@@ -269,9 +266,9 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
     mjvOption opt;
     mjv_defaultOption(&opt);
 
-    // The fixed camera from the XML, by index rather than by name: the scene has
-    // one camera and it is the capture viewpoint. A free camera here would
-    // measure occlusion from a viewpoint no frame is ever rendered from.
+    // The XML's fixed camera, by index: the scene has exactly one camera and it
+    // is the one frames are captured from. A free camera would measure
+    // occlusion from a viewpoint no stored frame uses.
     if (model->ncam < 1) {
         mju_error("model has no camera; occlusion is only defined from the "
                   "viewpoint the frames are captured from");
@@ -287,8 +284,8 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
     const int frame_pixels = gl.viewport().width * gl.viewport().height;
 
     // ---- Check 1: at rest, some block is visible. --------------------------
-    // The id-colour decode check. Get the channel order wrong and every decoded
-    // id lands outside the segid table, so every count reads zero.
+    // Checks the id-colour decode. With the wrong byte order every decoded id
+    // falls outside the table, so every count reads zero.
     mj_resetData(model, data);
     mj_forward(model, data);
     UpdateScene(model, data, &opt, &camera, &scene);
@@ -316,8 +313,8 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
     }
 
     // ---- Check 2: a block out of frame reads exactly zero. -----------------
-    // Exactly zero, not merely smaller: a count that only shrinks would mean
-    // pixels are being attributed by something other than the block's own segid.
+    // Exactly zero, not just smaller: a count that only drops would mean pixels
+    // are being credited to the block by something other than its own id.
     const int subject_body = truth.block_body_id(subject);
     const int subject_qposadr = FreeJointQposAdr(model, subject_body);
     const mjtNum saved_z = data->qpos[subject_qposadr + 2];
@@ -333,7 +330,7 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
     }
 
     // ---- Check 3: putting it back brings the count back. -------------------
-    // Without this, check 2 also passes when the counter is simply stuck at
+    // Without this, check 2 would also pass if the counter were simply stuck at
     // zero after the first frame.
     data->qpos[subject_qposadr + 2] = saved_z;
     mj_forward(model, data);
@@ -349,16 +346,14 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
                 "%d restored\n",
                 subject, subject_body, open_count, hidden_count, restored_count);
 
-    // ---- Verdicts: F-6 contact rate and F-7 occlusion rate. ---------------
+    // ---- Printed rates: arm-block contact and full occlusion. -------------
     // Actuator 0 at full torque sweeps the arm across all three blocks. That is
-    // a cruder trajectory than the real policy produces, and it biases both
-    // rates in ways that do not cancel: the contact rate runs high because the
-    // arm never stops, and the occlusion rate runs high because a block punted
-    // off the table reads zero for every remaining frame. Neither number is an
-    // estimate of the real one - they say "the measurement responds", not "the
-    // scene passes". Neither is enforced here either: both are fixed by editing
-    // the scene XML, and the enforcing check lives in mirage/validator.py over a
-    // real shard.
+    // much cruder than the real policy, and both rates come out too high: the
+    // arm never stops, so contact runs high, and a block knocked off the table
+    // reads zero for every remaining frame, so occlusion runs high. These
+    // numbers only show the measurement reacts, not that the scene passes.
+    // They are not enforced here; the real check is mirage/validator.py over a
+    // real shard, and the fix for a low rate is a scene XML edit.
     mj_resetData(model, data);
     for (mjtSize i = 0; i < model->nu; ++i) {
         data->ctrl[i] = (i == 0) ? FullDrive(model, i) : 0.0;
@@ -416,8 +411,8 @@ void truth_dry_run(const mjModel* model, const GlContext& gl, int steps) {
                 "the table reads zero forever. The enforcing check is the "
                 "validator over a shard.\n");
 
-    // One GL error check for the whole run rather than per frame - mjr_getError
-    // is a driver round trip and this loop runs it thousands of times otherwise.
+    // One GL error check for the whole run, not per frame: mjr_getError is a
+    // round trip to the driver, and the loop above runs thousands of times.
     const int gl_error = mjr_getError();
     if (gl_error) {
         mju_error("OpenGL error 0x%x during the truth dry run", gl_error);

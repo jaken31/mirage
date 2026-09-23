@@ -1,43 +1,44 @@
-"""Re-measure Phase 1's six pre-work numbers against the dataset on disk.
+"""Re-measure the six tokenizer planning numbers on the dataset now on disk.
 
-The six were measured on 2026-08-28 against `data_hash 0259947e` - the original
-physics, `action_hold_steps 20` - and the scene has since been rescaled to
-`gear 6 / damping 1.5`. The geometry, palette and camera never moved, so the
-frames look the same; the arm's *pose distribution* moved, and patch statistics
-are a measurement of exactly that. They also predate `runs.jsonl`, so none of
-them carries a provenance row. This probe is what gives them one.
+The six were first measured on an earlier version of the dataset (the original
+physics, `action_hold_steps 20`); the scene has since changed to
+`gear 6 / damping 1.5`. Shapes, colours and camera did not change, so frames
+look the same, but the arm's *spread of poses* did, and patch statistics
+measure exactly that. The originals also came before `runs.jsonl` existed, so
+none had a recorded source. This probe gives them one.
 
-It reproduces, in one run:
+In one run it reproduces:
 
-  * the k-means floor at 240 / 512 / 1024 centroids, and how many stay live;
-  * **the same floor on the held-out split**, which is the number gate row 2
-    compares a tokenizer against - the whole-set floor above is not that
-    number, and the split-aware section says why;
-  * the flat / non-flat split of that error - the 96x96 fork's evidence;
-  * the frequency-ranked exact-patch dictionary, as the cheaper alternative;
-  * the share of interior cells whose 22x22 receptive field is one flat colour,
-    and the Q-2 entropy ceiling that follows from it.
+  * the k-means baseline at 240 / 512 / 1024 centroids, and how many get used;
+  * **the same baseline on the held-out split**, which is what gate row 2
+    compares a tokenizer against (the whole-set number is not; see the
+    split-aware section);
+  * how that error splits between flat and non-flat patches, the evidence for
+    choosing 64x64 or 96x96;
+  * a dictionary of the most frequent exact patches, as a cheaper alternative;
+  * the share of interior cells whose 22x22 input window is one flat colour,
+    and the token entropy ceiling that follows.
 
-Two things the original run did not record, fixed here so a re-run is a
-comparison rather than a coin flip: the **initialisation** (k-means++ under a
-fixed seed, checked by running k=512 twice and demanding identical inertia) and
-the **reconstruction dtype** (centroids stay float; the uint8-rounded PSNR is
-printed beside it, since Q-1's bar is stated on uint8 frames).
+Two things the original run did not record are fixed here, so a re-run is a
+real comparison: the **initialisation** (k-means++ with a fixed seed, checked
+by running k=512 twice and requiring identical inertia), and the
+**reconstruction type** (centroids stay float; the uint8-rounded PSNR is
+printed next to it, since the 30 dB target is on uint8 frames).
 
-Frame orientation is not corrected. The blob's rows are bottom-up, and a
-vertical flip is a bijection on the patch set - it maps every patch to its own
-flip - so every statistic here is invariant under it.
+Frame orientation is not corrected. Stored rows are bottom-up, but a vertical
+flip just maps every patch to its own mirror image, so no statistic here
+changes.
 
     python bench/patch_probe.py                                  # 64x64
     python bench/patch_probe.py --config mirage/configs/base96.json
 
-`--config` is what makes the 96x96 fork measurable: gate row 2 charges a rung
-against a k-means floor measured at *that rung's resolution*, and the 64x64
-floor is not that number for a 96x96 rung. **The patch budget is held fixed
-across resolutions, not the frame count** - a 96x96 frame yields 144 patches
-where a 64x64 frame yields 64, so sampling the same 2,800 frames would fit the
-96x96 codebook on 2.25x the data and report a floor that is partly a sample-size
-result. `PATCH_BUDGET` below is the invariant; the frame count follows from it.
+`--config` makes 96x96 measurable: gate row 2 compares a rung with the k-means
+baseline at *its own resolution*, and the 64x64 baseline is the wrong number
+for a 96x96 rung. **The number of patches is held fixed across resolutions,
+not the number of frames**: a 96x96 frame has 144 patches and a 64x64 frame
+has 64, so the same 2,800 frames would give the 96x96 codebook 2.25x the data
+and a baseline partly caused by sample size. `PATCH_BUDGET` below is fixed;
+the frame count follows from it.
 """
 
 import argparse
@@ -55,9 +56,9 @@ sys.path.insert(0, str(ROOT))
 from mirage import config, data  # noqa: E402
 
 PATCH = 8
-PATCH_BUDGET = 179_200  # 2800 * 64 patches - the count the original 64x64 run used
+PATCH_BUDGET = 179_200  # 2800 * 64 patches, the count the original 64x64 run used
 RF_FRAMES = 3500
-RF = 22  # the encoder's receptive field at one 8x8 cell
+RF = 22  # assumed input window of one 8x8 cell (the true conv window is 15; see mirage.fsq)
 KS = (240, 512, 1024)
 DICT_KS = (512, 2048)
 ITERS = 25
@@ -86,10 +87,10 @@ print(f"data_hash {cfg.data_hash[:16]}, {len(shards)} shards, "
 def sample_frames(total):
     """`total` frames spread evenly within every shard, so no shard dominates.
 
-    Whole-set on purpose: the six numbers this reproduces are statements about
-    the dataset, not about a model, so a split would only shrink the sample.
-    It does mean this sample **straddles the train/val split** - see
-    `sample_split_frames` for the one number where that matters.
+    Uses the whole dataset on purpose: the six numbers describe the data, not a
+    model, so splitting would only shrink the sample. It does mean the sample
+    **mixes training and validation episodes**; see `sample_split_frames` for
+    the one number where that matters.
     """
     per = total // len(shards)
     out = [np.asarray(s.pixels[np.linspace(0, s.frames - 1, per, dtype=np.int64)])
@@ -98,17 +99,17 @@ def sample_frames(total):
 
 
 def sample_split_frames(total, split):
-    """`total` frames spread evenly across one side of the train/val split.
+    """`total` frames spread evenly across one side of the train/validation split.
 
-    The split comes from `data.is_val` over `data.episode_index`, and never from
-    a fraction recomputed here. A probe that re-derives the split can disagree
-    with the training run about which frames are held out, and that disagreement
-    is silent - it reads as a floor that moved for no reason.
+    The split comes from `data.is_val` over `data.episode_index`, never from a
+    fraction recomputed here. A probe with its own split could silently
+    disagree with training about which frames are held out, and that would look
+    like a baseline that moved for no reason.
 
-    Even over the split's frames rather than per episode, because the two sides
-    hold 473 and 27 episodes: a fixed count per episode would give the val side
-    four times the frames per episode and make the two samples different
-    statistics. Uniform over the address list keeps them the same one.
+    Spread evenly over the split's frames rather than per episode, because the
+    two sides have 473 and 27 episodes: a fixed count per episode would sample
+    validation episodes far more densely, making the two samples measure
+    different things.
     """
     want_val = split == "val"
     eps = [e for e in data.episode_index(shards)
@@ -137,7 +138,7 @@ def to_patches(frames):
 
 
 def assign(x, cen, chunk=16384):
-    """Nearest centroid per row, chunked - the full n x k matrix does not fit."""
+    """Nearest centroid per row, in chunks, because the full n x k matrix does not fit in memory."""
     idx = torch.empty(len(x), dtype=torch.long, device=x.device)
     sse = torch.empty(len(x), dtype=torch.float64, device=x.device)
     cn = (cen * cen).sum(1)
@@ -151,12 +152,12 @@ def assign(x, cen, chunk=16384):
 
 
 def kmeans(x, k, seed, init="kmeans++"):
-    """Lloyd from `init` seeding. Empty clusters are left empty on purpose:
-    counting how many stay live IS the Q-2 risk measurement, so reseeding them
-    would destroy the number this probe exists to report.
+    """Standard k-means (Lloyd's algorithm) from `init` seeding. Empty clusters
+    are left empty on purpose: how many stay in use is the codebook-usage
+    measurement, so re-seeding them would destroy the number this reports.
 
     Both seedings are run because the original measurement did not record which
-    it used, and the choice turns out to be worth more than the regeneration
+    it used, and the choice turns out to matter more than the dataset change
     this probe was written to check."""
     g = torch.Generator(device=x.device).manual_seed(seed)
     cen = torch.empty(k, x.shape[1], device=x.device, dtype=x.dtype)
@@ -218,35 +219,35 @@ for init in ("kmeans++", "random"):
         print(f"{init:>9} {k:>6} {db:>9.2f} {db_u8:>9.2f} {live:>6}/{k:<3} "
               f"{edge_share:>13.2%}  ({time.perf_counter() - t:.1f} s)")
 
-# The floor is the BEST patch-independent tokenizer, not an arbitrary one: a
-# floor that is really an initialisation artifact understates how much work the
-# conv context still has to do, which is the one thing Phase 1 is planned around.
+# The baseline must be the BEST patch-by-patch codebook, not an arbitrary one:
+# a baseline weakened by bad initialisation would understate how much the
+# network's wider context still has to add, which the tokenizer plan depends on.
 kmeans_out = {k: runs["kmeans++", k] for k in KS}
 
-# E-1's spirit: a floor nobody can reproduce is not a floor.
+# A baseline nobody can reproduce is not a baseline.
 assert float(kmeans(x, 512, SEED)[2].sum()) == float(kmeans(x, 512, SEED)[2].sum()), \
     "k-means is not deterministic at a fixed seed"
 
-# ------------------------------------------ the same floor, on the held-out set
+# ------------------------------------------ the same baseline, on held-out data
 #
-# The floor above is fit and scored on `sample_frames`, which spreads evenly
+# The baseline above is fit and scored on `sample_frames`, spread evenly
 # *within every shard*. `data.is_val` splits by **episode**, so that sample
-# straddles the split, and a tokenizer's held-out PSNR is therefore not
-# comparable to it: the tokenizer is fit on train and scored on val, while
-# 29.02 dB was fit and scored on a mixture of both.
+# mixes both sides, and a tokenizer's held-out PSNR cannot be compared with it:
+# the tokenizer is trained on one side and scored on the other, while the
+# original baseline was fit and scored on a mix of both.
 #
-# Two numbers, because two different things could be inflating 29.02 dB and only
-# measuring both separates them:
+# Two numbers, because two things could be inflating the original, and only
+# measuring both tells them apart:
 #
-#   train-fit -> val-score   the honest floor. The same treatment a tokenizer
+#   train-fit -> val-score   the fair baseline: the same treatment a tokenizer
 #                            gets, so this is what gate row 2 compares against.
-#   val-fit   -> val-score   the original in-sample methodology, restricted to
-#                            val. The gap to the row above is the in-sample
-#                            advantage 29.02 dB was carrying.
+#   val-fit   -> val-score   the original fit-and-score-on-the-same-data method,
+#                            on validation only. The gap to the row above is
+#                            the advantage that method was giving.
 #
 # Both are reported on **uint8-rounded** centroids as well as float, because
-# Q-1's bar is stated on uint8 frames and a tokenizer's PSNR is measured there.
-# Rounding can only cost, so a float floor is the optimistic one.
+# the 30 dB target is on uint8 frames. Rounding can only hurt, so the float
+# number is the optimistic one.
 train_frames, train_eps, train_pool = sample_split_frames(KMEANS_FRAMES, "train")
 val_frames, val_eps, val_pool = sample_split_frames(KMEANS_FRAMES, "val")
 train_u8, val_u8 = to_patches(train_frames), to_patches(val_frames)
@@ -279,9 +280,9 @@ for fit_on, xf in (("train", xt), ("val", xv)):
               f"{edge_share:>13.2%}  ({time.perf_counter() - t:.1f} s)")
 
 # A codebook fit on the very patches it scores should not lose to one fit
-# elsewhere. k-means++ is not globally optimal, so this is a sanity bound with
-# slack and not an identity - a real inversion would mean the two samples are
-# not drawn from the same distribution, which is a data bug, not a fit artifact.
+# elsewhere. k-means++ is not perfect, so this is a loose sanity check, not an
+# exact rule; a real reversal would mean the two samples come from different
+# distributions, which is a data bug, not a fitting quirk.
 for k in KS:
     slack = held["val", k]["val_psnr_db"] - held["train", k]["val_psnr_db"]
     assert slack > -0.15, (
@@ -308,12 +309,11 @@ for k in DICT_KS:
     dict_out[k] = round(db, 2)
     print(f"  top-{k:<5} exact patches as a dictionary: {db:.2f} dB")
 
-# ------------------------------------------------ Q-2's ceiling, from the data
+# ------------------------------------ the token entropy ceiling, from the data
 rf_frames = sample_frames(RF_FRAMES)
-# Taken from the frames, not from a literal 64. This section used to hardcode
-# the image size, which is right at 64x64 and silently mis-measures at 96x96 -
-# it would sweep the interior of an 8x8 grid out of a 12x12 one and report a
-# ceiling for a frame that is not the one loaded.
+# Image size comes from the frames, not a hardcoded 64. Hardcoding is right at
+# 64x64 but silently wrong at 96x96: it would scan an 8x8 grid's interior out
+# of a 12x12 one and report a ceiling for the wrong frame size.
 size = rf_frames.shape[1]
 assert rf_frames.shape[1] == rf_frames.shape[2], \
     f"frames are {rf_frames.shape[1]}x{rf_frames.shape[2]} - this sweep assumes square"
@@ -331,9 +331,9 @@ for r in interior:
         total_cells += len(rf_frames)
 
 flat_rf = flat_cells / total_cells
-# The collapse constrains interior cells only, but Q-2 scores the entropy over
-# every token of a frame, so the constrained mass dilutes by the interior's
-# share of the grid - 36 of 64 cells at 64x64, and a different fraction at 96.
+# Only interior cells are affected, but token entropy is measured over every
+# token in a frame, so the effect is diluted by the interior's share of the
+# grid: 36 of 64 cells at 64x64, a different share at 96x96.
 collapsed = flat_rf * len(interior) ** 2 / grid ** 2
 print(f"\n{len(interior) ** 2} interior cells of {grid ** 2}, {RF}x{RF} receptive "
       f"field, {len(rf_frames):,} frames")
@@ -366,8 +366,8 @@ print(json.dumps(dict(
     dict_512_db=dict_out[512],
     dict_2048_db=dict_out[2048],
     gate_row2_bar_db=round(30.0 - kmeans_out[512]["psnr_db"], 2),
-    # The held-out floor, and the bar that follows from it. These, not the
-    # whole-set pair above, are what a tokenizer's val PSNR is compared to.
+    # The held-out baseline and the margin a tokenizer needs over it. These,
+    # not the whole-set pair above, are what a tokenizer's val PSNR is compared to.
     heldout_floor_512_db=held["train", 512]["val_psnr_db"],
     heldout_floor_512_uint8_db=held["train", 512]["val_psnr_uint8_db"],
     heldout_floor_1024_db=held["train", 1024]["val_psnr_db"],

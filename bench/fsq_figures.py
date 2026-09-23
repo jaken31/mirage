@@ -7,11 +7,10 @@ Reads three things a finished run leaves behind and writes eight PNGs to
   * `runs/<id>/tokens/manifest.json` - the 512-bin code histogram and its shards;
   * `runs/<id>/model.pt` - reconstructions, per-frame PSNR, the edge/flat split.
 
-It measures nothing new. Every number a figure draws also appears in the gate
-table that `python -m mirage.fsq --eval RUN_ID` prints, so a figure disagreeing
-with that table is a bug in this file and not a new result. Two of them assert
-that agreement rather than trusting it - see `per_frame_psnr` and
-`token_position_entropy`.
+It measures nothing new. Every number a figure shows also appears in the gate
+table printed by `python -m mirage.fsq --eval RUN_ID`, so a figure that
+disagrees with the table is a bug in this file, not a new result. Two of them
+assert that they agree; see `per_frame_psnr` and `token_position_entropy`.
 
     python bench/fsq_figures.py                      # all eight, R1 and R2 at 60 epochs
     python bench/fsq_figures.py --only curves,codebook
@@ -20,16 +19,17 @@ that agreement rather than trusting it - see `per_frame_psnr` and
 Each figure prints the numbers it encodes, so the write-up can quote them without
 reading pixels off a chart.
 
-Colour is assigned once, at the top, and follows the *run*: R1 is blue and R2 is
-orange in every figure that shows both. Where a figure needs a second distinction
-inside one run - validation against training, flat pixels against edge pixels - it
-uses line style or hatch, never a third hue, because a hue that means "R2" in one
-figure and "edge pixels" in the next is how a reader mis-reads a whole document.
-The three-hue set is validated for colour-vision deficiency (worst pair delta-E
-9.2 deutan, 24.0 normal-vision, on this light surface).
+Colours are set once, at the top, and follow the *run*: R1 is blue and R2 is
+orange in every figure that shows both. When a figure needs a second
+distinction within one run (validation vs training, flat vs edge pixels) it
+uses line style or hatching, never a third colour, because a colour that means
+"R2" in one figure and "edge pixels" in the next misleads the reader across the
+whole document. The colour set is checked for colour-blind readers (smallest
+colour difference between any pair, delta-E: 9.2 for the most common
+colour-blindness, 24.0 for normal vision, on this light background).
 
-ponytail: light mode only. A dark variant is a second validated set of steps, not
-an inversion, and nothing here is going into a dark document yet.
+ponytail: light mode only. A dark version needs its own checked colours, not an
+inversion, and nothing here is going into a dark document yet.
 """
 
 import argparse
@@ -39,7 +39,7 @@ import pathlib
 import sys
 
 import matplotlib
-matplotlib.use("Agg")  # no display on this box, and a figure script must not need one
+matplotlib.use("Agg")  # no display here, and a figure script should not need one
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -58,14 +58,14 @@ from mirage.fsq_eval import _flat_mask, entropy_split, load_run  # noqa: E402
 RUNS = ROOT / "runs"
 OUT = ROOT / "docs" / "figures"
 
-# The two 60-epoch runs: same data_hash, same seed, attention off and on.
+# The two 60-epoch runs: same data, same seed, attention off and on.
 R1_DEFAULT = "20260829-005439-r1"
 R2_DEFAULT = "20260828-230015-r2"
 
 BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
 INK, INK2, MUTED, GRID = "#0b0b0b", "#52514e", "#8f8e88", "#e5e4e0"
 SURFACE = "#fcfcfb"
-# One hue, light to dark, for the two magnitude encodings (error maps, entropy grid).
+# One colour from light to dark, for the two "how much" plots (error maps, entropy grid).
 SEQ = LinearSegmentedColormap.from_list(
     "mirage_blue",
     ["#eef5fd", "#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"],
@@ -86,10 +86,10 @@ plt.rcParams.update({
 # ----------------------------------------------------------------- artifacts
 
 def epoch_rows(run_id: str) -> list[dict]:
-    """The per-epoch validation rows of one run, in order.
+    """The per-epoch validation records of one run, in order.
 
-    Skips the `final` row, which repeats the last epoch's numbers with the whole
-    config attached; plotting it would draw epoch 60 twice.
+    Skips the `final` record, which repeats the last epoch's numbers with the
+    whole config attached; plotting it would draw epoch 60 twice.
     """
     rows = []
     with open(RUNS / run_id / "metrics.jsonl", encoding="utf-8") as fh:
@@ -111,14 +111,14 @@ def result(run_id: str) -> dict:
 @torch.no_grad()
 def per_frame_psnr(model, idx: np.ndarray, lut: torch.Tensor,
                    batch: int = 256) -> tuple[np.ndarray, float]:
-    """One uint8 PSNR per val frame, plus the pooled number those frames imply.
+    """One uint8 PSNR per validation frame, plus the combined PSNR over all of them.
 
-    Per-frame PSNR is *not* what gate row 1 reports: the gate pools squared error
-    over every frame and takes one logarithm, while the mean of these is a mean of
-    16,200 logarithms. The two differ by a fraction of a dB and neither is wrong,
-    so the pooled value comes back alongside for the caller to check against
-    `result.json` - that is what catches a wrong LUT or a stale checkpoint, which
-    is what would actually go wrong here.
+    The average of per-frame PSNR is *not* what gate row 1 reports: the gate adds
+    up squared error over every frame and takes one logarithm, while this
+    averages 16,200 logarithms. They differ by a fraction of a dB and neither is
+    wrong. The combined value is returned so the caller can check it against
+    `result.json`, which catches a wrong colour lookup table or a stale
+    checkpoint, the things likely to go wrong here.
     """
     out = np.empty(len(idx), dtype=np.float64)
     values = 3 * idx.shape[1] * idx.shape[2]
@@ -136,11 +136,11 @@ def per_frame_psnr(model, idx: np.ndarray, lut: torch.Tensor,
 @torch.no_grad()
 def edge_flat_split(model, idx: np.ndarray, lut: torch.Tensor, patch: int,
                     batch: int = 256) -> tuple[float, float, float]:
-    """(flat dB, edge dB, edge share of squared error) - gate row 7, redrawn.
+    """(flat dB, edge dB, edge share of squared error): gate row 7, recomputed.
 
     Flatness comes from the ground truth's palette indices, never from the
     reconstruction: a blurry decoder allowed to call its own mistakes edges would
-    flatter the flat-pixel number.
+    make the flat-pixel number look better than it is.
     """
     sse = {True: 0.0, False: 0.0}
     values = {True: 0, False: 0}
@@ -159,12 +159,12 @@ def edge_flat_split(model, idx: np.ndarray, lut: torch.Tensor, patch: int,
 
 
 def token_position_entropy(run_id: str, grid: tuple[int, int]) -> np.ndarray:
-    """Per-grid-cell token entropy in bits, over all 300,000 cached frames.
+    """Token entropy in bits for each grid cell, over all 300,000 cached frames.
 
-    The joint entropy gate row 3 reports is one number for the whole 8x8 grid.
-    This is the same statistic per cell, and it answers a question the single
-    number cannot: whether the codebook is spent evenly across the frame, or
-    hoarded in the cells the arm actually moves through.
+    Gate row 3 reports one entropy for the whole 8x8 grid. This is the same
+    measure per cell, and shows what one number cannot: whether the vocabulary
+    is used evenly across the frame, or mostly in the cells the arm moves
+    through.
     """
     man = manifest(run_id)
     h, w = grid
@@ -184,17 +184,17 @@ def token_position_entropy(run_id: str, grid: tuple[int, int]) -> np.ndarray:
 # -------------------------------------------------------------------- figures
 
 def _end_labels(ax, x, ends):
-    """Direct labels at the right end of each line: ink text, colour on the dot.
+    """Labels at the right end of each line: text in the ink colour, series colour on a dot.
 
-    Series colour never lands on text - a reader with a colour deficiency reads
-    the label, and the dot beside it is only confirmation.
+    Series colour is never used for text: a colour-blind reader reads the label,
+    and the dot next to it only confirms it.
 
-    `ends` is [(y, text, colour)], and two labels are nudged apart when they would
-    overlap. R1 and R2 finish 0.087 dB apart, which is the whole point of the
-    figure and also close enough to print one label on top of the other. The
-    proximity test runs in display pixels rather than data units, so the same
-    branch works on the log axis in `fig_codebook`. Call this *after* the last
-    line is drawn - it reads the axis transform.
+    `ends` is [(y, text, colour)], and labels that would overlap are pushed
+    apart. R1 and R2 end 0.087 dB apart, which is the point of the figure and
+    also close enough for one label to cover the other. Overlap is checked in
+    screen pixels, not data units, so it also works on the log axis in
+    `fig_codebook`. Call this *after* the last line is drawn, since it reads the
+    axis transform.
     """
     ends = sorted(ends, key=lambda e: e[0])
     px = [ax.transData.transform((x, y))[1] for y, _, _ in ends]
@@ -207,10 +207,10 @@ def _end_labels(ax, x, ends):
 
 
 def fig_curves(runs):
-    """1. Val and train PSNR per epoch, against the bar and the k-means floor."""
+    """1. Val and train PSNR per epoch, against the 30 dB target and the k-means baseline."""
     fig, (ax, axd) = plt.subplots(1, 2, figsize=(11.5, 4.0),
                                   gridspec_kw={"width_ratios": [1.7, 1]})
-    fig.subplots_adjust(wspace=0.34)   # the left panel's direct labels overhang
+    fig.subplots_adjust(wspace=0.34)   # the left panel's line labels stick out to the right
     series, ends = {}, []
     for label, rid, color in runs:
         ep = epoch_rows(rid)
@@ -229,7 +229,7 @@ def fig_curves(runs):
         ax.annotate(name, (38, y), xytext=(0, 4), textcoords="offset points",
                     color=INK2, fontsize=8)   # x=38: under the converged curves
     ax.set_xlim(0, 78)
-    ax.set_xticks(range(0, 61, 10))   # the run ends at 60; the rest is label room
+    ax.set_xticks(range(0, 61, 10))   # the run ends at 60; the space after is for labels
     ax.set_xlabel("epoch")
     ax.set_ylabel("held-out PSNR, uint8 (dB)")
     ax.set_title("Reconstruction quality per epoch", loc="left", color=INK)
@@ -283,10 +283,10 @@ def fig_frame_psnr(runs, frame_db, pooled):
 
 @torch.no_grad()  # this one runs the model; the others only read numbers
 def fig_recon(label, model, val_idx, lut, frame_db, vmax=64):
-    """2. Truth, reconstruction and error at five points of the quality spread.
+    """2. Truth, reconstruction and error for five frames across the quality range.
 
-    Frames picked by percentile and labelled with their dB rather than hand-chosen:
-    a gallery of five frames the author liked is not evidence about 16,200.
+    Frames are picked by percentile and labelled with their dB, not hand-chosen:
+    five frames the author liked say nothing about 16,200.
     """
     order = np.argsort(frame_db)
     picks = [("worst", order[0]), ("p5", order[len(order) // 20]),
@@ -307,13 +307,13 @@ def fig_recon(label, model, val_idx, lut, frame_db, vmax=64):
             axes[row, col].set_yticks([])
             for sp in axes[row, col].spines.values():
                 sp.set_visible(False)
-    # Row labels stay short: a rotated label wider than its own row gets clipped
-    # by savefig's tight bbox on this matplotlib, twice observed. Units go in the
-    # horizontal title, which does not clip.
+    # Row labels stay short: with this matplotlib, a rotated label taller than its
+    # row gets cut off by savefig's tight layout (seen twice). Units go in the
+    # horizontal title, which is not cut off.
     for row, name in enumerate(("ground truth", "reconstruction", f"|error| 0-{vmax}")):
         axes[row, 0].set_ylabel(name, fontsize=9, color=INK2)
-    # Its own axes rather than `ax=axes[2, :]`: stealing width from row 3 alone
-    # leaves its panels narrower than the two rows above it, which is visible.
+    # Its own axes rather than `ax=axes[2, :]`: taking the width from row 3 alone
+    # would make its panels visibly narrower than the two rows above.
     fig.subplots_adjust(right=0.86)   # room for the colourbar and its label
     box = axes[2, -1].get_position()
     cax = fig.add_axes((box.x1 + 0.012, box.y0, 0.011, box.height))
@@ -326,7 +326,7 @@ def fig_recon(label, model, val_idx, lut, frame_db, vmax=64):
 
 
 def fig_codebook(runs):
-    """4. Is the 512-code book used, and how unevenly."""
+    """4. Are all 512 codes used, and how unevenly?"""
     fig, ax = plt.subplots(figsize=(7.6, 4.2))
     ends = []
     for label, rid, color in runs:
@@ -356,10 +356,10 @@ def fig_codebook(runs):
 
 
 def fig_channel_digits(runs):
-    """5. Per-channel digit distributions - where the marginal skew lives.
+    """5. How each channel's digits are distributed, which shows where the skew is.
 
-    A token id is the mixed-radix number `d0 + 8*d1 + 64*d2`, so each channel's
-    digit histogram falls straight out of the same 512-bin count vector.
+    A token id is `d0 + 8*d1 + 64*d2`, so each channel's digit histogram can be
+    read straight from the same 512-bin counts.
     """
     fig, axes = plt.subplots(1, len(runs), figsize=(10.5, 3.9), sharey=True)
     top = 0.0
@@ -386,18 +386,18 @@ def fig_channel_digits(runs):
         ax.grid(axis="y")
         print(f"  channels {label}: "
               + " / ".join(f"{b:.3f}" for b in es["channel_bits"]) + " bits of 3.000 each")
-    axes[0].set_ylim(0, top * 1.38)   # sharey: one limit, clearing the legend
+    axes[0].set_ylim(0, top * 1.38)   # shared y axis: one limit, leaving room for the legend
     axes[0].set_ylabel("share of tokens")
-    # Deliberately not "the channel sits off centre": R1 channel 2 piles 40% of its
-    # mass on digit 7 and R1 channel 0 piles 56% on digits 3-4, so both a centred
-    # and a saturated channel are on this figure. Uneven is the claim; where is not.
+    # Deliberately not "the channel sits off centre": R1 channel 2 puts 40% of its
+    # mass on digit 7 and R1 channel 0 puts 56% on digits 3-4, so this figure has
+    # both a centred and an edge-heavy channel. The claim is "uneven", not where.
     fig.suptitle("Per-channel digit use - an uneven digit histogram is the marginal skew",
                  x=0.02, y=1.04, ha="left", fontsize=10.5, color=INK)
     return fig
 
 
 def fig_bits_budget(runs):
-    """6. The 9-bit budget split three ways: achieved, skew, redundancy."""
+    """6. The 9 possible bits split three ways: achieved, lost to skew, lost to redundancy."""
     fig, ax = plt.subplots(figsize=(8.4, 2.7))
     parts = [("joint entropy (achieved)", BLUE), ("marginal skew", ORANGE),
              ("redundancy between channels", AQUA)]
@@ -408,7 +408,7 @@ def fig_bits_budget(runs):
         vals = [es["joint_bits"], uniform - es["marginal_sum_bits"], es["redundancy_bits"]]
         left = 0.0
         for (_, color), v in zip(parts, vals):
-            # edgecolor=SURFACE gives the 2px gap that keeps adjacent fills legible.
+            # edgecolor=SURFACE draws a 2px gap so neighbouring fills stay distinct.
             ax.barh(row, v, left=left, height=0.52, color=color,
                     edgecolor=SURFACE, linewidth=2)
             ax.annotate(f"{v:.2f}", (left + v / 2, row), ha="center", va="center",
@@ -429,14 +429,14 @@ def fig_bits_budget(runs):
 
 
 def fig_edge_flat(runs, splits):
-    """7. Edge pixels against flat pixels - the 64-vs-96 fork's diagnostic."""
+    """7. Edge pixels against flat pixels, the evidence for choosing 64x64 or 96x96."""
     fig, ax = plt.subplots(figsize=(7.2, 4.0))
     width = 0.34
     for i, (label, _, color) in enumerate(runs):
         flat_db, edge_db, share = splits[label]
         bars = ax.bar([0 + (i - 0.5) * width, 1 + (i - 0.5) * width], [flat_db, edge_db],
                       width * 0.92, color=color, label=label)
-        bars[1].set_hatch("///")          # texture, so edge-vs-flat is not colour-only
+        bars[1].set_hatch("///")          # hatching, so edge vs flat does not rely on colour alone
         bars[1].set_edgecolor(SURFACE)
         for b, v in zip(bars, (flat_db, edge_db)):
             ax.annotate(f"{v:.2f}", (b.get_x() + b.get_width() / 2, v), xytext=(0, 3),

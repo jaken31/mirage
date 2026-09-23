@@ -1,35 +1,35 @@
-"""Settles `sim.action_hold_steps`, which has been a guess since it was written.
+"""Picks `sim.action_hold_steps` by measurement; it was a guess until this.
 
 Three questions, in order:
 
-  A. How long does a joint actually take to reverse?  Drive it from rest and read
-     the step count at 63% of terminal velocity - one time constant.  The
-     architecture doc estimated ~15 steps from `inertia / damping` using
-     `dof_armature = 0.01`.  Armature is the term *added* to the mass-matrix
-     diagonal, not the diagonal, so that estimate omits the link inertia.
+  A. How long does a joint take to reverse? Drive it from rest and count steps
+     until it reaches 63% of its top speed (one time constant). The design doc
+     estimated ~15 steps from `inertia / damping` using `dof_armature = 0.01`,
+     but armature is only an *extra* term added to the joint's inertia, so
+     that estimate left out the links' own inertia.
 
-  B. What does the hold cost Q-4?  Q-4 scores action-following as
-     `sign(theta_t+1 - theta_t)` against the commanded sign.  For roughly one
-     settling time after every sign flip the joint is still moving the old way,
-     so those frames disagree with the command through no fault of any model.
-     Too short a hold and **Q-4 is unreachable by any model** - a dataset defect
-     that would present as a modelling failure.
+  B. What does the hold cost action-following? That check compares
+     `sign(theta_t+1 - theta_t)` with the commanded sign. For about one
+     settling time after each direction change the joint is still moving the
+     old way, so those frames disagree with the command through no fault of
+     any model. Too short a hold and **no model can pass the check**: a
+     dataset flaw that would look like a modelling failure.
 
-     Reported per position-within-hold, not only as an average, because the
-     average hides the shape, and the shape is what picking a hold trades against.
+     Reported by position within the hold, not just on average, because the
+     average hides the shape, and the shape is what choosing a hold trades on.
 
-  C. Free rider: the fraction of ctx-length windows containing no action change.
-     A window with a constant action carries no evidence of what the action
-     *does*.  Measured at 58.7% on the shipped dataset; this reports how it moves
-     with the hold.  D2 in `docs/phase0_debt_checklist.md`.
+  C. Bonus: the share of training-length windows with no action change. A
+     window with one constant action shows nothing about what actions *do*.
+     Measured at 58.7% on the shipped dataset; this shows how it moves with
+     the hold. Tracked in `docs/phase0_debt_checklist.md`.
 
-Drives the **random** half of the policy - uniform draws over the action space,
-held for `hold` steps.  That is exactly what `Policy` does on a random episode.
-The scripted half is C++ and is not reimplemented here: two implementations of one
-policy drift, and the physics answering A and B does not depend on how the action
-was chosen.  What does depend on it is C, which reads worse under the scripted
-half - it re-derives `sign(gain)` on each draw and usually gets the same corner
-back.  The shipped-dataset number covers that; see the note at the end.
+Drives the **random** half of the policy: uniform random actions, each held
+for `hold` steps, exactly what `Policy` does in a random episode. The scripted
+half is C++ and is not copied here, because two copies of one policy drift
+apart, and the physics behind A and B does not depend on how actions are
+chosen. C does depend on it and reads worse for scripted episodes, which
+recompute `sign(gain)` on each draw and usually get the same corner action.
+The shipped-dataset number covers that; see the note at the end.
 
     python bench/hold_probe.py
 """
@@ -63,22 +63,22 @@ N_ACTIONS = LEVELS ** model.nu
 DRIVE_HI = model.actuator_ctrlrange[:, 1].copy()
 DRIVE_LO = model.actuator_ctrlrange[:, 0].copy()
 
-# Joint i is base-3 digit i, least significant first - sim/policy.h.  Reproduced
-# rather than imported because there is no binding; `policy_self_check` is what
-# guarantees the C++ side round-trips, and this only has to agree with the
-# encoding, which is eight lines and fully specified in that header.
+# Joint i is base-3 digit i, least significant first (sim/policy.h). Copied
+# rather than imported because there are no Python bindings. `policy_self_check`
+# proves the C++ side round-trips; this only has to match the encoding, which
+# that header fully specifies in a few lines.
 DIGITS = np.array([[(a // LEVELS ** j) % LEVELS - 1 for j in range(model.nu)]
                    for a in range(N_ACTIONS)])          # (9, 2) in {-1, 0, +1}
 
-# Read, never computed - jnt_qposadr and jnt_dofadr diverge for free joints.
+# Read from the model, never computed: jnt_qposadr and jnt_dofadr differ once free joints exist.
 QADR = model.jnt_qposadr[:model.nu].copy()
 DADR = model.jnt_dofadr[:model.nu].copy()
 
 
 def signs_to_ctrl(signs):
-    """Decode per-joint signs onto ctrl.  Mirrors `action_to_control`: the two
-    driven directions map onto ctrlrange's ends rather than literal -1/+1, and
-    neutral is zero clipped into that range."""
+    """Turn per-joint signs into ctrl values, like `action_to_control`: the two
+    driven directions use the ends of the control range rather than literal
+    -1/+1, and neutral is zero clipped into that range."""
     return np.where(signs > 0, DRIVE_HI, np.where(signs < 0, DRIVE_LO, 0.0))
 
 
@@ -86,29 +86,29 @@ def signs_to_ctrl(signs):
 # A. Settling time
 # --------------------------------------------------------------------------
 
-# Horizon is short on purpose.  Terminal velocity is gear*ctrl/damping ~ 4 rad/s,
-# so a 600-step run travels ~4.8 rad - past joint1's 5 rad range.  A joint parked
-# against its stop has terminal velocity ~0, which makes the 63% crossing fire on
-# step 1 and reports a settling time of one step for a joint that takes twelve.
-# 150 steps is 5.5 time constants for the slowest joint and ~1.2 rad of travel.
+# Short run on purpose. Top speed is gear*ctrl/damping, about 4 rad/s, so a
+# 600-step run would travel ~4.8 rad and hit joint1's 5 rad range. A joint
+# resting against its stop has a "top speed" near 0, so the 63% mark fires on
+# step 1 and reports one step for a joint that really takes twelve. 150 steps
+# is 5.5 time constants for the slowest joint and ~1.2 rad of travel.
 SETTLE_HORIZON = 150
 
 
 def settling_steps(joint, q1, horizon=SETTLE_HORIZON):
-    """Steps until |qvel[joint]| first reaches 63% of terminal, driving that joint
-    alone at full torque from rest with link1 folded to `q1`.
+    """Steps until |qvel[joint]| first reaches 63% of top speed, driving only that
+    joint at full torque from rest, with link1 bent to angle `q1`.
 
-    Terminal is the mean of the last 10% of the horizon rather than the final
-    sample, so one noisy step cannot set the target.  A limited joint starts at
-    its low stop so it has the whole range to accelerate through, and the run
-    asserts it never reached the far stop - against a stop the measurement is
-    meaningless, not merely noisy."""
+    Top speed is the mean over the last 10% of the run, not the final sample,
+    so one noisy step cannot set it. A joint with limits starts at its low stop
+    so it has its whole range to speed up in, and the run asserts it never hit
+    the far stop: against a stop the measurement is meaningless, not just
+    noisy."""
     mujoco.mj_resetData(model, data)
     data.qpos[QADR[1]] = q1
     if model.jnt_limited[joint]:
         lo, hi = model.jnt_range[joint]
         data.qpos[QADR[joint]] = lo
-    mujoco.mj_forward(model, data)           # derived xpos/xmat are zero until this runs
+    mujoco.mj_forward(model, data)           # positions and orientations are zero until this runs
     ctrl = np.zeros(model.nu)
     ctrl[joint] = DRIVE_HI[joint]
     data.ctrl[:] = ctrl
@@ -158,9 +158,9 @@ for q1 in (0.0, 1.25, 2.5, -2.5):
         row += f" {full[j, j]:8.5f} {est:6.1f} {meas:9d} |"
     print(row)
 
-# M11 is identical at every link1 angle above - joint1's own inertia does not
-# depend on the angle of the link it carries, only joint0's does. So joint1 has
-# one settling time, not a spread, and the four rows agreeing is the check.
+# Joint1's inertia (M11) is the same at every link1 angle above; only joint0's
+# depends on it. So joint1 has one settling time, not a spread, and the four
+# rows agreeing is the check.
 assert len(set(tau_meas[1])) == 1, f"joint1 varies by configuration: {tau_meas[1]}"
 
 TAU0 = max(t for t in tau_meas[0] if t)
@@ -177,9 +177,10 @@ print("`est` is the first-order M/b prediction; `measured` is the 63% crossing."
 # --------------------------------------------------------------------------
 
 def sweep(hold, episodes, rng):
-    """Random held actions.  Returns per-offset agreement on driven digits, the
-    overall agreement, and the fraction of ctx windows carrying an action change."""
-    hit = np.zeros(hold, dtype=np.int64)     # agreements by position within hold
+    """Random held actions. Returns agreement by position within the hold (driven
+    joints only), overall agreement, and the share of training windows that
+    contain an action change."""
+    hit = np.zeros(hold, dtype=np.int64)     # agreements by position within the hold
     tot = np.zeros(hold, dtype=np.int64)
     win_total = win_changed = 0
 
@@ -235,7 +236,7 @@ print("-" * 78)
 
 rows = []
 for h in HOLDS:
-    rng = np.random.default_rng(0)           # same stream per hold - controlled comparison
+    rng = np.random.default_rng(0)           # same random stream for every hold: a fair comparison
     per_off, overall, changed = sweep(h, EPISODES, rng)
     k = min(TAU0, h)
     early = per_off[:k].mean()
@@ -269,12 +270,12 @@ print("a shorter hold spends a larger share of frames in the transient.")
 # --------------------------------------------------------------------------
 # D. Is the trade forced?
 # --------------------------------------------------------------------------
-# B and C pull opposite ways: agreement wants a long hold, window coverage wants
-# a short one, and at the shipped physics nothing satisfies both.  But the
-# transient length is not a constant of the universe - it is tau = M / damping,
-# while the arm's speed is v_term = gear * ctrl / damping.  Scaling gear and
-# damping together holds the speed and shrinks the transient, which moves the
-# frontier instead of sliding along it.
+# B and C pull opposite ways: agreement wants a long hold, window coverage a
+# short one, and with the shipped physics nothing satisfies both. But the
+# settling time is not fixed: it is tau = M / damping, while the arm's speed is
+# gear * ctrl / damping. Raising gear and damping together keeps the speed and
+# shortens the settling time, which improves both at once instead of trading
+# one for the other.
 
 print()
 print("=" * 78)
@@ -295,7 +296,7 @@ try:
         model.actuator_gear[:model.nu, 0] = GEAR0 * scale
         model.dof_damping[:model.nu] = DAMP0 * scale
         tau0, v_term = None, None
-        for q1 in (0.0, 1.25, 2.5, -2.5):       # worst case over the workspace
+        for q1 in (0.0, 1.25, 2.5, -2.5):       # take the worst case over the arm's range
             steps, term = settling_steps(0, q1)
             if steps is not None and (tau0 is None or steps > tau0):
                 tau0, v_term = steps, term
@@ -320,8 +321,8 @@ print("halves it, and that cause is untouched by any physics change.")
 
 
 def _self_check():
-    """The encoding reproduced here must match sim/policy.h, and both measurements
-    must respond in the direction the physics requires."""
+    """The action encoding copied here must match sim/policy.h, and both
+    measurements must move in the direction the physics says they should."""
     assert N_ACTIONS == 9, N_ACTIONS
     assert DIGITS.shape == (9, 2), DIGITS.shape
     # digit i is joint i, least significant first; 4 is the neutral pair
@@ -329,11 +330,11 @@ def _self_check():
     assert (DIGITS[0] == -1).all(), DIGITS[0]
     assert (DIGITS[8] == +1).all(), DIGITS[8]
     assert len({tuple(d) for d in DIGITS}) == 9, "actions must decode to distinct pairs"
-    # a longer hold amortises the transient over more frames, so agreement rises
+    # a longer hold spreads the settling time over more frames, so agreement rises
     assert rows[-1][1] > rows[0][1], (rows[0], rows[-1])
     # a longer hold means fewer boundaries, so fewer windows carry a change
     assert rows[-1][4] < rows[0][4], (rows[0], rows[-1])
-    # a 63% crossing at one step would mean the measurement resolved nothing
+    # reaching 63% in one step would mean the measurement resolved nothing
     assert TAU0 > 1 and TAU1 > 1, (TAU0, TAU1)
     print("\nself-check ok")
 

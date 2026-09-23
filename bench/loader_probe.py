@@ -1,21 +1,20 @@
-"""Is the memmap loader anywhere near P-7's budget? Measure, do not assume.
+"""Is the memory-mapped loader anywhere near fast enough? Measure, do not assume.
 
-P-7 is the only requirement that constrains `mirage/data.py`: a full 300k-frame
-epoch in <= 30 min, which is 167 frames/sec end to end including the model. This
-probe times the loader alone against that, in the two shapes that will actually
-run - a sequential sweep (`validator.py`, and tokenizer training) and random
-episode-aware windows (dynamics training).
+The one speed target that constrains `mirage/data.py`: a full 300k-frame epoch
+in 30 minutes or less, which is 167 frames/s end to end, model included. This
+times the loader alone against that, in the two patterns that will actually
+run: a sequential sweep (`validator.py`, tokenizer training) and random windows
+within episodes (dynamics training).
 
-Three passes over the random case on purpose. The dataset is 3.7 GB against
-31.6 GB of RAM, so the OS page cache holds all of it after one pass and the
-pass-1-to-pass-3 spread is the only warm-up cost there is. A small spread is the
-evidence that no caching layer is worth writing.
+The random case runs three times on purpose. The dataset is 3.7 GB against
+31.6 GB of RAM, so after one pass the OS file cache holds all of it, and the
+difference between pass 1 and pass 3 is the entire warm-up cost. A small
+difference shows no caching layer is worth writing.
 
-The footgun this probe exists to avoid tripping over: slicing an `np.memmap`
-returns a lazy view and touches no pages. A first version of this measured
-3.4M fps because it had timed the slice arithmetic and nothing else.
-`WindowSampler.__getitem__` returns `np.array(...)`, which forces the page-in,
-so timing it is honest - but any hand-rolled variant here must do the same.
+The trap to avoid: slicing an `np.memmap` returns a lazy view and reads
+nothing. An early version reported 3.4M fps because it timed only the slicing.
+`WindowSampler.__getitem__` returns `np.array(...)`, which forces the read, so
+timing it is fair, but any hand-written variant here must do the same.
 
     python bench/loader_probe.py
 """
@@ -31,9 +30,9 @@ sys.path.insert(0, str(ROOT))
 
 from mirage import config, data  # noqa: E402  - after the path insert, deliberately
 
-EPOCH_BUDGET_S = 30 * 60  # P-7
+EPOCH_BUDGET_S = 30 * 60  # a full epoch must take at most 30 minutes
 SEQ_SHARE = 0.10  # the loader may spend at most this much of the epoch budget
-CHUNK = 4096  # frames per sequential read, ~50 MB - amortised, still streaming
+CHUNK = 4096  # frames per sequential read, ~50 MB: big enough to be efficient, still streaming
 
 cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
 shards = data.load_shards(ROOT / cfg.data["shard_dir"], data_hash=cfg.data_hash)
@@ -47,8 +46,8 @@ index = data.episode_index(shards)
 t_index = time.perf_counter() - t0
 print(f"episode index      {t_index * 1000:7.0f} ms   {len(index)} episodes")
 
-# Sequential sweep. `.sum()` rather than a bare slice: it is the cheapest thing
-# that provably touches every byte.
+# Sequential sweep. `.sum()` rather than a bare slice: it is the cheapest way
+# to be sure every byte is actually read.
 t0 = time.perf_counter()
 acc = 0
 for shard in shards:

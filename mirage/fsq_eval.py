@@ -1,17 +1,16 @@
-"""Everything downstream of a trained checkpoint: the token cache and the gate.
+"""Everything after a tokenizer is trained: the token cache and the gate table.
 
-Split out of `fsq.py` when that file passed 500 lines, which is the trigger
-`docs/phase1_structural_plan.md` section 5 names and the only reason this file
-exists. The division is by *when the code runs*: `fsq.py` builds and trains, this
-runs against an artifact that already exists.
+Split out of `fsq.py` when that file grew past 500 lines, the size limit the
+plan set. The split is by *when the code runs*: `fsq.py` builds and trains, and
+this file works on a run that already exists.
 
-- **5e** `write_token_cache` - one uint16 `.npy` per shard, plus a manifest.
-- `load_run` - a checkpoint back into an eval-mode `Tokenizer`.
-- `evaluate` - the eight-row gate table.
+- `write_token_cache` - one uint16 `.npy` of token ids per shard, plus a manifest.
+- `load_run` - loads a checkpoint back into an eval-mode `Tokenizer`.
+- `evaluate` - the eight-row pass/fail "gate table" for a run.
 
-Reached through `fsq.py`'s CLI rather than its own, because `AGENDA.md` documents
-`python -m mirage.fsq --eval` and a second entry point would be a second thing to
-keep true:
+Run through `fsq.py`'s command line rather than its own, because the docs use
+`python -m mirage.fsq --eval` and a second entry point would be one more thing
+to keep in sync:
 
     python -m mirage.fsq --tokens RUN_ID
     python -m mirage.fsq --eval RUN_ID
@@ -31,23 +30,23 @@ from mirage.fsq import (PEAK, PSNR_BAR_DB, ROOT, Tokenizer, kmeans_floor_db,
                         _batch, psnr_db, reconstruction_psnr)
 
 
-# ------------------------------------------------------------ 5e. token cache
+# ---------------------------------------------------------------- token cache
 
 def load_run(run_id: str, cfg: config.Config,
              device: torch.device | None = None) -> tuple[Tokenizer, dict]:
-    """`runs/<run_id>/model.pt` -> an eval-mode `Tokenizer`, plus its knobs.
+    """`runs/<run_id>/model.pt` -> an eval-mode `Tokenizer`, plus its settings.
 
-    Rebuilds the architecture from the knobs the checkpoint carries rather than
-    from arguments, so a caller cannot quietly load R1's weights into R2's shape.
-    Refuses a checkpoint whose `data_hash` disagrees with `cfg`: the tokenizer is
-    only meaningful over the frames it was trained on, and the two hashes drifting
-    apart is exactly how a stale checkpoint gets used on regenerated data.
+    Rebuilds the network from the settings saved in the checkpoint, not from
+    arguments, so a caller cannot load R1's weights into R2's shape by mistake.
+    Refuses a checkpoint whose `data_hash` differs from `cfg`'s: a tokenizer only
+    means something on the frames it was trained on, and mismatched hashes are
+    how a stale checkpoint ends up used on regenerated data.
     """
     dev = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # weights_only=True: the checkpoint holds tensors, two hash strings and a
-    # knobs dict of primitives, so nothing here needs the arbitrary-unpickling
-    # default, and a checkpoint is exactly the kind of file that gets copied
-    # between machines.
+    # weights_only=True: the checkpoint holds only tensors, two hash strings and
+    # a dict of plain settings, so full unpickling (which can run arbitrary
+    # code) is not needed, and checkpoints are exactly the files that get
+    # copied between machines.
     ckpt = torch.load(ROOT / "runs" / run_id / "model.pt", map_location=dev,
                       weights_only=True)
     knobs = ckpt["knobs"]
@@ -56,8 +55,8 @@ def load_run(run_id: str, cfg: config.Config,
             f"{run_id} was trained on data_hash {ckpt['data_hash'][:8]}, "
             f"this config is {cfg.data_hash[:8]}"
         )
-    # `.get` and not `[...]`: every checkpoint written before the `r1c` rung
-    # existed carries no `encoder_norm`, and all of them are GroupNorm.
+    # `.get`, not `[...]`: checkpoints from before the `r1c` rung have no
+    # `encoder_norm`, and all of them use GroupNorm.
     model = Tokenizer(tuple(knobs["levels"]), attention=knobs["attention"],
                       quantize=knobs["quantize"],
                       encoder_norm=knobs.get("encoder_norm", "group")).to(dev)
@@ -69,26 +68,25 @@ def load_run(run_id: str, cfg: config.Config,
 @torch.no_grad()
 def write_token_cache(run_id: str, cfg: config.Config, batch: int = 256,
                       device: str | None = None) -> dict:
-    """Encode every frame once: one uint16 `.npy` per shard under the run's dir.
+    """Encode every frame once: one uint16 `.npy` per shard in the run's directory.
 
-    Per shard and not one flat array, because a flat array needs a cumulative
-    frame offset to address and that is an off-by-one factory. Per-shard makes
-    `len(tokens) == shard.frames` a loud assert, which is gate row 4.
+    Per shard, not one flat array, because a flat array needs running frame
+    offsets, which invite off-by-one errors. Per shard also makes
+    `len(tokens) == shard.frames` a simple assert (gate row 4).
 
-    Named by run id and not by `tokenizer_hash`, because two runs at identical
-    config and different seeds share a hash and produce different tokens. The
-    checkpoint carries the hash inside it for provenance, and the manifest
-    repeats it.
+    Stored by run id, not `tokenizer_hash`, because two runs with the same config
+    but different seeds share a hash and give different tokens. The hash is
+    recorded inside the checkpoint and repeated in the manifest.
 
-    **The rows are flipped on the way in.** `Shard.pixels` holds them bottom-up
-    as the GL readback wrote them, and `data.preload` flips them for training. A
-    cache written without the flip would produce well-formed tokens for
-    upside-down frames and fail nowhere until Phase 2 trained on them.
+    **Rows are flipped on the way in.** `Shard.pixels` stores them bottom-up, as
+    the GL readback wrote them, and `data.preload` flips them for training. A
+    cache written without the flip would hold valid-looking tokens for
+    upside-down frames and fail nowhere until the next model trained on them.
 
-    The pass is over 3.5 GB of memmap and is mandatory, so two gate rows ride
-    along rather than paying for their own pass: a 512-bin histogram gives row 3
-    (token entropy) and row 8 (live codes), and a sha256 per shard gives row 5 -
-    re-running this writer and diffing manifests *is* the bit-identical check.
+    This pass over 3.5 GB of frames has to happen anyway, so two gate rows are
+    computed along the way: a 512-bin histogram gives row 3 (token entropy) and
+    row 8 (live codes), and a sha256 per shard gives row 5, since re-running this
+    writer and comparing manifests *is* the bit-identical check.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, knobs = load_run(run_id, cfg, dev)
@@ -108,7 +106,7 @@ def write_token_cache(run_id: str, cfg: config.Config, batch: int = 256,
         toks = np.empty((sh.frames, *cfg.shapes.token_grid), dtype=np.uint16)
         for i in range(0, sh.frames, batch):
             j = min(i + batch, sh.frames)
-            px = np.ascontiguousarray(sh.pixels[i:j, ::-1])  # rows bottom-up -> top-down
+            px = np.ascontiguousarray(sh.pixels[i:j, ::-1])  # flip rows right-side up
             x = torch.from_numpy(px).to(dev).permute(0, 3, 1, 2).float() / PEAK
             toks[i:j] = model.encode(x).cpu().numpy().astype(np.uint16)
         assert len(toks) == sh.frames, \
@@ -136,17 +134,17 @@ def write_token_cache(run_id: str, cfg: config.Config, batch: int = 256,
         "token_grid": list(cfg.shapes.token_grid),
         "dtype": "uint16",
         # Recorded because the tokens depend on it. With attention in the
-        # encoder, `F.scaled_dot_product_attention` returns batch-size-dependent
-        # floating point, and ~2 latent values in 100,000 sit close enough to a
-        # quantization boundary to flip: shard 0 of R2 encoded at batch 128 and
-        # at 256 differs in 10 of 512,000 tokens, where R1 with attention off
-        # differs in 0. A re-encode is therefore only bit-identical at the same
-        # batch, so E-1 needs this pinned rather than assumed.
+        # encoder, `F.scaled_dot_product_attention` gives slightly different
+        # floating-point results at different batch sizes, and about 2 values in
+        # 100,000 sit close enough to a rounding boundary to flip. R2's shard 0
+        # encoded at batch 128 vs 256 differs in 10 of 512,000 tokens; R1 (no
+        # attention) differs in 0. So a re-encode is only bit-identical at the
+        # same batch, and the batch must be recorded, not assumed.
         "batch": batch,
         "frames": sum(s["frames"] for s in per_shard),
         "tokens": total,
         "shards": per_shard,
-        # Rows 3 and 8, computed on the pass that had to happen anyway.
+        # Gate rows 3 and 8, computed on the pass that had to happen anyway.
         "entropy_bits": entropy,
         "entropy_ratio": entropy / math.log2(codebook),
         "live_codes": int((p > 1e-4).sum()),
@@ -167,10 +165,9 @@ def _flat_mask(idx_batch: np.ndarray, patch: int) -> np.ndarray:
     """(B, H, W) palette indices -> (B, H, W) bool, True where the pixel's
     `patch`x`patch` block is a single flat colour.
 
-    Taken from the **ground truth**, never from the reconstruction. Deriving
-    flatness from the model's own output would let a blurry decoder reclassify
-    its mistakes as edges and flatter the flat-pixel number, so the metric would
-    be measuring the model twice.
+    Computed from the **ground truth**, never from the reconstruction. Using the
+    model's own output would let a blurry decoder relabel its mistakes as edges,
+    making the flat-pixel score look better than it is.
     """
     b, h, w = idx_batch.shape
     p = idx_batch.reshape(b, h // patch, patch, w // patch, patch)
@@ -183,10 +180,10 @@ def edge_flat_psnr(model: nn.Module, idx: np.ndarray, lut: torch.Tensor, patch: 
                    batch: int = 256) -> tuple[float, float, float]:
     """(flat-pixel dB, edge-pixel dB, edge share of squared error) over `idx`.
 
-    Gate row 7, and the 64-vs-144 fork's diagnostic. The k-means floor puts
-    **99.95%** of its error in the 36.53% of patches that are not flat; if a
-    trained tokenizer does the same, more pixels is the lever and 96x96 is
-    indicated.
+    Gate row 7, and the evidence for choosing 64x64 (64 tokens) or 96x96 (144
+    tokens). The k-means baseline puts **99.95%** of its error in the 37% of
+    patches that are not flat. If a trained tokenizer does the same, more pixels
+    is what would help, which points to 96x96.
     """
     was_training = model.training
     model.eval()
@@ -209,25 +206,23 @@ def edge_flat_psnr(model: nn.Module, idx: np.ndarray, lut: torch.Tensor, patch: 
 
 
 def entropy_split(counts: list[int], levels: list[int]) -> dict:
-    """Row 3, taken apart: where the missing bits are.
+    """Gate row 3 (token entropy), broken down to show where the missing bits are.
 
-    A token id is the mixed-radix number `d0 + levels[0]*d1 + ...`, so the
-    per-channel digit distributions fall out of the same counts vector row 3
-    already sums - no GPU, no re-encode. The joint entropy is then
-    `sum(marginals) - redundancy`, and the two terms fail for different reasons
-    and have different fixes:
+    A token id is the mixed-base number `d0 + levels[0]*d1 + ...`, so each
+    channel's digit distribution can be read off the same counts row 3 uses: no
+    GPU, no re-encode. The joint entropy is `sum(per-channel) - redundancy`, and
+    the two parts fail for different reasons, with different fixes:
 
-    - **marginal skew** - one channel's latent sits off centre in the `tanh`
-      bound and never reaches most of its levels. R2's channel 2 puts 81% of its
-      mass on digits 0 and 1 and returns 1.964 of 3 bits.
-    - **redundancy** - the channels encode copies of each other. This is what
-      `GridAttention` fixes: R1 -> R2 it falls 1.339 -> 0.781 bits, which is 76%
-      of attention's entire entropy gain and the mechanism behind a result no
-      document predicted.
+    - **per-channel skew** - one channel's values sit off centre in the `tanh`
+      range and never reach most of its levels. R2's channel 2 puts 81% of its
+      mass on digits 0 and 1 and gives 1.964 of 3 bits.
+    - **redundancy** - the channels carry copies of the same information. This
+      is what `GridAttention` fixes: R1 -> R2 it falls 1.339 -> 0.781 bits,
+      which is 76% of attention's whole entropy gain.
 
-    Split them because the plan's remedy for a Q-2 miss - the shrink ladder - is
-    a *collapse* fix, and neither term is collapse: zero of 512 codes have zero
-    count in either rung.
+    Worth splitting because the plan's fix for low entropy (shrinking the
+    vocabulary) targets *collapse*, where codes go unused, and neither part is
+    collapse: no code has zero count in either rung.
     """
     c = np.asarray(counts, dtype=float)
     p = c / c.sum()
@@ -247,19 +242,18 @@ def entropy_split(counts: list[int], levels: list[int]) -> dict:
             "redundancy_bits": sum(per) - joint, "zero_count_codes": int((c == 0).sum())}
 
 
-# ------------------------------------- row 6. F-9 against reconstructions
+# ---------------------------------- row 6: the validator on reconstructions
 
 @torch.no_grad()
 def reconstruct(model: nn.Module, idx: np.ndarray, lut: torch.Tensor,
                 rows: np.ndarray, batch: int = 256) -> np.ndarray:
-    """`rows` of `idx`, round-tripped through the tokenizer, as the validator
-    wants them: `(n, h, w, 3)` uint8, channel axis last.
+    """`rows` of `idx`, passed through the tokenizer and back, in the form the
+    validator wants: `(n, h, w, 3)` uint8, channels last.
 
-    Rounded and clamped before it leaves, because uint8 is what the pipeline
-    actually delivers and `measure_pixels_only` refuses anything else. Measuring
-    the float output would calibrate a validator that never runs - and it would
-    calibrate it optimistically, since rounding is itself a source of colours
-    that sit off the palette.
+    Rounded and clamped to uint8, because that is what the pipeline delivers
+    and `measure_pixels_only` accepts nothing else. Measuring the float output
+    would calibrate for a case that never happens, and too kindly, since
+    rounding itself creates off-palette colours.
     """
     out = []
     for i in range(0, len(rows), batch):
@@ -274,31 +268,29 @@ def reconstruction_sweep(model: nn.Module, cfg: config.Config, shards, index,
                          lut: torch.Tensor, tau: float, sample: int | None = None,
                          seed: int = 0, batch: int = 256
                          ) -> tuple[validator.Sweep, validator.Sweep]:
-    """(reconstruction sweep, ground-truth sweep) over the same val rows.
+    """(reconstruction sweep, ground-truth sweep) over the same validation rows.
 
-    Gate row 6, and the measurement build order item 6 calibrates against. F-9
-    was accepted at zero false positives on *renders*; every threshold it fixed
-    therefore describes a frame with exactly seven colours in it. What Q-3
-    actually counts is frames out of the decoder, which softens every edge into
-    colours no palette entry names, so the thresholds have to be re-derived
-    against those or the coherence horizon reads zero on frame one forever.
+    Gate row 6, and the measurement the validator's thresholds were calibrated
+    on. The validator was first tuned on *renders*, frames with exactly seven
+    colours. But the rollout quality measure runs on decoder output, which
+    softens every edge into colours not in the palette, so the thresholds had to
+    be re-derived on that; otherwise every rollout would fail on its first frame.
 
-    Both sweeps run on the same rows and the same truth. The ground-truth half
-    is not decoration:
+    Both sweeps use the same rows and the same truth. The ground-truth one
+    matters:
 
       * it is the **alignment check**. `val_idx` and the meta come from two
-        different functions, and a misalignment would silently pair frame i's
-        pixels with frame j's truth - both arrays would still have the right
-        length and dtype, and every number below would be wrong and plausible.
-        Ground truth run through the same path has to reproduce F-9's known
-        result; when it does, the rows line up.
-      * it is the **baseline**. A reconstruction number means nothing on its
-        own - the question item 6 asks is how much worse than a render the
-        decoder is, and that is a difference, not a value.
+        different functions, and a mismatch would silently pair frame i's
+        pixels with frame j's truth, with both arrays still the right length
+        and type and every number wrong but plausible. Ground truth through the
+        same path must reproduce the known render result; when it does, the
+        rows line up.
+      * it is the **baseline**. A reconstruction number means little alone; the
+        question is how much worse than a render the decoder is.
 
-    Held-out rows on purpose: the val split, the same frames row 1's PSNR is
-    quoted over. A threshold calibrated on frames the tokenizer trained on
-    would be tuned to reconstructions that are better than any it will meet.
+    Held-out rows on purpose: the validation split, the same frames row 1's
+    PSNR uses. Thresholds tuned on frames the tokenizer trained on would expect
+    better reconstructions than it will ever produce on new data.
     """
     metas = data.split_meta(shards, index, "val", cfg.data["val_fraction"])
     assert len(metas) == len(val_idx), (
@@ -306,11 +298,10 @@ def reconstruction_sweep(model: nn.Module, cfg: config.Config, shards, index,
         f"preload and split_meta disagree about the split"
     )
 
-    # The whole val split by default, and not a sample, because the threshold
-    # this feeds is a **maximum**. A max over 2,000 frames is systematically
-    # smaller than one over 16,200, so a subsampled gate is a strictly easier
-    # gate than the calibration that set the number - it would pass here and
-    # fail on the full split, which is the worst way for a threshold to be wrong.
+    # The whole validation split by default, not a sample, because this feeds a
+    # **maximum**. A max over 2,000 frames is usually smaller than over 16,200,
+    # so a sampled gate is easier than the calibration that set the limit: it
+    # would pass here and fail on the full split, the worst way to be wrong.
     if sample is None:
         rows = np.arange(len(val_idx))
     else:
@@ -326,12 +317,12 @@ def reconstruction_sweep(model: nn.Module, cfg: config.Config, shards, index,
     r = validator.sweep(recon, metas[rows], palette, tau)
     g = validator.sweep(truth, metas[rows], palette, tau)
 
-    # The alignment check, and the only one that can catch a silent row shift.
-    # These two are F-9's *known* ground-truth results - zero off-palette pixels,
-    # and a worst distance of 0.75 that is render rounding and nothing else. Truth
-    # pushed through this exact path has to reproduce them. If it does not, the
-    # frames and the meta are not the same rows, and every reconstruction number
-    # above is attributing one frame's pixels to another frame's truth.
+    # The alignment check, and the only thing that catches a silent row shift.
+    # These are the *known* ground-truth results: zero off-palette pixels, and a
+    # worst distance of 0.75 from render rounding alone. Truth sent through this
+    # exact path must reproduce them. If not, frames and meta are not the same
+    # rows, and every reconstruction number above pairs one frame's pixels with
+    # another frame's truth.
     assert g.offpalette_px_max == 0, (
         f"{g.offpalette_px_max} off-palette px on ground truth at tau {tau} - "
         f"F-9 says this is 0, so the frames and meta are misaligned or the palette moved"
@@ -343,29 +334,26 @@ def reconstruction_sweep(model: nn.Module, cfg: config.Config, shards, index,
 
 
 def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict:
-    """The eight-row gate table for one run. Rows 1-5 are pass/fail here.
+    """The eight-row gate table for one run. Rows 1-6 are pass/fail.
 
     Row 1 is **recomputed from `model.pt`**, not read from `result.json`. The
-    gate exists to check the artifact that would ship; reading the training log
+    gate checks the file that would actually be used; trusting the training log
     would pass a checkpoint that failed to save correctly.
 
-    Row 2 charges against the recorded floor for *this config's resolution*
-    (`fsq.kmeans_floor_db`) rather than refitting
-    k-means. The plan asked for a refit so rows 1 and 2 could disagree, but the
-    val split is fixed by `data.is_val` over a checked `data_hash`, so a refit at
-    seed 0 returns 28.27 dB every time - it is a constant dressed as a
-    measurement. What the refit was protecting against is the data moving
-    underneath the floor, and `load_run` already refuses a `data_hash` mismatch
-    loudly. `bench/patch_probe.py` remains the one place k-means lives.
+    Row 2 compares with the recorded k-means baseline for *this config's
+    resolution* (`fsq.kmeans_floor_db`) instead of refitting k-means. The plan
+    asked for a refit, but the validation split is fixed by `data.is_val` and a
+    checked `data_hash`, so a refit returns the same number every time: a
+    constant pretending to be a measurement. The real risk, the data changing
+    under the baseline, is already caught by `load_run`'s `data_hash` check.
+    `bench/patch_probe.py` stays the one place k-means is computed.
 
-    Row 6 runs the F-9 sweep against decoder output, using the thresholds build
-    order item 6 calibrated into `validator.offpalette_tau`, and the
-    `validator.offpalette_frac_max` share that restated item 6's pixel count in
-    a resolution-free form. It is a **regression check, not a
-    calibration**: the numbers were fixed once, against the R2 rung on the whole
-    held-out split, and re-deriving them per run would move `validator_hash` and
-    make two runs' Q-3 horizons incomparable. A later rung that cannot meet them
-    is telling you its decoder is worse, which is the point.
+    Row 6 runs the validator sweep on decoder output, using the calibrated
+    `validator.offpalette_tau` and `validator.offpalette_frac_max`. It is a
+    **regression check, not a calibration**: the limits were set once, on the R2
+    rung over the whole held-out split. Re-deriving them per run would change
+    `validator_hash` and make rollout results from different runs incomparable.
+    A later rung that fails them has a worse decoder, which is the point.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, knobs = load_run(run_id, cfg, dev)
@@ -393,15 +381,13 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     frac_max = cfg.validator["offpalette_frac_max"]
     r6, g6 = reconstruction_sweep(model, cfg, shards, index, palette, val_idx, lut, tau)
 
-    # Row 5: re-encode shard 0 and compare its sha256 to the manifest. One shard
-    # is the same property as seven and costs a seventh of the time.
+    # Row 5: re-encode shard 0 and compare its sha256 with the manifest. One
+    # shard tests the same thing as seven at a seventh of the cost.
     #
-    # **At the manifest's batch, not a hardcoded one.** This originally re-encoded
-    # at 256 while the cache had been written at `--batch` (default 128), so the
-    # row was testing "re-encode at a different batch size" and R2 failed it while
-    # R1 passed. That is a real property - see the `batch` key above - but it is
-    # not the property E-1 asks about, and conflating the two would have retired
-    # a working determinism check on a false alarm.
+    # **Use the manifest's batch size, not a fixed one.** Re-encoding at a
+    # different batch than the cache was written with tests batch-size
+    # sensitivity (a real effect with attention; see the `batch` key above),
+    # not whether encoding is repeatable, and would fail R2 on a false alarm.
     enc_batch = man.get("batch", 256)
     sh = shards[0]
     again = np.empty((sh.frames, *cfg.shapes.token_grid), dtype=np.uint16)
@@ -413,7 +399,7 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
     redo = hashlib.sha256(again.tobytes()).hexdigest()
 
     counts_ok = all(s["frames"] == sh_.frames for s, sh_ in zip(man["shards"], shards))
-    floor = kmeans_floor_db(cfg)  # keyed by resolution - see fsq.KMEANS_FLOOR_DB
+    floor = kmeans_floor_db(cfg)  # depends on resolution; see fsq.KMEANS_FLOOR_DB
     rows = [
         (1, "Held-out PSNR, uint8, over the val frames", f"{db:.3f} dB",
          f">= {PSNR_BAR_DB}", db >= PSNR_BAR_DB),
@@ -447,10 +433,10 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
         verdict = "-" if ok is None else ("PASS" if ok else "FAIL")
         print(f"{n:>2}  {name:<52} {value:<44} {bar:<16} {verdict}")
 
-    # Row 6 next to the renders it was originally calibrated on. Printed rather
-    # than left in the return value because the gap *is* the result: F-9's
-    # thresholds were set where the right-hand column sits, and item 6 exists
-    # because the left-hand column is where the validator actually has to work.
+    # Row 6 next to the renders the validator was first tuned on. Printed, not
+    # just returned, because the gap *is* the result: the original thresholds
+    # fit renders, but decoder output is where the validator actually has to
+    # work.
     print()
     print(f"    row 6 against ground truth on the same {r6.frames:,} rows: "
           f"{g6.offpalette_px_max} off-palette px, worst dist {g6.max_palette_dist:.2f}, "

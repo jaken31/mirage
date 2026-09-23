@@ -1,18 +1,19 @@
-"""Live sandbox: drive the arm by hand, watch the tokenizer eat the camera feed.
+"""Live sandbox: move the arm by hand and watch the tokenizer rebuild the camera feed.
 
     python bench/sandbox.py                    # default R1 gate checkpoint
     python bench/sandbox.py --run RUN_ID
 
-Three panels update in real time - what the dataset camera sees at 64x64, what
-the tokenizer reconstructs from its token ids, and the absolute difference -
-with the live PSNR in the title. One slider per actuator, so you can park the
-arm anywhere and see where the reconstruction falls apart. Space pauses.
+Three panels update live: what the dataset camera sees at 64x64, what the
+tokenizer rebuilds from its token ids, and the absolute difference, with the
+live PSNR in the title. One slider per actuator, so you can put the arm
+anywhere and see where the reconstruction breaks down. Space pauses.
 
-Nothing here is a measurement: the gate is `python -m mirage.fsq --eval RUN_ID`,
-and the PSNR printed on a frame you posed by hand is not comparable to it.
+Nothing here is a measurement. The real check is
+`python -m mirage.fsq --eval RUN_ID`, and PSNR on a hand-posed frame is not
+comparable to it.
 
-ponytail: no 3D viewer window. `mujoco.viewer` wants its own GLFW context beside
-the offscreen one; if you want the 3D view, run `python -m mujoco.viewer
+ponytail: no 3D viewer window. `mujoco.viewer` needs its own GLFW context next
+to the offscreen one; for a 3D view, run `python -m mujoco.viewer
 --mjcf=scene/arm_blocks.xml` in a second terminal.
 """
 
@@ -36,7 +37,7 @@ from mirage.fsq_eval import load_run           # noqa: E402
 
 SIZE = 64
 SETTLE_STEPS = 100
-STEPS_PER_FRAME = 10   # sim steps between redraws; ~physics-real-time at 60 fps redraw
+STEPS_PER_FRAME = 10   # sim steps between redraws; roughly real time at 60 redraws/s
 R1_DEFAULT = "20260829-005439-r1"
 
 
@@ -45,8 +46,8 @@ def render(model, data, ctx, scene, opt, cam, viewport, rgb):
     mujoco.mjr_render(viewport, scene, ctx)
     mujoco.mjr_finish()
     mujoco.mjr_readPixels(rgb, None, viewport, ctx)
-    # readPixels is bottom-up; the training frames are flipped top-down (see
-    # mirage.data.preload), so flip here or the model sees an upside-down world.
+    # readPixels returns rows bottom-up; training frames are flipped right-side
+    # up (see mirage.data.preload), so flip here or the model sees it upside down.
     return np.flipud(rgb).copy()
 
 
@@ -71,9 +72,8 @@ def main() -> None:
     ctx = mujoco.MjrContext(mj, mujoco.mjtFontScale.mjFONTSCALE_150)
     mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, ctx)
 
-    # Same reject-list as bench/frame_probe.py: these two strings are the
-    # Windows software fallbacks, and a software GL here means every number and
-    # every pixel below is meaningless (CLAUDE.md, environment facts).
+    # Same check as bench/frame_probe.py: these two are the Windows software
+    # renderers, and with one of them every number and pixel below is meaningless.
     gl_renderer = glGetString(GL_RENDERER).decode()
     assert not any(s in gl_renderer for s in ("GDI Generic", "Microsoft Basic Render Driver")),         f"software GL, not hardware: {gl_renderer!r}"
     print("GL_RENDERER:", gl_renderer)
@@ -128,9 +128,9 @@ def main() -> None:
             mujoco.mj_step(mj, d)
         cur = render(mj, d, ctx, scene, opt, cam, viewport, rgb)
 
-        # The model lives in [0, 1] and uint8 is materialised on the way out -
-        # same convention as `reconstruction_psnr`, which is what makes the PSNR
-        # here the same quantity the gate reports.
+        # The model works in [0, 1] and output is converted to uint8, the same as
+        # `reconstruction_psnr`, so this PSNR is the same kind of number the gate
+        # reports.
         x = torch.from_numpy(cur).to(dev).float().permute(2, 0, 1)[None] / PEAK
         with torch.no_grad():
             out = tok(x)

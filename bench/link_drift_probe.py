@@ -1,48 +1,47 @@
-"""Does Q-5's 10% link-length drift bar hold on the simulator's own frames?
+"""Does the 10% link-length drift limit hold on the simulator's own frames?
 
-Q-5 asks a rolled-out world model to keep the arm's link lengths stable across
-a 200-step rollout, drift <= 10%.  Measured on pixels the only available length
-is the **projected** major extent of a link's colour blob, and this probe asks
-what that statistic does on ground-truth frames - the frames a perfect model
-would reproduce exactly.  If it already blows the bar, Q-5 as written is
-unreachable by any model and the defect is in the requirement, the same shape
-as Q-4's ceiling (`bench/hold_probe.py`, verification log 2026-08-28).
+The arm-plausibility requirement asked a world model's rollout to keep the
+arm's link lengths within 10% over 200 steps. From pixels, the only length
+available is the **on-screen** long side of a link's colour blob, so this probe
+checks what that number does on ground-truth frames, which a perfect model
+would reproduce exactly. If ground truth already breaks the limit, no model
+can meet it and the requirement itself is wrong (the same situation
+`bench/hold_probe.py` found for action-following).
 
-Reproduces an unrecorded finding from an earlier session ("Q-5's 10% bar fails
-the simulator's own frames, 35.6% mean").  No GPU, no training - the shards and
-`mirage.validator` are all it reads.
+It reproduces an earlier, unrecorded finding: ground truth drifts 35.6% on
+average. No GPU, no training; it reads only the shards and `mirage.validator`.
 
-**Two controls, because there are two mechanisms and the first one alone does
-not cover the data.**  A large reading has to be explained, not just reported,
-or it is indistinguishable from a broken measurement.
+**Two controls, because two effects are at work and the first alone does not
+explain the data.** A large reading must be explained, or it looks the same as
+a broken measurement.
 
-1. *Projection.*  The camera sits at `xyaxes="1 0 0 0 0.22 0.5"`, so world +x
-   maps to a full-length screen vector while world +y is compressed by
-   0.22/|(0,0.22,0.5)| = 0.403.  A link of fixed length at world angle `theta`
-   projects to `sqrt(cos^2 theta + 0.403^2 sin^2 theta)` of its face-on length -
-   a 2.48x range from one revolution, nothing to do with the physics.  The probe
-   predicts each frame's extent from the meta record's `qpos` under that model
-   and reports the correlation.
-2. *Visibility.*  Projection has a **floor** at 0.403, so any link whose extent
-   falls further than that is losing pixels, not foreshortening: the far link
-   passes behind the near one, and the arm reaches past the frame edge.  The
-   probe reports the extent-vs-visible-pixel-count correlation and the share of
-   frames where the blob touches the border, which is what names that cause.
+1. *Perspective.* The camera's `xyaxes="1 0 0 0 0.22 0.5"` means world +x shows
+   at full length on screen while world +y is squashed to
+   0.22/|(0,0.22,0.5)| = 0.403. A link of fixed length at world angle `theta`
+   appears `sqrt(cos^2 theta + 0.403^2 sin^2 theta)` of its full length: a
+   2.48x range over one turn, nothing to do with physics. The probe predicts
+   each frame's length from `qpos` with this formula and reports the
+   correlation.
+2. *Visibility.* Perspective never shrinks a link below 0.403, so anything
+   shorter is losing pixels, not foreshortening: the far link passes behind the
+   near one, or the arm reaches past the frame edge. The probe reports the
+   correlation of length with visible pixel count, and the share of frames
+   where the blob touches the border.
 
-Together they have to account for the reading.  If neither did, the probe would
-be the thing condemned rather than Q-5.
+Together these must explain the reading. If they did not, the probe would be
+suspect rather than the requirement.
 
-**The restated statistic, added 2026-08-30, and REFUTED by its own run.**  Since
-both controls named a removable cause, the obvious repair was to remove them:
-deproject the extent using the **pixel-measured** `link_angle` - never `qpos`,
-which a model's rollout does not have - and count only frames where the link is
-whole.  It does not work.  The angle model is sound (the deprojection factor
-correlates 0.928 with the `qpos`-derived one on link0) and the residual drift
-still reads 25.9% to 34.8%, against a 10% bar, while the visibility filter
-discards 77% to 96% of the frames.  So the residual is neither foreshortening
-nor clipping; it is the noise floor of measuring a ~30-pixel blob's PCA extent
-at 64x64, and no rewrite of the requirement removes it.  The sweep over `tol`
-exists so this cannot be answered by tuning one number until it passes.
+**A corrected statistic was tried, and its own run disproved it.** Since both
+effects looked removable, the obvious fix was to remove them: undo the
+perspective using the **pixel-measured** `link_angle` (never `qpos`, which a
+model's rollout does not have), and count only frames where the link is fully
+visible. It does not work. The angle correction is sound (it correlates 0.928
+with the `qpos`-based one on link0), yet drift still reads 25.9% to 34.8%
+against the 10% limit, while the visibility filter throws away 77% to 96% of
+frames. So what is left is neither perspective nor clipping; it is the
+measurement noise of sizing a ~30-pixel blob at 64x64, and no rewording of the
+requirement removes it. `tol` is swept so the answer cannot come from tuning
+one number until it passes.
 
     python bench/link_drift_probe.py
 """
@@ -56,26 +55,26 @@ from mirage import config, data, validator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 EPISODES = 12    # the same held-out count bench/token_stability_probe.py uses
-WINDOW = 200     # "across a 200-step rollout" - Q-5's own horizon
-BAR = 0.10       # Q-5's drift bar
+WINDOW = 200     # the requirement's 200-step rollout
+BAR = 0.10       # the requirement's 10% drift limit
 
-# The restated statistic's one tolerance knob, SWEPT rather than picked, because
-# a single value tuned until ground truth passes would be the circular argument
-# this probe exists to avoid. A link's blob AREA foreshortens by the same factor
-# its length does, so `px_count / factor` is flat while the link is whole and
-# falls when the other link covers part of it; `tol` is how much of that
-# unforeshortened area a frame must still show to be counted.
+# The corrected statistic's one tolerance setting, SWEPT rather than chosen,
+# because a value tuned until ground truth passes would be circular. A link's
+# blob AREA shrinks with perspective by the same factor as its length, so
+# `px_count / factor` stays flat while the link is whole and drops when the
+# other link covers part of it. `tol` is how much of that corrected area a
+# frame must still show to count.
 TOLERANCES = (0.70, 0.80, 0.90)
-MIN_KEPT = 50    # a window with fewer surviving frames is dropped, not scored
+MIN_KEPT = 50    # a window with fewer frames left than this is skipped, not scored
 
 
 def _camera_yz_compression(scene_xml: Path) -> float:
-    """The screen-space shrink factor applied to a world +y vector.
+    """How much the camera squashes a world +y vector on screen.
 
     Read from the XML rather than hardcoded: the camera's second `xyaxes`
     triple is the screen-up direction in world coordinates, and a world +y unit
-    vector projects onto it with weight `y / |v|`.  Screen-right is world +x at
-    weight 1, so the ratio is the whole foreshortening story for a planar arm.
+    vector projects onto it with weight `y / |v|`. Screen-right is world +x at
+    full length, so this one ratio is all the perspective there is for a flat arm.
     """
     import xml.etree.ElementTree as ET
 
@@ -125,24 +124,23 @@ def probe(cfg: config.Config, episodes: int = EPISODES) -> dict:
                 clip[t, L] = m.px_count[entry] > 0 and (
                     x0 == 0 or y0 == 0 or x1 == w - 1 or y1 == h - 1)
 
-        # World angle of each link: link0 is joint0, link1 is the sum - a serial
-        # two-hinge chain about z, so the second link's world angle carries the
-        # first's.  Read qpos off the meta record rather than re-simulating.
+        # World angle of each link: link0 is joint0, link1 is joint0 + joint1,
+        # since both hinges turn about z and the second rides on the first. Read
+        # qpos from the meta record rather than re-simulating.
         q = np.stack([meta[f"qpos{i}"].astype(np.float64) for i in range(n_links)])
         theta = np.cumsum(q, axis=0)
         pred = np.sqrt(np.cos(theta) ** 2 + (k * np.sin(theta)) ** 2).T  # (T, links)
 
-        # The SAME foreshortening factor, rebuilt from the PIXEL-measured angle
-        # instead of from `qpos`, which is the whole point: a model's rollout has
-        # no ground truth to consult, so a correction that needs `qpos` cannot be
-        # applied to the thing Q-5 actually scores. An image direction
-        # `(cos phi, sin phi)` comes from a world direction proportional to
-        # `(cos phi, sin phi / k)` - undoing the camera's compression of world +y
-        # - and the factor is that direction's projected length once normalised.
-        # No branch at phi = pi/2: the world direction is `(0, +-1/k)` there,
-        # normalises to `(0, +-1)`, and the factor comes out k, which is right.
-        # Sign is irrelevant throughout, so image y running downward does not
-        # enter, and neither does PCA's undefined eigenvector sign.
+        # The SAME perspective factor, rebuilt from the PIXEL-measured angle
+        # instead of `qpos`, which is the point: a model's rollout has no ground
+        # truth, so a correction that needs `qpos` cannot be applied to what is
+        # actually scored. An on-screen direction `(cos phi, sin phi)` comes from
+        # a world direction proportional to `(cos phi, sin phi / k)` (undoing the
+        # camera's squash of world +y), and the factor is that direction's
+        # on-screen length once normalised. No special case at phi = pi/2: the
+        # world direction is `(0, +-1/k)`, normalises to `(0, +-1)`, and the
+        # factor comes out k, which is right. Signs never matter, so neither image
+        # y pointing down nor PCA's arbitrary axis sign affects it.
         wx, wy = np.cos(ang), np.sin(ang) / k
         norm = np.hypot(wx, wy)
         ux, uy = wx / norm, wy / norm
@@ -155,8 +153,8 @@ def probe(cfg: config.Config, episodes: int = EPISODES) -> dict:
         per_link_fac.append(fac)
         per_link_dep.append(ext / fac)
 
-        # w0, not w: `w` is the frame width four lines up, and reusing it here
-        # worked only because nothing read it afterwards.
+        # w0, not w: `w` is the frame width above, and reusing the name only
+        # worked because nothing read it afterwards.
         for w0 in range(0, len(px) - WINDOW + 1, WINDOW):   # non-overlapping
             seg = ext[w0:w0 + WINDOW]
             for L in range(n_links):
@@ -170,8 +168,8 @@ def probe(cfg: config.Config, episodes: int = EPISODES) -> dict:
     clip_all = np.concatenate(per_link_clip)
     fac_all = np.concatenate(per_link_fac)
 
-    # The unforeshortened area a whole link shows. The 99th percentile rather
-    # than the max, which would hand the reference to one outlier frame.
+    # The perspective-corrected area a whole link shows. The 99th percentile,
+    # not the max, so one outlier frame cannot set the reference.
     area_ref = np.percentile(vis_all / fac_all, 99, axis=0)
 
     restated = []
@@ -204,9 +202,9 @@ def probe(cfg: config.Config, episodes: int = EPISODES) -> dict:
     return {
         "restated": restated,
         "area_ref": [float(a) for a in area_ref],
-        # Control on the deprojection itself: the pixel-derived factor against
-        # the qpos-derived one. Low or negative here means the angle convention
-        # is wrong and every restated number below it is meaningless.
+        # Check on the perspective correction itself: the pixel-based factor
+        # against the qpos-based one. Low or negative means the angle convention
+        # is wrong and every corrected number below is meaningless.
         "corr_factor_pixel_vs_qpos": [
             float(np.corrcoef(fac_all[:, L], pred_all[:, L])[0, 1])
             for L in range(n_links)
@@ -216,7 +214,7 @@ def probe(cfg: config.Config, episodes: int = EPISODES) -> dict:
         "window": WINDOW,
         "windows_per_link": len(windows[0]),
         "camera_y_compression": k,
-        "projection_range_ratio": float(k),  # min/max of the predicted factor
+        "projection_range_ratio": float(k),  # smallest/largest predicted factor
         "links": [
             {
                 "name": palette.names[palette.links[L]],
