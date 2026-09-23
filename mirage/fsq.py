@@ -600,7 +600,15 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     params = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
+    if len(train_idx) == 0:
+        raise ValueError("train split is empty; cannot train")
     steps_per_epoch = len(train_idx) // batch
+    if steps_per_epoch == 0:
+        raise ValueError(
+            f"batch ({batch}) is larger than train frames ({len(train_idx)}): "
+            "steps_per_epoch would be 0 and training would do no optimizer steps. "
+            "Lower --batch or increase training data."
+        )
     total = steps_per_epoch * epochs
     warm = max(1, int(warmup * total))
 
