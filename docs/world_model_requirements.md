@@ -218,7 +218,7 @@ Every **M** row passes and the ladder table is populated end to end.
 
 ## 4. Explicit non-requirements
 
-Photorealism. Sim-to-real transfer. Policy learning or planning on top of the model. Generalization to unseen scenes. Multi-arm. Dexterous or grasping manipulation. Stability past 500 rollout steps. **Linux support** - the project runs on Windows and nothing needs to be portable off it.
+Photorealism. Sim-to-real transfer. Policy learning or planning on top of the model. Generalization to unseen scenes. Multi-arm. Dexterous or grasping manipulation. Stability past 500 rollout steps. **Portability beyond Windows and Linux on x86_64** - both run natively (`README.md`, "Build"), and nothing needs to go further, such as macOS or ARM.
 
 ## 5. Requirements at risk
 
