@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <mujoco/mujoco.h>
+#include <nlohmann/json.hpp>
 
 namespace {
     // Upper bound on the meta record size, so one stack buffer serves every
@@ -26,6 +27,15 @@ namespace {
             }
         }
         return !text.empty();
+    }
+
+    // A quoted, escaped JSON string. For the two GL strings, which come from the
+    // driver and hold spaces, slashes and parentheses, so they cannot be held to
+    // IsSafeJsonAtom. Invalid UTF-8 is replaced rather than thrown on: a
+    // mangled renderer name is still worth more than an aborted run.
+    std::string JsonString(const std::string& text) {
+        return nlohmann::json(text).dump(-1, ' ', false,
+                                         nlohmann::json::error_handler_t::replace);
     }
 
     std::string ShardPath(const std::string& dir, int shard_index, const char* extension) {
@@ -274,9 +284,10 @@ void ShardWriter::write_sidecar() {
         mju_error("could not open '%s' for writing", path.c_str());
     }
 
-    // Flat by design: every value is an integer or a character-checked string,
-    // so this needs no JSON library and no escaping. If it ever needs nesting,
-    // switch to nlohmann/json instead of growing this.
+    // Flat by design: every value is an integer, a character-checked string,
+    // or one of the two GL strings escaped by JsonString. If it ever needs
+    // nesting, build the whole object with nlohmann/json instead of growing
+    // this.
     //
     // meta_joints and meta_blocks let mirage/data.py build its record layout
     // from the file instead of hardcoding 46 bytes.
@@ -292,7 +303,9 @@ void ShardWriter::write_sidecar() {
         << "  \"seed\": " << provenance_.seed << ",\n"
         << "  \"shard_index\": " << shard_index_ << ",\n"
         << "  \"data_hash\": \"" << provenance_.data_hash << "\",\n"
-        << "  \"git_sha\": \"" << provenance_.git_sha << "\"\n"
+        << "  \"git_sha\": \"" << provenance_.git_sha << "\",\n"
+        << "  \"gl_renderer\": " << JsonString(provenance_.gl_renderer) << ",\n"
+        << "  \"gl_version\": " << JsonString(provenance_.gl_version) << "\n"
         << "}\n";
 
     out.close();
@@ -313,6 +326,11 @@ void shard_writer_self_check() {
         mju_error("shard_offset_fits accepts an offset that overflows - E-3's "
                   "write-site assert would never fire");
     }
+
+    // A quote and a backslash, which the sidecar must escape, plus the
+    // spaces, slash and parentheses a real renderer name has.
+    const std::string kRenderer = "GPU \"X\" (test)/PCIe\\SSE2";
+    const std::string kVersion = "4.6.0 TEST 1.2.3";
 
     const int height = 2;
     const int width = 2;
@@ -343,7 +361,8 @@ void shard_writer_self_check() {
 
     {
         ShardWriter writer(dir_string, 7, height, width, joints, blocks,
-                           ShardProvenance{"deadbeef", "0123abc", 11});
+                           ShardProvenance{"deadbeef", "0123abc", 11, kRenderer,
+                                           kVersion});
         if (writer.pixel_bytes_per_frame() != pixel_bytes_per_frame ||
             writer.meta_record_bytes() != record_bytes) {
             mju_error("writer sized a frame at %lld pixel bytes and %d record "
@@ -479,6 +498,16 @@ void shard_writer_self_check() {
         sidecar.find("\"meta_record_bytes\": 46") == std::string::npos ||
         sidecar.find("\"data_hash\": \"deadbeef\"") == std::string::npos) {
         mju_error("sidecar is missing a field it must carry:\n%s", sidecar.c_str());
+    }
+    // Parsed, not searched, so a missing escape shows up as a parse failure
+    // or a changed string rather than passing a substring test.
+    try {
+        const nlohmann::json parsed = nlohmann::json::parse(sidecar);
+        if (parsed.at("gl_renderer") != kRenderer || parsed.at("gl_version") != kVersion) {
+            mju_error("sidecar GL strings do not round-trip:\n%s", sidecar.c_str());
+        }
+    } catch (const nlohmann::json::exception& e) {
+        mju_error("sidecar is not valid JSON (%s):\n%s", e.what(), sidecar.c_str());
     }
 
     std::filesystem::remove_all(dir, ec);
