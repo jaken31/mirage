@@ -91,10 +91,10 @@ Outcomes are in `phase1_progress_report.md` (items 1-4) and
 >   different values, because the floor moved twice underneath it and each
 >   restatement was correct arithmetic on a stale input. **If the floor moves
 >   again, this moves with it**, and every doc holding a copy is wrong that day.
-> - **"1,024 codes clear the PSNR bar outright" is dead.** Held out, 1,024 codes
->   reach only 29.39 dB and still miss 30.0. Read the useful way, that **removes
->   the main reason to regret the fixed 512-code budget** the Phase 2 handoff
->   imposes.
+> - **"1,024 codes clear Q-1 outright" is dead.** Held out, 1,024 codes reach only
+>   29.39 dB and still miss the 30.0 dB PSNR bar (Q-1). Read the useful way, that
+>   **removes the main reason to regret the fixed 512-code budget** the Phase 2
+>   handoff imposes.
 > - **The entropy-collapse evidence is gone.** 486 of 512 centroids stay live on
 >   held-out patches. The far smaller count that started the worry was an
 >   initialisation artifact, and its chain is in the register. The shrink ladder
