@@ -130,11 +130,15 @@ namespace {
     }
 
     // Characters allowed in a config path before it is passed to the shell
-    // below. Deliberately narrow: `_popen` runs through cmd.exe, where `&`, `|`,
-    // `^` and `%` are all special, and the path is the one argument that comes
-    // from outside. Spaces are rejected too: config paths are repo-relative, so a
-    // space is more likely a quoting mistake than a real folder name, and
-    // failing loudly beats guessing.
+    // below. Deliberately narrow, and the same list on both platforms: the pipe
+    // runs through cmd.exe on Windows, where `&`, `|`, `^` and `%` are special,
+    // and /bin/sh elsewhere, where `$`, `` ` ``, `"`, `;` and `|` are. The path is
+    // the one argument that comes from outside. The only listed character either
+    // shell treats specially inside double quotes is `\` on /bin/sh, where it can
+    // escape another `\` or the closing quote: at worst that garbles the path
+    // Python is given, and it never runs a command. Spaces are rejected too:
+    // config paths are repo-relative, so a space is more likely a quoting mistake
+    // than a real folder name, and failing loudly beats guessing.
     bool IsSafePathArg(const std::string& text) {
         for (const char c : text) {
             const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
@@ -147,17 +151,32 @@ namespace {
         return !text.empty();
     }
 
+    // The one platform difference in this file. On Windows the underscore names
+    // are on purpose: MSVC deprecates plain `popen`, and /W4 /WX would make that
+    // warning fatal. Both close functions return 0 only when the command exited
+    // with status 0.
+    FILE* OpenReadPipe(const char* command) {
+#ifdef _WIN32
+        return _popen(command, "r");
+#else
+        return popen(command, "r");
+#endif
+    }
+
+    int ClosePipe(FILE* pipe) {
+#ifdef _WIN32
+        return _pclose(pipe);
+#else
+        return pclose(pipe);
+#endif
+    }
+
     // stdout of `command`, or an empty string if it could not be run. stderr
     // stays connected to ours, so a Python traceback is shown instead of being
     // reduced to a return code.
-    //
-    // Windows-only, like the rest of this build (CMakeLists fetches the Windows
-    // MuJoCo and uses MSVC flags), so `_popen` needs no platform guard. The
-    // underscore name is on purpose: MSVC deprecates plain `popen`, and /W4 /WX
-    // would make that warning fatal.
     std::string RunCapture(const std::string& command, bool* ran) {
         *ran = false;
-        FILE* pipe = _popen(command.c_str(), "r");
+        FILE* pipe = OpenReadPipe(command.c_str());
         if (!pipe) {
             return {};
         }
@@ -166,7 +185,7 @@ namespace {
         while (std::fgets(chunk, sizeof(chunk), pipe)) {
             out += chunk;
         }
-        *ran = (_pclose(pipe) == 0);
+        *ran = (ClosePipe(pipe) == 0);
         return out;
     }
 
@@ -198,8 +217,9 @@ namespace {
         }
 
         // The path is passed as argv[1], not pasted into the -c source, so it can
-        // never run as Python. The script has no quotes of its own, which keeps the
-        // cmd.exe quoting simple.
+        // never run as Python. The script has no quotes of its own, and nothing
+        // that cmd.exe or /bin/sh would expand inside double quotes, so one
+        // quoting works for both.
         const std::string command =
             "python -c \"import sys;from mirage.config import load;"
             "print(load(sys.argv[1]).data_hash)\" \"" + config_path + "\"";

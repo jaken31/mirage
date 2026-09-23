@@ -491,7 +491,8 @@ def _keep_awake() -> None:
 
     ponytail: does nothing off Windows, and failing to get it is not worth
     losing a run over: the results are still correct, only the timings are
-    suspect.
+    suspect. On Linux, launch the run under `systemd-inhibit --what=idle:sleep`,
+    which holds the same kind of per-process lock from outside.
     """
     if sys.platform != "win32":
         return

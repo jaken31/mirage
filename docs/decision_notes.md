@@ -23,7 +23,9 @@ kind of project fails.
 
 ### A1. Run directly on Windows, not inside the Linux compatibility layer
 
-- **Chose** everything runs natively on Windows.
+- **Chose** everything runs natively on Windows. Since 2026-09-23 it also runs
+  natively on Linux, which the machine dual-boots (`CLAUDE.md`, "Environment
+  facts"); the compatibility layer stays ruled out.
 - **Why** the compatibility layer on this machine cannot reach the graphics
   hardware at all. The system log fails at adapter enumeration on every boot, no
   graphics device node is ever created, and so the graphics stack silently
