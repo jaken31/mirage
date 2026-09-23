@@ -1,11 +1,11 @@
-"""Per-call cost of every term in one dataset frame, against the real scene.
+"""Time taken by each step of producing one dataset frame, on the real scene.
 
-Closes the last day-1 unknown: `mjv_updateScene`. The readback probe timed
-render and readback against an inline sphere; this times all of it against
-`scene/arm_blocks.xml` with the camera the generator will actually use.
+Answers the last open timing question: `mjv_updateScene`. The readback probe
+timed render and readback on a single sphere; this times everything on
+`scene/arm_blocks.xml` with the camera the generator actually uses.
 
-Per-call, then the assembled frame - not a Python end-to-end fps loop, which
-hides which term dominates.
+Times each call, then the whole frame, rather than one end-to-end frames/s
+loop, which would hide which step dominates.
 """
 import pathlib
 import time
@@ -23,9 +23,8 @@ W = H = 64
 ctx = mujoco.GLContext(W, H)
 ctx.make_current()
 renderer = glGetString(GL_RENDERER).decode()
-# Reject-list, not an allow-list: naming the exact GPU fails on any other
-# machine that is perfectly fine. These two strings are the Windows
-# software fallbacks (CLAUDE.md, environment facts).
+# Reject known bad renderers rather than allow only this GPU, which would fail
+# on any other good machine. These two are the Windows software renderers.
 SOFTWARE_GL = ("GDI Generic", "Microsoft Basic Render Driver")
 assert not any(s in renderer for s in SOFTWARE_GL), f"software GL, not hardware: {renderer!r}"
 
@@ -39,15 +38,15 @@ mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, rc)
 assert rc.currentBuffer == mujoco.mjtFramebuffer.mjFB_OFFSCREEN, \
     f"offscreen not selected: got {rc.currentBuffer}"
 
-# The XML's named camera, not a free camera: a free camera frames a different
-# view and would make these numbers describe a scene we never capture.
+# The XML's named camera, not a free camera: a free camera shows a different
+# view, so the numbers would describe a scene we never capture.
 cam = mujoco.MjvCamera()
 cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
 cam.fixedcamid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "main")
 assert cam.fixedcamid >= 0, "camera 'main' not found - mj_name2id returns -1 silently"
 
-# Defaults already leave every decoration off; zeroing the array also clears
-# mjVIS_STATIC and worldbody geoms stop drawing (logged 2026-08-23).
+# The defaults already turn off every overlay. Zeroing the flag array would
+# also clear mjVIS_STATIC, and the table and other world geoms would vanish.
 opt = mujoco.MjvOption()
 mujoco.mjv_defaultOption(opt)
 
@@ -58,10 +57,10 @@ seg = np.empty((H, W, 3), dtype=np.uint8)
 
 data.ctrl[:] = model.actuator_ctrlrange[:, 1]
 
-# Required before the first mjv_updateScene. mjData's derived xpos/xmat are zero
-# until forward dynamics runs, so the scene builds with a correct-looking
-# scene.ngeom and renders an entirely black frame. Silent - checking the geom
-# count does not catch it.
+# Required before the first mjv_updateScene. Positions and orientations in
+# mjData are zero until mj_forward runs, so the scene gets a correct-looking
+# geom count and renders a completely black frame. No error, and checking the
+# geom count does not catch it.
 mujoco.mj_forward(model, data)
 
 
@@ -72,7 +71,7 @@ def update():
 
 def draw(buf):
     mujoco.mjr_render(vp, scene, rc)
-    mujoco.mjr_readPixels(buf, None, vp, rc)   # readPixels syncs; no mjr_finish needed
+    mujoco.mjr_readPixels(buf, None, vp, rc)   # readPixels waits for the render; no mjr_finish
 
 
 def segment(on):
@@ -90,7 +89,7 @@ def f_onepass():
 
 
 def f_twopass():
-    """The real frame: RGB pass, then segmentation pass for the F-7 counts."""
+    """The real frame: RGB pass, then the segmentation pass for per-block visible-pixel counts."""
     update()
     draw(rgb)
     segment(1)
@@ -131,8 +130,8 @@ def time_arm(fn, N, warmup, reset_every):
         t0 = time.perf_counter_ns()
         fn()
         t[i] = time.perf_counter_ns() - t0
-        # Advance outside the timer for the arms that do not step themselves,
-        # so every arm sees a moving scene rather than a frozen one.
+        # Step the sim outside the timer for variants that do not step
+        # themselves, so every variant sees a moving scene, not a frozen one.
         if fn is not f_full:
             mujoco.mj_step(model, data)
         if (i + 1) % reset_every == 0:

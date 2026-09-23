@@ -1,67 +1,72 @@
-"""Strictly-causal against block-causal attention, at a fixed step budget.
+"""Strictly-causal versus block-causal attention, for the same number of training steps.
 
-The measurement ordered 2026-09-22 to run before Phase 2 build item 1, the
-sequence layout: `docs/phase2_structural_plan.md`, "Before item 1", and the F-11
-row under "Requirements at risk" in `docs/world_model_requirements.md`. The mask
-is baked into every checkpoint trained under it, and the result decides whether
-F-11's "predicts next token" still describes the model. **This is not Phase 2's
-model.** `mirage/dynamics.py` does not exist, and this file deliberately does
-not become it - it trains the shape r49 priced, twice, and compares.
+This comparison had to run before choosing the dynamics model's token layout
+(see `docs/phase2_structural_plan.md` and the requirements doc). The attention
+mask is baked into every checkpoint trained with it, and the result decides
+whether "predicts the next token" still describes the model. **This is not the
+real dynamics model.** `mirage/dynamics.py` does not exist, and this file is
+not meant to become it: it trains the already-sized model shape twice, once
+per mask, and compares.
 
-**The two arms feed the identical token stream.** Decision 2's layout for a
-16-frame window (`ctx + 1`, item 1's recommendation) is
-`F_0, a_1, F_1, a_2, ..., a_15, F_15`: each action immediately before the 64
-tokens of the frame it produced, both read at the same record index. The
-leading `a_0` is dropped because it only explains the transition into `F_0`,
-which no arm predicts. Both arms score the same 960 targets, frames 1..15 at
-every cell. Only the mask and the position each target is read from differ:
+Terms used below: an "arm" is one side of the comparison (one mask). "Teacher
+forcing" means scoring each prediction with the true earlier tokens as input.
+"Persistence" is the baseline of copying each cell's token from the previous
+frame.
 
-- **strict** - 1,039 positions, each seeing only those before it. Frame t's
-  cell i is read at the position just before it: `a_t` for cell 0, otherwise
-  cell i - 1 of the same frame.
-- **block** - the same stream stopped before `F_15`: 975 positions, **r49's
-  priced length**. It is grouped into 15 blocks of 65: frame t's 64 tokens plus
-  the action after them, `a_{t+1}`. Attention is full inside a block and causal
-  across blocks. Frame t+1's cell i is read at the position holding frame t's
-  cell i. So all 64 cells of frame t+1 come out of one pass, and each sees every
-  earlier frame and `a_{t+1}` and nothing of frame t+1. A frame cannot be both
-  the input and the target of its own block, and this is the arrangement that
-  keeps it from being both.
+**Both arms get the same token stream.** For a 16-frame window (`ctx + 1`)
+the layout is `F_0, a_1, F_1, a_2, ..., a_15, F_15`: each action sits
+immediately before the 64 tokens of the frame it produced, both taken from
+the same record index. The leading `a_0` is dropped because it only explains
+the step into `F_0`, which neither arm predicts. Both arms score the same 960
+targets (every cell of frames 1..15). Only the mask and the position each
+target is read from differ:
 
-**The score is the generated frame, not the teacher-forced one.** Under teacher
-forcing the strict arm reads the true cells 0..i-1 of the very frame it is
-predicting, which it never has at rollout. So its teacher-forced accuracy is
-inflated by construction, and scoring on it would bias the comparison toward
-strict. The primary score is held-out per-cell accuracy of the *generated* next
-frame from ground-truth context, decoded greedily (decision 5), against the
-persistence baseline on the same cells. The block arm decodes it in one pass,
-the strict arm in 64. That is F-12's unit - one full next frame from previous
-frames plus one action - and for the block arm it is exactly gate row 1's
-measure. So the result still reads against F-11. The teacher-forced figure,
-accuracy on the cells whose token changes, the marginal-frequency top-1 and
-the held-out cross-entropy curve are reported alongside.
+- **strict** - 1,039 positions, each seeing only earlier ones. Frame t's cell
+  i is read at the position just before it: `a_t` for cell 0, otherwise cell
+  i - 1 of the same frame.
+- **block** - the same stream stopped before `F_15`: 975 positions, the
+  length the model was sized for. It is grouped into 15 blocks of 65: frame
+  t's 64 tokens plus the action after them, `a_{t+1}`. Attention is full
+  within a block and causal between blocks. Frame t+1's cell i is read at the
+  position holding frame t's cell i. So all 64 cells of frame t+1 come out of
+  one pass, each seeing every earlier frame and `a_{t+1}` and nothing of
+  frame t+1. This arrangement is what stops a frame from being both input and
+  target within its own block.
 
-**The population:** every window of `data.WindowSampler`'s val split, scored on
-its last frame. That is every frame of the 27 val episodes with a full 15-frame
-history - t = 15..599, 15,795 frames, 1,010,880 cells. Persistence on those
-exact cells is re-measured by `bench/token_stability_probe.py --episodes all
---first-target 15`, the instrument F-11 names, and `evaluate` asserts that it
-agrees with this file's own count.
+**The score is the generated frame, not the teacher-forced one.** With
+teacher forcing, the strict arm sees the true cells 0..i-1 of the very frame
+it is predicting, which it never has in a real rollout. So its teacher-forced
+accuracy is inflated by design, and scoring on it would favour strict. The
+main score is held-out per-cell accuracy of the *generated* next frame from
+true context, decoded greedily (always the most likely token), compared with
+persistence on the same cells. The block arm generates it in one pass, strict
+in 64. That matches the requirement's unit (one full next frame from previous
+frames plus one action), and for the block arm it is exactly gate row 1's
+measure. Also reported: the teacher-forced score, accuracy on cells whose
+token changes, the always-guess-the-most-common-token score, and the held-out
+cross-entropy curve.
 
-**The budget:** one epoch of train windows at batch 16, 17,294 steps. Both arms
-see identical batches in identical order and start from identical weights at a
-given seed (the arms have the same parameter shapes). They share one schedule
-with no per-arm tuning. Two seeds per arm give the first seed spread ever
-measured for a dynamics model.
+**Which frames are scored:** every window of `data.WindowSampler`'s
+validation split, scored on its last frame. That is every frame of the 27
+validation episodes with a full 15-frame history: t = 15..599, 15,795 frames,
+1,010,880 cells. Persistence on those exact cells is re-measured by
+`bench/token_stability_probe.py --episodes all --first-target 15`, and
+`evaluate` asserts it matches this file's own count.
 
-**The decision rule, fixed before the run** (`decide`): the arm with the higher
-mean primary score is selected only if its margin exceeds the seed spread - the
-larger of the two arms' ranges across seeds. Otherwise the arms are not
-separated and strictly-causal stands, because every item in the plan is written
-for it. Block-causal selected means F-11's description gets a second, separately
-dated amendment. Strictly-causal means it stands.
+**The budget:** one epoch of training windows at batch 16, 17,294 steps. At a
+given seed both arms see the same batches in the same order and start from
+the same weights (they have the same parameter shapes). They share one
+schedule with no per-arm tuning. Two seeds per arm give the first ever
+measurement of seed-to-seed spread for a dynamics model.
 
-Keep the machine awake for the duration. `fsq._keep_awake` covers Windows; on
+**The decision rule, fixed before the run** (`decide`): the arm with the
+higher mean score wins only if its lead exceeds the seed spread (the larger
+of the two arms' ranges across seeds). Otherwise the arms are not separated
+and strictly-causal stays, because the whole plan is written for it. If
+block-causal wins, the requirement's wording must be amended again, dated
+separately.
+
+Keep the machine awake while it runs. `fsq._keep_awake` handles Windows; on
 Linux, launch under `systemd-inhibit --what=idle:sleep`.
 
     python bench/mask_probe.py --self-check          # no dataset, no GPU needed
@@ -90,38 +95,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mirage import config, data  # noqa: E402
 from mirage.fsq import _keep_awake  # noqa: E402
 from mirage.logging import Run  # noqa: E402
-import dyn_size_probe  # noqa: E402  - the priced model, for the count cross-check
-import token_stability_probe  # noqa: E402  - F-11's named persistence instrument
+import dyn_size_probe  # noqa: E402  - the sizing model, to cross-check the parameter count
+import token_stability_probe  # noqa: E402  - the persistence baseline measurement
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "mirage" / "configs" / "base.json"
-TOKENIZER_RUN = "20260829-005439-r1"   # R1, which Phase 2 inherits
-R49_ROPE_UNTIED = 14_593_152           # runs.jsonl r49, the variant decisions 2 and 3 take
+TOKENIZER_RUN = "20260829-005439-r1"   # R1, the tokenizer the dynamics model builds on
+R49_ROPE_UNTIED = 14_593_152           # runs.jsonl param count, RoPE + untied variant
 ROPE_BASE = 10_000.0
 ARMS = ("strict", "block")
 
-# The shared schedule. Phase 1's values for everything Phase 1 had
-# (`fsq.train`), because that is the project's only precedent. Weight decay
-# stays at its token 1e-4: decision 4 measures the train/val gap before any
-# remedy is chosen, and heavier regularisation is one of the remedies.
+# The shared schedule. Tokenizer training's values (`fsq.train`) wherever
+# they apply, since that is the only precedent. Weight decay stays at a
+# nominal 1e-4: the plan measures the train/val gap before picking any fix,
+# and heavier regularisation is one of the possible fixes.
 BATCH = 16
 LR, LR_FLOOR, WARMUP = 3e-4, 3e-5, 0.05
 WEIGHT_DECAY = 1e-4
-CLIP = 1.0            # bf16 insurance against a single spike, shared by both arms
+CLIP = 1.0            # gradient clipping, insurance against a single bf16 spike; same for both arms
 EVAL_EVERY = 1000
 EVAL_WINDOWS = 512    # per split, for the curve - fixed across every run
-EVAL_SUBSET_SEED = 0  # not the run's seed: every curve is scored on the same windows
+EVAL_SUBSET_SEED = 0  # not the run's seed, so every curve is scored on the same windows
 
 
 # ----------------------------------------------------------------- the layout
 
 class Layout(NamedTuple):
-    """One arm's arrangement of a window, as index arrays over a *pool*.
+    """One arm's arrangement of a window, as index arrays into a *pool*.
 
     The pool is one window flattened: `pool[t * 64 + i]` is frame t's cell i,
-    and `pool[frames * 64 + t]` is `a_t` as token id `codes + action`. Both are
-    read from the same record t, so the layout cannot shift an action against
-    its frame.
+    and `pool[frames * 64 + t]` is `a_t` as token id `codes + action`. Both come
+    from the same record t, so the layout cannot put an action next to the
+    wrong frame.
     """
     arm: str
     src: np.ndarray    # (L,) pool index each input position holds
@@ -130,7 +135,7 @@ class Layout(NamedTuple):
     block: np.ndarray  # (L,) attention group; a position sees groups <= its own
 
     def mask(self) -> torch.Tensor:
-        """(L, L) bool, True where query row may attend to key column."""
+        """(L, L) bool, True where the query row may attend to the key column."""
         if self.arm == "strict":
             return torch.ones(len(self.src), len(self.src), dtype=torch.bool).tril()
         g = torch.from_numpy(self.block)
@@ -138,7 +143,7 @@ class Layout(NamedTuple):
 
 
 def layout(arm: str, frames: int, cells: int) -> Layout:
-    """The stream `F_0, a_1, F_1, ..., a_{n-1}, F_{n-1}`, cut and read per arm."""
+    """The stream `F_0, a_1, F_1, ..., a_{n-1}, F_{n-1}`, trimmed and read out per arm."""
     n = frames
     stream = list(range(cells))                          # F_0
     for t in range(1, n):
@@ -165,18 +170,19 @@ def layout(arm: str, frames: int, cells: int) -> Layout:
 # ------------------------------------------------------------------ the model
 
 def _rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Rotate each (i, i + d/2) channel pair by an angle proportional to position.
+    """RoPE: rotate each (i, i + d/2) channel pair by an angle proportional to position.
 
-    In the tables' precision, then back to the input's: at position ~1,000 a
-    bf16 angle table has lost the low bits that tell neighbours apart.
+    Computed at the angle tables' precision, then cast back: at position ~1,000
+    a bf16 angle table has lost the low bits that tell neighbouring positions
+    apart.
     """
     a, b = x.to(cos.dtype).chunk(2, dim=-1)
     return torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1).to(x.dtype)
 
 
 class Block(nn.Module):
-    """Pre-norm block with the probe's modules - r49's `nn.MultiheadAttention`
-    unrolled into its own two projections, biases included, so RoPE can reach q
+    """Pre-norm block matching the sizing model's `nn.MultiheadAttention`, written
+    out as its two projections (biases included), so RoPE can be applied to q
     and k and `F.scaled_dot_product_attention` can take the mask."""
 
     def __init__(self, d: int, heads: int, mlp_ratio: int) -> None:
@@ -200,7 +206,7 @@ class Block(nn.Module):
 
 
 class Dynamics(nn.Module):
-    """r49's `rope_untied`: RoPE, untied output head, vocab 521 in and 512 out."""
+    """The sized RoPE + untied-output variant: vocab 521 in, 512 out."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int, vocab_out: int,
                  max_len: int, mlp_ratio: int = dyn_size_probe.MLP_RATIO) -> None:
@@ -212,10 +218,10 @@ class Dynamics(nn.Module):
         half = d // heads // 2
         f64 = dict(dtype=torch.float64)
         ang = torch.arange(max_len, **f64)[:, None] * ROPE_BASE ** (-torch.arange(half, **f64) / half)
-        # Not persistent: derived from the shape, so no state_dict entry.
+        # Not saved in state_dict: it is derived from the shape.
         self.register_buffer("cos", ang.cos().float(), persistent=False)
         self.register_buffer("sin", ang.sin().float(), persistent=False)
-        # GPT-2's init, shared by both arms.
+        # GPT-2's weight initialisation, the same for both arms.
         for m in self.modules():
             if isinstance(m, (nn.Linear, nn.Embedding)):
                 nn.init.normal_(m.weight, std=0.02)
@@ -253,14 +259,14 @@ def assemble(lay: Layout, tok: np.ndarray, act: np.ndarray, codes: int) -> tuple
 @torch.no_grad()
 def generate(model: Dynamics, lay: Layout, x: torch.Tensor, mask: torch.Tensor,
              cells: int, dummy: int = 0) -> torch.Tensor:
-    """Greedy last frame from ground-truth context: (B, L) -> (B, cells).
+    """Greedily generate the last frame from true context: (B, L) -> (B, cells).
 
-    Every input position holding a cell of the frame being generated is
-    overwritten with `dummy` first, and then with each generated token as it
-    comes out. So no ground truth of the target frame is in the input at all,
-    whatever the mask does. The block arm holds none of it and finishes in one
-    pass; the strict arm needs one pass per cell, each cut to the prefix that
-    can influence it.
+    Every input position holding a cell of the frame being generated is first
+    overwritten with `dummy`, then with each generated token as it comes out.
+    So no truth about the target frame is in the input at all, whatever the
+    mask does. The block arm has none of it anyway and finishes in one pass;
+    the strict arm needs one pass per cell, each trimmed to the prefix that
+    can affect it.
     """
     x = x.clone()
     reads = lay.read[-cells:]
@@ -282,13 +288,13 @@ def generate(model: Dynamics, lay: Layout, x: torch.Tensor, mask: torch.Tensor,
 # ---------------------------------------------------------------------- data
 
 class Data:
-    """R1's token cache and the meta records, addressed through `WindowSampler`.
+    """R1's token cache and the meta records, looked up through `WindowSampler`.
 
-    The sampler is the addressing authority: a window's (episode, offset) is read
-    off the meta it returns, never recomputed here, and the window's actions are
-    that same meta's `action` column. So the tokens and the actions of one
-    window come from the records `WindowSampler` would have returned, by
-    construction rather than by a second copy of its arithmetic.
+    The sampler decides which frames a window is: its (episode, offset) is read
+    from the meta it returns, never recomputed here, and the actions are that
+    same meta's `action` column. So a window's tokens and actions come from
+    exactly the records `WindowSampler` returns, not from a second copy of its
+    arithmetic.
     """
 
     def __init__(self, cfg: config.Config, run_id: str = TOKENIZER_RUN) -> None:
@@ -326,13 +332,13 @@ class Data:
 
 
 def load_manifest(cfg: config.Config, shards, run_id: str) -> dict:
-    """R1's cache manifest, refused on any provenance mismatch.
+    """R1's cache manifest, refused if its origin does not match.
 
-    The refusals `fsq_eval.load_run` makes for a checkpoint, made for the cache:
-    a cache written at another `data_hash` or by another tokenizer trains
-    silently otherwise, and one from the 96x96 fork fails somewhere downstream
-    of the load rather than at it. Every shard's bytes are checked against the
-    manifest's sha256 too, so the cache is the one R1 wrote.
+    The same checks `fsq_eval.load_run` makes for a checkpoint, applied to the
+    cache. Otherwise a cache made from other data or another tokenizer would
+    train without complaint, and one from a 96x96 run would fail somewhere later
+    instead of at load. Every shard's bytes are also checked against the
+    manifest's sha256, so the cache is exactly the one R1 wrote.
     """
     path = ROOT / "runs" / run_id / "tokens" / "manifest.json"
     man = json.loads(path.read_text(encoding="utf-8"))
@@ -353,11 +359,11 @@ def load_manifest(cfg: config.Config, shards, run_id: str) -> dict:
 
 
 def action_phase(shards, hold: int, shift: int = 0) -> tuple[set[int], int]:
-    """Phases mod `hold` at which the action stream changes, and how many changes.
+    """Positions (mod `hold`) where the action changes, and how many changes.
 
-    `data._self_check`'s assertion, over the records the windows read. `shift`
-    moves each action one record later within its episode - the negative
-    control, which must land off phase 0.
+    The same check as `data._self_check`, over the records the windows read.
+    `shift` moves each action one record later within its episode, a deliberate
+    error that must land off position 0.
     """
     phases: set[int] = set()
     changes = 0
@@ -376,8 +382,9 @@ def action_phase(shards, hold: int, shift: int = 0) -> tuple[set[int], int]:
 # --------------------------------------------------------------------- train
 
 def gpu_state() -> dict | None:
-    """SM clock and power, which is what a compute-bound timing is gated on -
-    never `pstate` (refuted 2026-08-23). The fields `bench/gpu_probe.py` samples."""
+    """GPU compute clock and power draw, which is what to check for a compute-bound
+    timing (never `pstate`, which follows the memory clock). The same fields
+    `bench/gpu_probe.py` samples."""
     fields = ["clocks.current.sm", "clocks.max.sm", "power.draw", "enforced.power.limit",
               "temperature.gpu", "pstate"]
     try:
@@ -451,7 +458,7 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
     assert params == R49_ROPE_UNTIED, f"{params:,} parameters, r49 priced {R49_ROPE_UNTIED:,}"
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
-    # One epoch without replacement; the same order for both arms at a seed.
+    # One epoch, each window once; the same order for both arms at a given seed.
     order = np.random.default_rng(seed).permutation(len(d.train))[:total * BATCH].reshape(total, BATCH)
     ev = np.random.default_rng(EVAL_SUBSET_SEED)
     subsets = {"val": np.sort(ev.choice(len(d.val), EVAL_WINDOWS, replace=False)),
@@ -543,14 +550,14 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
 @torch.no_grad()
 def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
              stride: int = 1, batch: int = 64) -> dict:
-    """Score a finished run on the population, and write `result.json`.
+    """Score a finished run on the scored frames, and write `result.json`.
 
-    `stride` > 1 scores the generated frame on every stride-th window only - the
-    fallback for when the strict arm's 64-pass decode costs too much. It is
-    recorded in the result, and every other number is still over all windows.
-    The block arm is always decoded on the full batch and then subsampled: its
-    one pass costs nothing to keep, and a sub-batch shape can pick different
-    bf16 kernels and break its exact generated == teacher-forced control.
+    `stride` > 1 scores the generated frame on every stride-th window only, a
+    fallback for when the strict arm's 64-pass generation is too slow. It is
+    recorded in the result, and every other number still covers all windows.
+    The block arm is always generated on the full batch and then subsampled:
+    its one pass is cheap, and a smaller batch shape can select different bf16
+    kernels and break its exact generated == teacher-forced check.
     """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = d or Data(cfg)
@@ -567,7 +574,7 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
     mask = lay.mask().to(dev)
     last = torch.from_numpy(lay.read[-d.cells:]).to(dev)
 
-    # The marginal-frequency baseline, fitted on the train split's frames.
+    # The always-guess-the-most-common-token baseline, fitted on training frames.
     train_eps = data.split_episodes(d.index, "train", cfg.data["val_fraction"])
     counts = np.bincount(np.concatenate([d.tokens[e.episode_id].ravel() for e in train_eps]),
                          minlength=d.codes)
@@ -605,8 +612,9 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
             gen_s += time.perf_counter() - g0
     eval_s = time.perf_counter() - t0
     if info["arm"] == "block":
-        # The block arm reads no cell of the target frame, so generating it is
-        # the teacher-forced pass - a control that this is true, not a shortcut.
+        # The block arm reads no cell of the target frame, so generating it
+        # should equal the teacher-forced pass. This checks that; it is not a
+        # shortcut.
         assert np.array_equal(gen[gen >= 0], tf[gen >= 0]), "block arm: generated != teacher-forced"
 
     probe = token_stability_probe.probe(TOKENIZER_RUN, cfg, None, d.ctx)
@@ -651,7 +659,7 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
 
 
 def curve(run_id: str) -> list[dict]:
-    """The held-out loss curve, followed back through any `--resume` seams."""
+    """The held-out loss curve, stitched together across any `--resume` restarts."""
     points, rid = [], run_id
     while rid is not None:
         run_dir = ROOT / "runs" / rid
@@ -667,7 +675,7 @@ def curve(run_id: str) -> list[dict]:
 # ------------------------------------------------------------------- compare
 
 def decide(scores: dict[str, list[float]]) -> dict:
-    """The rule fixed before the run. `scores` is arm -> primary score per seed."""
+    """The decision rule fixed before the run. `scores` maps arm -> main score per seed."""
     assert set(scores) == set(ARMS), f"need both arms, got {sorted(scores)}"
     assert all(len(v) >= 2 for v in scores.values()), "a seed spread needs two seeds per arm"
     mean = {a: float(np.mean(v)) for a, v in scores.items()}
@@ -716,13 +724,13 @@ def _self_check() -> None:
     lays = {a: layout(a, frames, cells) for a in ARMS}
     s, b = lays["strict"], lays["block"]
 
-    # The arms feed one stream, score one target set, and differ in read-out only.
+    # Both arms use one stream and one set of targets, and differ only in where they read.
     assert len(s.src) == 64 + 15 * 65 == 1039 and len(b.src) == 15 * 65 == 975
     assert np.array_equal(b.src, s.src[:len(b.src)]), "block's stream is not strict's, cut"
     assert np.array_equal(s.tgt, b.tgt) and len(s.tgt) == 15 * 64
     assert np.array_equal(s.src[s.read + 1], s.tgt), "strict reads each target one position early"
     assert np.array_equal(b.src[b.read], b.tgt - cells), "block reads frame t+1 where frame t sits"
-    # Decision 2's order: every action immediately before the frame it produced.
+    # The chosen order: every action immediately before the frame it produced.
     for t in range(1, frames):
         k = int(np.flatnonzero(s.src == frames * cells + t)[0])
         assert np.array_equal(s.src[k + 1:k + 1 + cells], np.arange(t * cells, (t + 1) * cells))
@@ -730,7 +738,7 @@ def _self_check() -> None:
     print("layout: one stream, strict 1,039 / block 975 positions, 960 shared targets, "
           "action[t] before frame t")
 
-    # The model is the priced one, module for module.
+    # The model matches the sizing model, module for module.
     cfg = config.load(CONFIG)
     full = build_model(cfg, 1039)
     priced = dyn_size_probe.Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
@@ -741,7 +749,7 @@ def _self_check() -> None:
     print(f"model: {n_full:,} parameters, r49's rope_untied exactly")
     del full, priced
 
-    # RoPE: a score depends on the offset between two positions, not where they sit.
+    # RoPE: attention depends on the distance between two positions, not where they are.
     m = Dynamics(64, 2, 2, codes + 9, codes, 1039).double().eval()
     q, k = torch.randn(1, 1, 1, 32, dtype=torch.float64), torch.randn(1, 1, 1, 32, dtype=torch.float64)
     def dot(i: int, j: int) -> float:
@@ -768,7 +776,7 @@ def _self_check() -> None:
             if arm == "block":
                 sib = first + (1 if pos == first else 0)
                 assert moved[sib], f"block: position {pos} did not reach its block sibling {sib}"
-        # No target is visible where it is scored: altering the input slot that
+        # No target is visible where it is scored: changing the input slot that
         # holds a target leaves that target's logit bit-identical.
         slot = {int(p): i for i, p in enumerate(lay.src)}
         leaks = 0
@@ -780,9 +788,9 @@ def _self_check() -> None:
                 assert torch.equal(m(y, mask, r), m(x, mask, r)), f"{arm}: target {kk} leaks"
                 leaks += 1
         assert leaks >= 20, f"{arm}: only {leaks} targets tested"
-        # And the premise of scoring the generated frame: under teacher forcing
-        # strict sees the true earlier cells of its own target frame, block never.
-        # Frame 14, which both arms hold in their input.
+        # And the reason to score the generated frame: with teacher forcing,
+        # strict sees the true earlier cells of its own target frame, block never
+        # does. Uses frame 14, which both arms have in their input.
         fr = slice((frames - 3) * cells, (frames - 2) * cells)
         reads = torch.from_numpy(lay.read[fr])
         y = x.clone()
@@ -793,8 +801,8 @@ def _self_check() -> None:
     print("mask: strict causal per position, block causal per block and full inside it; "
           "no target visible where it is scored")
 
-    # Generation: never reads the target frame's truth, and strict's cut prefixes
-    # match a full-length greedy decode token for token.
+    # Generation never reads the target frame's truth, and strict's trimmed
+    # prefixes match a full-length greedy decode token for token.
     for arm, lay in lays.items():
         mask = lay.mask()
         x = torch.from_numpy(assemble(lay, tok, act, codes)[0])
@@ -816,14 +824,14 @@ def _self_check() -> None:
                 assert int(y[0, slots[i]]) == int(g[0, i]), f"strict: cut decode differs at cell {i}"
     print("generate: no target-frame truth in the input; strict's cut prefixes match a full decode")
 
-    # The rule.
+    # The decision rule.
     assert decide({"strict": [0.90, 0.91], "block": [0.93, 0.935]})["selected"] == "block"
     assert decide({"strict": [0.90, 0.91], "block": [0.905, 0.92]})["separated"] is False
     assert decide({"strict": [0.90, 0.91], "block": [0.905, 0.92]})["selected"] == "strict"
     assert decide({"strict": [0.95, 0.951], "block": [0.90, 0.901]})["selected"] == "strict"
     print("decide: block only when it clears the seed spread; otherwise strict stands")
 
-    # The phase assertion and its negative control, on whatever set is here.
+    # The action-timing check and its deliberate-error control, on whatever data is here.
     fcfg, shard_dir, fixture = data.self_check_config()
     shards = data.load_shards(shard_dir, fcfg.data_hash)
     hold = fcfg.sim["action_hold_steps"]

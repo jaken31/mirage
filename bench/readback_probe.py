@@ -10,9 +10,8 @@ m = mujoco.GLContext(640, 640)
 m.make_current()
 
 renderer = glGetString(GL_RENDERER).decode()
-# Reject-list, not an allow-list: naming the exact GPU fails on any other
-# machine that is perfectly fine. These two strings are the Windows
-# software fallbacks (CLAUDE.md, environment facts).
+# Reject known bad renderers rather than allow only this GPU, which would fail
+# on any other good machine. These two are the Windows software renderers.
 SOFTWARE_GL = ("GDI Generic", "Microsoft Basic Render Driver")
 assert not any(s in renderer for s in SOFTWARE_GL), f"software GL, not hardware: {renderer!r}"
 

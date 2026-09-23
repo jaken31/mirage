@@ -6,10 +6,10 @@ from PIL import Image
 
 XML = sys.argv[1] if len(sys.argv) > 1 else "scene/arm_blocks.xml"
 OUT = "bench/preview.png"
-SIZE = 64          # what the pipeline captures; keep the palette count honest
+SIZE = 64          # the size the pipeline captures, so the colour count is real
 SETTLE_STEPS = 100  # let the blocks come to rest before looking
-ZOOM = 8           # ponytail: 64px is unviewable, so the PNG is upscaled nearest-neighbour
-                   # while the colour count uses the original pixels
+ZOOM = 8           # ponytail: 64 px is too small to see, so the PNG is enlarged
+                   # (nearest-neighbour); the colour count uses the original pixels
 
 model = mujoco.MjModel.from_xml_path(XML)
 
@@ -30,7 +30,7 @@ for _ in range(SETTLE_STEPS):
 
 cam = mujoco.MjvCamera()
 if model.ncam:
-    # Preview what the dataset will see: the first named camera, not the free camera.
+    # Show what the dataset sees: the scene's first camera, not the free camera.
     cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
     cam.fixedcamid = 0
     which = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, 0)
@@ -40,9 +40,9 @@ else:
 
 opt = mujoco.MjvOption()
 mujoco.mjv_defaultOption(opt)
-# Defaults already have every decoration off (contact dots, joint axes, COM, actuators).
-# Do not zero the whole array: that clears mjVIS_STATIC and worldbody geoms stop drawing.
-# mjVIS_TEXTURE stays on deliberately, so a textured material shows up in the colour count.
+# The defaults already turn off every overlay (contact dots, joint axes, COM, actuators).
+# Do not zero the whole flag array: that also clears mjVIS_STATIC and the table disappears.
+# Textures stay on deliberately, so a textured material would show up in the colour count.
 
 scene = mujoco.MjvScene(model, maxgeom=1000)
 mujoco.mjv_updateScene(model, data, opt, None, cam, mujoco.mjtCatBit.mjCAT_ALL, scene)

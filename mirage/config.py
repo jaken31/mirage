@@ -17,8 +17,9 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
     "engine": frozenset(),
 }
 
-# Counts that must be a positive int. Zero or negative hashes perfectly well and
-# names a run that cannot exist, so the hash stops identifying a real artifact.
+# Counts that must be a positive int. A zero or negative value still hashes
+# fine, but names a run that cannot exist, so the hash no longer identifies
+# anything real.
 POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["episodes", "steps_per_episode", "height", "width", "frames_per_shard",
                       "action_hold_steps"]),
@@ -27,21 +28,19 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
     "dynamics": frozenset(["d_model", "n_layers"]),
 }
 
-# Shares of a frame used as verdict thresholds. Non-negative rather than
-# positive: zero is the *ground-truth* F-9 verdict - "no pixel off-palette" -
-# and stayed reachable on renders for the whole of Phase 0. It is only on
-# decoder output that it becomes unreachable, and a config schema that cannot
-# express the Phase 0 setting would make the two eras incomparable for no reason.
+# Fractions of a frame used as pass/fail thresholds. Zero is allowed: "no pixel
+# off the palette" is the right bar for real renders, which always meet it. Only
+# decoder output can never reach zero, and the schema should still be able to
+# express the render setting so the two stay comparable.
 #
-# `offpalette_frac_max` replaced item 6's `offpalette_px_max` *pixel count* on
-# 2026-08-29. A count is resolution-dependent, so it needed one calibrated value
-# per resolution and the 96x96 one was an unevidenced area rescale; the same
-# count over the frame's pixels needs a single number. A *quantile of distance*
-# was the first candidate and is refuted - see `validator._weighted_pctl`.
+# `offpalette_frac_max` is a fraction of the frame's pixels rather than a pixel
+# count, because a count needs a separately calibrated value per resolution. A
+# percentile of colour distance was tried first and failed; see
+# `validator._weighted_pctl`.
 #
-# Not a FRACTION_KEY despite being a fraction: those are bounded to [0, 1), and a
-# bar of exactly 1.0 - "no frame can ever fail this" - is a legitimate thing to
-# write while a threshold is being calibrated.
+# Not in FRACTION_KEYS even though it is a fraction: those must be below 1.0, and
+# exactly 1.0 ("no frame can ever fail this") is a reasonable value while a
+# threshold is still being calibrated.
 NON_NEGATIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "validator": frozenset(["offpalette_frac_max"]),
 }
@@ -53,18 +52,16 @@ FRACTION_KEYS: dict[str, frozenset[str]] = {
     "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min"]),
 }
 
-# Physical thresholds - metres, or metres per radian. Positive but unbounded
-# above, which is why they are not FRACTION_KEYS: a distance over 1 m is
-# legitimate the moment the scene grows, and validating one as a fraction would
-# reject it for no reason.
+# Physical thresholds, in metres or metres per radian. Positive with no upper
+# bound, which is why they are not FRACTION_KEYS: a distance over 1 m becomes
+# valid as soon as the scene grows.
 #
-# Positive rather than merely non-negative, including jacobian_deadband, where
-# zero would be defensible: a deadband of 0 and one of 1e-9 behave identically,
-# so "off" costs nothing to spell as a small positive number, and the bound stays
-# one rule instead of two.
+# Strictly positive, even jacobian_deadband, where zero might seem reasonable: a
+# deadband of 0 behaves the same as 1e-9, so "off" can be written as a tiny
+# positive number and the rule stays simple.
 POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_done_dist", "jacobian_deadband"]),
-    # An RGB Euclidean radius, so its ceiling is sqrt(3) * 255 = 441.7 and not 1.
+    # A distance in RGB space, so its maximum is sqrt(3) * 255 = 441.7, not 1.
     "validator": frozenset(["offpalette_tau"]),
 }
 
@@ -102,7 +99,7 @@ def _check_keys(label: str, expected: frozenset[str], actual: set[str]) -> None:
 
 
 def _check_values(raw: dict[str, Any]) -> None:
-    # `type(v) is not int` rather than isinstance: bool subclasses int, so
+    # `type(v) is not int` rather than isinstance: bool is a subclass of int, so
     # isinstance would accept `true` as the positive integer 1.
     for section, keys in POSITIVE_INT_KEYS.items():
         for key in sorted(keys):
@@ -132,9 +129,9 @@ def _check_values(raw: dict[str, Any]) -> None:
     if type(seed) is not int or seed < 0:
         raise ValueError(f"sim.seed must be a non-negative int, got {seed!r}")
 
-    # Without this, height // stride truncates silently: a stride of 6 on 64 px
-    # drops 4 px from every row and surfaces only as unexplained tokenizer
-    # reconstruction error, hours downstream.
+    # Without this, height // stride silently rounds down: a stride of 6 on 64 px
+    # drops 4 px from every row, and it only shows up hours later as unexplained
+    # tokenizer reconstruction error.
     stride = raw["tokenizer"]["stride"]
     for dim in ("height", "width"):
         size = raw["sim"][dim]
@@ -145,20 +142,17 @@ def _check_values(raw: dict[str, Any]) -> None:
 
 
 def scene_bytes(path: Path | str) -> bytes:
-    """The scene XML as it enters `data_hash`, with line endings normalised.
+    """The scene XML bytes that go into `data_hash`, with line endings normalised.
 
-    The XML's raw bytes are a term in `data_hash`, so a CRLF working tree hashes
-    the same scene differently from an LF one. `.gitattributes` sets `eol=lf`
-    precisely to stop that and **it did not**: measured 2026-08-28, this worktree
-    read `219ab0af` while a fresh clone of the same commit read `18a76531` -
-    byte-identical once CR is stripped. Git applies `eol` only at checkout and
-    never rewrites a working tree that already exists, so the rule silently
-    skipped every file that was on disk before the attribute landed.
+    The raw XML bytes are part of `data_hash`, so a checkout with Windows (CRLF)
+    line endings would hash the same scene differently from one with LF. The
+    `eol=lf` rule in `.gitattributes` was meant to prevent that and did not: one
+    working tree and a fresh clone of the same commit gave different hashes,
+    identical once CR was stripped. Git applies `eol` only at checkout and never
+    rewrites files already on disk.
 
-    Normalising here does not depend on any checkout honouring an attribute,
-    which is the difference between a convention and a guarantee. The
-    `.gitattributes` rule stays - it keeps the *diffs* sane - but nothing about
-    provenance rests on it now.
+    Normalising here works whatever the checkout did. The `.gitattributes` rule
+    stays because it keeps diffs clean, but the hash no longer depends on it.
     """
     return Path(path).read_bytes().replace(b"\r\n", b"\n")
 
@@ -181,7 +175,7 @@ def load(path: Path | str) -> Config:
 
     xml_bytes = scene_bytes(scene)
 
-    # data_hash term order (sim, data, xml) is part of the definition - do not reorder
+    # The order of the parts (sim, data, xml) is part of the hash's definition. Do not reorder.
     data_hash = hashlib.sha256(_canon(raw["sim"]) + _canon(raw["data"]) + xml_bytes).hexdigest()
     tokenizer_hash = hashlib.sha256(data_hash.encode() + _canon(raw["tokenizer"])).hexdigest()
     dynamics_hash = hashlib.sha256(tokenizer_hash.encode() + _canon(raw["dynamics"])).hexdigest()
@@ -195,9 +189,9 @@ def load(path: Path | str) -> Config:
         context_length=raw["data"]["ctx"],
     )
 
-    # Read-only views. frozen=True only stops rebinding the fields; without this
-    # a caller could mutate cfg.sim and hold a config whose data_hash no longer
-    # describes it, which is the exact failure the hash tree exists to prevent.
+    # Read-only views. frozen=True only stops reassigning the fields. Without this
+    # a caller could edit cfg.sim in place and end up with a config its data_hash no
+    # longer describes, which is exactly what the hashes exist to prevent.
     sections = {name: MappingProxyType(raw[name]) for name in EXPECTED_KEYS}
 
     return Config(
@@ -215,7 +209,7 @@ _DROP = object()
 
 
 def _self_check() -> None:
-    """Smallest check that fails if the hash chain or the validators break."""
+    """Smallest check that fails if the hash chain or the value checks break."""
     import copy
     import tempfile
 
@@ -235,11 +229,11 @@ def _self_check() -> None:
 
     assert cfg.shapes == Shapes((64, 64), (8, 8), 15), cfg.shapes
 
-    # Pins the term *order*, which every relative check below misses: reordering
-    # the terms in load() shifts all five hashes consistently, so they still
-    # compare correctly against each other. Restating the documented order here
-    # is the only thing that catches it. Not a pinned literal - the scene XML is
-    # expected to change during Phase 0, and that must not fail this check.
+    # Checks the *order* of the hash inputs, which the relative checks below
+    # cannot: reordering the inputs in load() shifts all five hashes together, so
+    # they still compare correctly with each other. Recomputing the documented order
+    # here is the only thing that catches it. Not a fixed hash value, because the
+    # scene XML is allowed to change and that must not fail this check.
     scene = Path(__file__).resolve().parent.parent / base_raw["sim"]["scene_xml"]
     xml_bytes = scene_bytes(scene)
     expect_data = hashlib.sha256(
@@ -252,9 +246,9 @@ def _self_check() -> None:
     assert cfg.tokenizer_hash == expect_tokenizer, "tokenizer_hash term order changed"
     assert cfg.validator_hash == expect_validator, "validator_hash term order changed"
 
-    # The CRLF fork, tested rather than trusted. A CRLF copy of the scene must
-    # hash as its LF twin; without the normalisation this is the assertion that
-    # would have caught the 219ab0af / 18a76531 split on the day it appeared.
+    # The line-ending split, tested rather than trusted: a CRLF copy of the scene
+    # must hash the same as the LF original. This would have caught the real split
+    # the day it appeared.
     crlf = Path(tempfile.mkdtemp()) / "crlf.xml"
     crlf.write_bytes(xml_bytes.replace(b"\n", b"\r\n"))
     assert crlf.read_bytes() != xml_bytes, "the CRLF copy is identical - no newlines?"
@@ -267,8 +261,8 @@ def _self_check() -> None:
     else:
         raise AssertionError("sim section is mutable")
 
-    # A tokenizer change must invalidate everything downstream of it and nothing
-    # upstream. This is what the term order in load() buys.
+    # A tokenizer change must change every hash downstream of it and none upstream.
+    # That is what the input order in load() guarantees.
     tok = variant("tokenizer", "codebook_size", 1024)
     assert tok.data_hash == cfg.data_hash
     assert tok.validator_hash == cfg.validator_hash
@@ -276,7 +270,7 @@ def _self_check() -> None:
     assert tok.dynamics_hash != cfg.dynamics_hash
     assert tok.engine_hash != cfg.engine_hash
 
-    # A sim change must invalidate the whole tree, both branches.
+    # A sim change must change every hash, on both branches.
     sim = variant("sim", "episodes", 2000)
     assert sim.data_hash != cfg.data_hash
     assert sim.validator_hash != cfg.validator_hash

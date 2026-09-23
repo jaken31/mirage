@@ -1,52 +1,52 @@
-"""Per-frame measurement vector, both modes, and F-9's threshold sweep.
+"""Per-frame measurements of what is in a frame, and the threshold sweep.
 
-A feature extractor, not a predicate. Per frame it emits a fixed vector, and
-"the validator failed" is a threshold expression over that vector. Keeping the
-verdict out of here is what makes Q-3's coherence horizon recomputable from
-stored vectors under any threshold set, without re-running a single rollout.
+This measures; it does not judge. For each frame it returns a fixed set of
+numbers, and "the validator failed" is a threshold rule applied to them later.
+Keeping the pass/fail rule out of here means stored measurements can be
+re-judged under any thresholds without re-running a single model rollout.
 
-Two modes, and F-9's acceptance test is the sweep of one against the other:
+Two modes:
 
-    measure_pixels_only(frame, palette, tau)         phases 2, 3, 4 - no truth
-    measure_with_truth(frame, meta, palette, tau)    phase 0 - shard meta there
+    measure_pixels_only(frame, palette, tau)         mode 2: pixels alone, for model output
+    measure_with_truth(frame, meta, palette, tau)    mode 1: plus the simulator's ground truth
 
-Two things measured here that the design doc did not anticipate, both of which
-would have made an exact-equality validator report faults on every perfect
-frame (see `_self_check`, and the verification log):
+`sweep` runs both on real frames to find thresholds that never flag a
+correct frame.
+
+Two measured surprises, each of which would make an exact-colour-match
+validator report faults on every perfect frame (see `_self_check` and the
+verification log):
 
   * `rgba * 255` does not land exactly. link0's `0.90 0.75 0.10` renders as
-    (229, 191, 25), not (230, 191, 26) - off by one on two channels, and not
-    by a rule worth modelling (0.65 rounds up to 166 while 0.90 rounds down to
-    229). This is the measured case for nearest-palette-by-argmin over exact
-    equality: with the palette rounded to bytes, exact equality counts **zero**
-    pixels for 4 of the 7 entries and calls block0, block2, link1 and table
-    missing on a flawless frame.
+    (229, 191, 25), not (230, 191, 26): off by one on two channels, with no
+    simple rounding rule (0.65 rounds up to 166, 0.90 rounds down to 229). So
+    pixels are matched to the *nearest* palette colour. With a byte-rounded
+    palette, exact matching finds **zero** pixels for 4 of the 7 colours and
+    calls block0, block2, link1 and the table missing on a perfect frame.
 
-    Which is also why `Palette.rgb` stays **unrounded** float 0..255. Against
-    229.5 rather than 230, the worst distance any rendered pixel sits from its
-    own palette entry is **0.75** over 8,000 frames - a rounded palette doubles
-    that for no gain.
-  * The frame is 14.1% black, and black is in no `rgba` attribute. It is the
-    void past the far table edge, where MuJoCo's clear colour shows through.
-    So the palette is the XML's six colours **plus** an implicit void entry;
-    without it `offpalette_px` reads ~578 px on a perfect frame and F-9 can
-    never be met.
+    It is also why `Palette.rgb` stays **unrounded** floats in 0..255.
+    Measured against 229.5 instead of 230, no rendered pixel is more than
+    **0.75** from its own palette colour over 8,000 frames; rounding the
+    palette would double that for nothing.
+  * About 14% of each frame is black, and no `rgba` attribute is black. It is
+    the empty space past the far table edge, where MuJoCo's background colour
+    shows. So the palette is the XML's six colours **plus** an implicit "void"
+    entry; without it about 578 pixels of a perfect frame read as off-palette.
 
 Run the check from the repo root:
 
     python -m mirage.validator
 
-It falls back to the committed 40-frame fixture when no generated set exists,
-so F-9's sweep is runnable in a fresh clone; see `mirage.data.self_check_config`.
-The two dataset-scale rates, F-6 and F-7, are skipped there - forty frames
-cannot carry a claim about 300,000.
+With no generated dataset it falls back to the committed 40-frame fixture, so
+the sweep runs in a fresh clone (see `mirage.data.self_check_config`). The two
+dataset-wide rates (contact and occlusion) are skipped there: forty frames
+say nothing about 300,000.
 """
 
-# stdlib ElementTree, not defusedxml. The only file this parses is
-# `scene/arm_blocks.xml`, a version-controlled repo artifact at the same trust
-# level as this source file - there is no XXE boundary to defend, and adding a
-# dependency to harden a parse of our own tracked input buys nothing. Revisit if
-# a scene ever arrives from outside the repo.
+# Standard-library ElementTree, not defusedxml. The only file parsed is
+# `scene/arm_blocks.xml`, which is in the repo and as trusted as this source
+# file, so there is no malicious-XML risk to guard against. Revisit if a scene
+# ever comes from outside the repo.
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,18 +54,17 @@ from typing import NamedTuple
 
 import numpy as np
 
-# The record layout's owner. `SCRIPTED_BIT` lives there because `meta_dtype`
-# does; importing it beats restating 0x80 in a second file. No cycle - data
-# imports config and nothing imports this module.
+# mirage.data owns the record layout, so `SCRIPTED_BIT` lives there; importing
+# it beats repeating 0x80 here. No import cycle: data imports only config.
 from mirage.data import SCRIPTED_BIT
 
-# The void: MuJoCo's framebuffer clear colour, visible past the far table edge
-# because the table is finite and there is no skybox. A real, stable,
-# renderer-produced colour that no `rgba` attribute can name, so it is added
-# here rather than by putting a black geom in the scene - a scene edit would
-# change `data_hash` and invalidate 300k frames to fix a reader's bookkeeping.
+# The void: MuJoCo's background colour, visible past the far table edge because
+# the table is finite and there is no sky. It is a real, stable colour that no
+# `rgba` attribute names, so it is added here instead of putting a black geom in
+# the scene. A scene edit would change `data_hash` and invalidate 300k frames
+# just to fix a reader's bookkeeping.
 #
-# This is the one documented exception to "the palette has exactly one home".
+# This is the one exception to "palette colours live only in the XML".
 VOID_NAME = "void"
 VOID_RGB = (0.0, 0.0, 0.0)
 
@@ -74,9 +73,9 @@ VOID_RGB = (0.0, 0.0, 0.0)
 class Palette:
     """The colours a correct frame may contain, and which ones are objects.
 
-    Roles come from geom-name prefixes rather than a hardcoded list, the same
-    convention `bench/step_probe.py` uses: F-6 and F-7 iterations are expected
-    to edit the scene, and a hardcoded list would silently drop a fourth block.
+    Roles come from geom-name prefixes, not a hardcoded list, the same rule
+    `bench/step_probe.py` uses: the scene is expected to be edited, and a
+    hardcoded list would silently miss a fourth block.
     """
 
     names: tuple[str, ...]
@@ -88,9 +87,9 @@ class Palette:
 def load_palette(scene_xml: Path | str) -> Palette:
     """Every named geom's `rgba`, plus the void, in name order.
 
-    The XML is the palette's only home for the colours it names. Nothing copies
-    this list into config JSON: two copies drift, and the symptom is a validator
-    that reports missing objects on frames that are fine.
+    The XML is the only place these colours are defined. Nothing copies them
+    into config JSON: two copies drift apart, and the symptom is a validator
+    reporting missing objects on frames that are fine.
     """
     root = ET.parse(scene_xml).getroot()
 
@@ -111,10 +110,10 @@ def load_palette(scene_xml: Path | str) -> Palette:
     names = tuple([VOID_NAME] + [n for n, _ in found])
     rgb = np.array([VOID_RGB] + [c for _, c in found], dtype=np.float64) * 255.0
 
-    # Distinct colours per object, checked rather than assumed. Two links
+    # Each object must have its own colour. Checked, not assumed: two links
     # sharing an rgba would merge into one palette entry, and `link_angle`
-    # would then report the PCA of both links treated as one blob - a number
-    # that looks plausible and tracks nothing.
+    # would measure both links as one shape, a plausible-looking number that
+    # tracks nothing.
     objects = [i for i, n in enumerate(names) if n.startswith(("link", "block"))]
     if len({tuple(rgb[i]) for i in objects}) != len(objects):
         raise ValueError(f"two object geoms share an rgba in {scene_xml}")
@@ -128,41 +127,40 @@ def load_palette(scene_xml: Path | str) -> Palette:
 
 
 class Measurement(NamedTuple):
-    """The mode-2 vector. Generous by design; the verdict expression is not."""
+    """The per-frame measurements. Deliberately broad; the pass/fail rule uses few of them."""
 
-    n_unique_colors: int  # raw frame, before any mapping. F-2, mode 1 only
-    offpalette_px: int  # pixels whose nearest palette entry is further than tau
-    max_palette_dist: float  # the worst such distance, so tau can be calibrated
-    offpalette_frac: float  # that count over the frame's pixels - THE verdict
+    n_unique_colors: int  # distinct colours in the raw frame, before mapping; checks flat rendering
+    offpalette_px: int  # pixels further than tau from every palette colour
+    max_palette_dist: float  # the largest pixel-to-palette distance, for calibrating tau
+    offpalette_frac: float  # offpalette_px as a fraction of the frame - THE pass/fail number
     px_count: np.ndarray  # (p,) int64
     bbox: np.ndarray  # (p, 4) int64 - x0, y0, x1, y1 inclusive; zeros if absent
-    compactness: np.ndarray  # (p,) float64 - ~1.0 intact, ~0.05 confetti; 0 if absent
-    link_extent: np.ndarray  # (n_links, 2) float64 - major, minor
+    compactness: np.ndarray  # (p,) float64 - ~1.0 solid shape, ~0.05 scattered pixels; 0 if absent
+    link_extent: np.ndarray  # (n_links, 2) float64 - long side, short side
     link_angle: np.ndarray  # (n_links,) float64 - radians in [0, pi)
 
 
 class Truth(NamedTuple):
-    """What mode 1 adds, straight out of the shard meta record."""
+    """What mode 1 adds: ground truth straight from the shard meta record."""
 
     visible_px: np.ndarray  # (b,) segmentation pixel count per block
     block_xy: np.ndarray  # (b, 2) world position
     qpos: np.ndarray  # (j,) joint angles
     contact_mask: int  # block bits only - the scripted flag is masked off
-    is_scripted: bool  # which half of the 50/50 policy mix this episode is
+    is_scripted: bool  # whether this episode is scripted or random
 
 
 def _label(frame: np.ndarray, palette: Palette):
-    """Nearest palette entry per pixel, plus the raw-frame colour count.
+    """Nearest palette colour per pixel, plus the raw frame's colour count.
 
-    Order is fixed and load-bearing: `n_unique_colors` comes off the **raw**
-    frame, before any mapping. After mapping it cannot exceed the palette size,
-    so computing it later silently stops serving F-2.
+    The order matters: `n_unique_colors` is counted on the **raw** frame, before
+    mapping. After mapping it can never exceed the palette size, so counting
+    later would silently make the flat-rendering check meaningless.
 
-    Nearest-palette by argmin over squared distances, never exact equality -
-    see the module docstring for the measured reason. Mapping happens on the
-    frame's *distinct* colours rather than its pixels: ground-truth frames hold
-    7 of them, so the argmin is 7x7 instead of 4096x7, and it stays correct on
-    a decoder output that emits thousands.
+    Nearest colour, never exact match (the module docstring gives the measured
+    reason). Matching runs on the frame's *distinct* colours, not its pixels:
+    real frames have 7, so it is 7x7 work instead of 4096x7, and it still works
+    on model output with thousands of colours.
     """
     flat = frame.reshape(-1, 3)
     keys = (flat[:, 0].astype(np.uint32) << 16) | (flat[:, 1].astype(np.uint32) << 8) | flat[:, 2]
@@ -181,116 +179,113 @@ def _label(frame: np.ndarray, palette: Palette):
 def _weighted_pctl(dist: np.ndarray, counts: np.ndarray, q: float) -> float:
     """The `q`-quantile of the per-pixel palette distance, q in (0, 1).
 
-    Nearest-rank, not interpolated: the smallest distance `d` such that at least
-    a `q` fraction of the frame's pixels sit at distance <= d. Interpolation
-    would invent a value no pixel has, and the whole point of this statistic is
-    that it names a real pixel.
+    Nearest-rank, not interpolated: the smallest distance `d` such that at
+    least a `q` fraction of pixels are at distance <= d. Interpolating would
+    invent a value no pixel has, and the point is that it names a real pixel.
 
-    Weighted because `_label` works on the frame's *distinct colours*, not its
-    pixels - `dist[i]` is one colour's distance and `counts[i]` is how many
-    pixels carry it. Expanding to per-pixel first would undo that optimisation
-    for no gain.
+    Weighted because `_label` works on *distinct colours*, not pixels:
+    `dist[i]` is one colour's distance and `counts[i]` is how many pixels have
+    it. Expanding to per-pixel first would undo that saving.
 
-    **Not on the measurement vector, and not the verdict.** This was tried as the
-    resolution-free replacement for the off-palette pixel count on 2026-08-29 and
-    **refuted by measurement** - `bench/palette_pctl_probe.py`. A quantile of
-    distance answers "how far off are the worst pixels", which is a tail
-    question; grey collapse and additive noise are *bulk* failures with a modest
-    tail, so the quantile cannot see them. Detection at zero false positives, on
-    the best quantile of the ladder against the fraction that replaced it:
-    blur 98.8% / 100%, blend 97.2% / 87.4%, **noise sigma 16 0.1% / 100%**. It
-    survives here because the probe reports the whole ladder, and because the
-    next person to have this idea should find the measurement rather than repeat
-    it.
+    **Not part of the measurements and not the pass/fail rule.** It was tried
+    as a resolution-independent replacement for the off-palette pixel count
+    and **failed when measured** (`bench/palette_pctl_probe.py`). A distance
+    quantile asks "how far off are the worst pixels", but failures like the
+    whole frame going grey or noisy change *most* pixels a little, which a
+    quantile misses. Detection with zero false alarms, best quantile vs the
+    fraction that replaced it: blur 98.8% / 100%, blend 97.2% / 87.4%,
+    **noise sigma 16 0.1% / 100%**. Kept because the probe uses it, and so the
+    next person with this idea finds the result instead of repeating it.
     """
     if not 0.0 < q < 1.0:
         raise ValueError(f"q must be in (0, 1), got {q}")
     order = np.argsort(dist, kind="stable")
     d, c = dist[order], counts[order]
     cum = np.cumsum(c)
-    # searchsorted on the cumulative count, so ties in `dist` cannot split a
-    # colour across the boundary - the rank lands on whichever colour holds it.
+    # Search the running pixel count, so a colour is never split across the
+    # rank boundary; the rank lands on whichever colour contains it.
     need = q * cum[-1]
     return float(d[min(int(np.searchsorted(cum, need, side="left")), len(d) - 1)])
 
 
 def _oriented(ys: np.ndarray, xs: np.ndarray) -> tuple[float, float, float]:
-    """Major extent, minor extent, and major-axis angle, from PCA on the mask.
+    """Long side, short side and long-axis angle of a shape, from its pixels.
 
-    Oriented rather than axis-aligned because both arm links revolve and a
-    free-joint block rotates when pushed. An axis-aligned box around a square
-    turned 45 degrees has 2x the area, so compactness reads ~0.5 and collides
-    with the partially-occluded case that F-7 makes common.
+    Uses the shape's own axes (principal component analysis, PCA), not an
+    upright box, because the arm links rotate and a pushed block turns. An
+    upright box around a square turned 45 degrees has twice the area, so
+    compactness reads about 0.5 and looks like a partly hidden block, which is
+    common.
 
-    Two things about the angle, both of which matter to Q-4:
+    Two things about the angle matter for the action-following check:
 
-      * A PCA eigenvector is defined up to sign, so the angle is only defined
-        modulo pi and is canonicalised into [0, pi). A link rotating through
-        that boundary shows a jump of nearly pi, so Q-4's `sign(theta_t+1 -
-        theta_t)` must unwrap the difference into (-pi/2, pi/2] before taking
-        its sign. Skip the unwrap and roughly one step in every half-turn
-        reports the opposite direction.
-      * y runs *downward* in image coordinates, so the angle increases
-        clockwise on screen. Q-4 compares against a commanded joint sign, so it
-        must calibrate that sign against the data rather than assume it.
+      * A PCA axis has no preferred direction, so the angle only means
+        something modulo pi and is reported in [0, pi). A link rotating past
+        that boundary jumps by nearly pi, so `sign(theta_t+1 - theta_t)` must
+        first wrap the difference into (-pi/2, pi/2]. Without that, about one
+        step per half-turn reports the wrong direction.
+      * Image y points *down*, so the angle increases clockwise on screen. The
+        check compares with a commanded joint sign, so it must calibrate that
+        sign from data rather than assume it.
     """
     pts = np.stack((xs, ys)).astype(np.float64)
     pts -= pts.mean(axis=1, keepdims=True)
     _, evecs = np.linalg.eigh(pts @ pts.T / pts.shape[1])  # eigh: ascending
     proj = evecs.T @ pts
 
-    # +1.0 because a single row of pixels spans one pixel, not zero. Without it
-    # a 1-px-wide blob divides by zero and compactness comes back inf.
+    # +1.0 because one row of pixels is one pixel wide, not zero. Without it a
+    # 1-px-wide shape divides by zero and compactness comes back infinite.
     extent = proj.max(axis=1) - proj.min(axis=1) + 1.0
     major = evecs[:, 1]
     return float(extent[1]), float(extent[0]), float(np.arctan2(major[1], major[0]) % np.pi)
 
 
 def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Measurement:
-    """The mode-2 vector for one `(h, w, 3)` uint8 frame.
+    """The pixel-only (mode 2) measurements for one `(h, w, 3)` uint8 frame.
 
-    `tau` is the palette-adherence radius in RGB Euclidean distance.
-    `offpalette_px` means "further than tau from every palette entry", which is
-    the only definition that survives nearest-palette mapping - afterwards every
-    pixel has a nearest entry, so "not in the palette" is otherwise vacuous.
-    Required, with no default, and it lives in `validator.offpalette_tau`. A
-    default here would be a second home for the number, and the one in code
-    would win silently while `validator_hash` - which is a hash over the
-    `validator` config section - kept reporting the config's value. Two Q-3
-    coherence-horizon rows taken at different taus would then carry the same
-    hash and claim to be comparable. `sweep` is what calibrates the value, and
-    build order item 6 calibrated the current **32.0 against decoder output**,
-    which is a different regime from the renders this function was written for:
+    `tau` is how far (straight-line RGB distance) a pixel may be from a palette
+    colour and still count as on-palette. `offpalette_px` counts pixels further
+    than tau from *every* palette colour. That is the only useful definition
+    once pixels are matched to their nearest colour, since every pixel has one.
 
-      * a rendered pixel sits at most 0.75 from its palette entry; a tokenizer
-        reconstruction's worst pixel sits ~155 away, and the median frame's
-        worst sits at 115. There is no tau that both keeps the ball tight and
-        reaches zero off-palette pixels on decoder output.
-      * so the verdict on reconstructions cannot be `> 0`. **100% of clean
-        reconstructions carry off-palette pixels** at every tau below 96, so a
-        `> 0` verdict fires on every frame and Q-3's coherence horizon reads
-        zero forever.
+    `tau` is required, with no default, and lives in `validator.offpalette_tau`.
+    A default here would be a second copy of the number: the code's copy would
+    silently win while `validator_hash` (a hash of the `validator` config
+    section) kept reflecting the config's value, so results taken at different
+    taus would carry the same hash and look comparable. `sweep` calibrates it,
+    and the current value was calibrated **on tokenizer output**, which behaves
+    very differently from renders:
 
-    The verdict statistic is `offpalette_frac` - that same count over the frame's
-    pixels - against `validator.offpalette_frac_max`. It replaced item 6's raw
-    `offpalette_px > N` on 2026-08-29 for one reason: a *count* scales with frame
-    area, so 64x64 and 96x96 each needed their own calibrated N and the obvious
-    area rescale had no evidence behind it. A fraction needs one number.
+      * a rendered pixel is at most 0.75 from its palette colour; the worst
+        pixel of a tokenizer reconstruction is about 155 away, and 115 on a
+        typical frame. No tau is both tight and gives zero off-palette pixels
+        on reconstructions.
+      * so on reconstructions the rule cannot be `> 0`. **Every clean
+        reconstruction has off-palette pixels** at any tau below 96, so a `> 0`
+        rule would fail every frame and the rollout quality measure would
+        always read zero.
 
-    **A quantile of the distance was tried first and refuted by measurement** -
-    `bench/palette_pctl_probe.py`. It is equally resolution-free, but it is a
-    *tail* statistic where the failures that matter are *bulk*: at the best
-    quantile on the ladder, gaussian noise at sigma 16 was caught 0.1% of the
-    time against the fraction's 100%. `_weighted_pctl` survives as the probe's
-    helper and is deliberately not on this vector.
-      * 32.0 is not a compromise between the two, it is the measured optimum:
-        at a threshold pinned to the clean maximum (zero false positives by
-        construction), detection of a blended-futures frame runs 23% at tau 8,
-        87% at tau 32, and the noise case collapses to 0.3% by tau 64.
+    The pass/fail number is `offpalette_frac` (the same count as a fraction of
+    the frame) against `validator.offpalette_frac_max`. A fraction replaced a
+    raw pixel count because a count grows with frame size, so 64x64 and 96x96
+    each needed their own calibrated limit. A fraction needs one number.
 
-    Ground truth is unaffected - at 0.75 it clears any of these taus - so
-    `_self_check` still asserts the strict `offpalette_px_max == 0` for renders.
-    The full table is in the verification log.
+    **A distance quantile was tried first and failed when measured**
+    (`bench/palette_pctl_probe.py`). It is also resolution-independent, but it
+    only looks at the worst pixels, while the failures that matter change most
+    pixels a little: gaussian noise at sigma 16 was caught 0.1% of the time
+    versus 100% for the fraction. `_weighted_pctl` remains as the probe's
+    helper and is deliberately not measured here.
+
+      * The calibrated tau is the measured best, not a compromise. With the
+        threshold set at the clean maximum (so zero false alarms by
+        construction), a blend of two possible futures is caught 23% of the
+        time at tau 8 and 87% at tau 32, and the noise case falls to 0.3% by
+        tau 64.
+
+    Real renders are unaffected: at 0.75 they pass any of these taus, so
+    `_self_check` still asserts `offpalette_px_max == 0` on them. The full
+    table is in the verification log.
     """
     if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
         raise ValueError(f"frame must be (h, w, 3) uint8, got {frame.shape} {frame.dtype}")
@@ -306,7 +301,7 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Meas
 
     for i in range(p):
         if px_count[i] == 0:
-            continue  # bbox, compactness and angle stay 0 - px_count is the gate
+            continue  # bbox, compactness and angle stay 0; check px_count first
         ys, xs = np.nonzero(labels == i)
         bbox[i] = (xs.min(), ys.min(), xs.max(), ys.max())
         major, minor, ang = _oriented(ys, xs)
@@ -331,11 +326,11 @@ def measure_pixels_only(frame: np.ndarray, palette: Palette, tau: float) -> Meas
 def measure_with_truth(
     frame: np.ndarray, meta: np.void, palette: Palette, tau: float
 ) -> tuple[Measurement, Truth]:
-    """Mode 1: the same vector, plus the ground truth the shard already carries.
+    """Mode 1: the same measurements, plus the ground truth the shard carries.
 
-    The vector is identical on purpose. Mode 1 is not a better measurement, it
-    is the same measurement next to the answer, which is what lets `sweep`
-    decide whether a mode-2 reading is a fault or a fact.
+    Identical measurements on purpose. Mode 1 is not a better measurement; it
+    is the same one next to the right answer, which lets `sweep` tell whether
+    a pixel-only reading is a real fault or a correct frame.
     """
     n_blocks = len(palette.blocks)
     field_names = meta.dtype.names
@@ -348,9 +343,9 @@ def measure_with_truth(
             [meta[f"block_xy{i}"] for i in range(2 * n_blocks)], dtype=np.float64
         ).reshape(n_blocks, 2),
         qpos=np.array([meta[f"qpos{i}"] for i in range(n_joints)], dtype=np.float64),
-        # Split, never read raw. The record packs the scripted-episode flag into
-        # this byte's high bit, so `contact_mask != 0` on it is true on every
-        # scripted frame - see `mirage.data.SCRIPTED_BIT`.
+        # Split, never read raw. The record keeps the scripted-episode flag in
+        # this byte's high bit, so `contact_mask != 0` on the raw byte is true
+        # on every scripted frame. See `mirage.data.SCRIPTED_BIT`.
         contact_mask=int(meta["contact_mask"]) & ~int(SCRIPTED_BIT),
         is_scripted=bool(int(meta["contact_mask"]) & int(SCRIPTED_BIT)),
     )
@@ -358,36 +353,34 @@ def measure_with_truth(
 
 
 class Sweep(NamedTuple):
-    """A threshold set with zero mode-2 false positives, and its margin."""
+    """Thresholds that never flag a correct frame, and how much margin they have."""
 
     frames: int
-    tau: float  # the offpalette radius the sweep was run at
-    max_palette_dist: float  # worst distance seen; tau must exceed this
-    offpalette_px_max: int  # worst offpalette count under that tau - reported
-    offpalette_frac_max: float  # worst per-frame off-palette share - THE bar
-    min_visible_px: int  # smallest px_count on a block truth says is visible
+    tau: float  # the off-palette distance the sweep used
+    max_palette_dist: float  # worst distance seen; tau must be above this
+    offpalette_px_max: int  # worst off-palette count at that tau, for reference
+    offpalette_frac_max: float  # worst per-frame off-palette fraction - THE limit
+    min_visible_px: int  # smallest px_count on a block the truth says is visible
     px_count_margin: int  # gap to the next-smallest, i.e. how tight min_px is
-    n_unique_max: int  # F-2's bar, mode 1 only
-    worst_compactness: float  # over visible blocks, for reference not a threshold
+    n_unique_max: int  # most distinct colours in a frame; flat-render check
+    worst_compactness: float  # over visible blocks, for reference, not a threshold
 
 
 def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -> Sweep:
-    """F-9's acceptance test: the mode-2 thresholds that fire on no clean frame.
+    """Finds pixel-only thresholds that flag no correct frame.
 
-    A false positive is mode 2 declaring a fault where mode 1 says the frame is
-    fine. So for each measurement the sweep takes the *extreme value over
-    ground-truth frames*, and any threshold beyond it has zero false positives
-    by construction.
+    A false alarm is the pixel-only mode reporting a fault on a frame the ground
+    truth says is fine. So for each measurement the sweep takes the *most
+    extreme value over real frames*; any threshold beyond that has zero false
+    alarms by construction.
 
-    Occlusion-aware, which is legitimate because mode 1 knows: a block at
-    `visible_px == 0` is genuinely invisible, so a mode-2 `px_count` of 0 there
-    is correct rather than a false positive, and including it would drive
-    `min_px` to zero and make the threshold useless. Mode 2 inherits the
-    calibrated number and needs no gate of its own.
+    It skips hidden blocks, which is fair because the ground truth knows: a
+    block with `visible_px == 0` really is invisible, so a `px_count` of 0 there
+    is correct, and counting it would push `min_px` to zero and make the
+    threshold useless. The pixel-only mode just uses the calibrated number.
 
-    `px_count_margin` is the number to read before trusting the result. A margin
-    of 1 px means the threshold sits on a cliff and the next unseen frame will
-    cross it.
+    Read `px_count_margin` before trusting the result. A margin of 1 px means
+    the threshold is on a knife edge and the next new frame will cross it.
     """
     if len(frames) != len(metas):
         raise ValueError(f"{len(frames)} frames against {len(metas)} meta records")
@@ -429,7 +422,7 @@ def sweep(frames: np.ndarray, metas: np.ndarray, palette: Palette, tau: float) -
 
 
 def _self_check(config_path: Path | str | None = None) -> None:
-    """F-2 over the whole set, F-6/F-7 against config, and F-9's sweep."""
+    """Flat-render colour count over every frame, contact and occlusion rates, and the sweep."""
     from mirage import data
 
     root = Path(__file__).resolve().parent.parent
@@ -444,17 +437,18 @@ def _self_check(config_path: Path | str | None = None) -> None:
     index = data.episode_index(shards)
     sampler = data.WindowSampler(shards, index, cfg.data["ctx"])
 
-    # The exact-equality trap, asserted rather than described. If this ever
-    # starts failing, `rgba * 255` has become exact and the note in the module
-    # docstring is stale - but nearest-palette is still the right default.
+    # The exact-match trap, asserted rather than described. If this ever fails,
+    # `rgba * 255` has become exact and the module docstring's note is out of
+    # date, though nearest-colour matching is still the right default.
     frame0 = sampler[0].frames[0]
     exact = (frame0.reshape(-1, 3)[:, None, :] == palette.rgb.astype(np.uint8)[None, :, :]).all(2)
     missed = [palette.names[i] for i in range(len(palette.names)) if not exact[:, i].any()]
     assert missed, "rgba * 255 now lands exactly - the docstring's measurement is stale"
     print(f"exact RGB equality would call {len(missed)} objects missing on a perfect frame: {missed}")
 
-    # F-2 over every frame, not a sample. n_unique is the cheap field, so the
-    # whole 300k set is affordable and F-2 is a claim about the renderer.
+    # Flat rendering (at most 24 distinct colours per frame), over every frame,
+    # not a sample. The colour count is cheap, so all 300k frames are
+    # affordable, and the claim is about the renderer.
     worst, worst_at = 0, (-1, -1)
     for shard in shards:
         flat = np.asarray(shard.pixels).reshape(shard.frames, -1, 3)
@@ -468,10 +462,9 @@ def _self_check(config_path: Path | str | None = None) -> None:
     print(f"F-2: max {worst} unique colours over all {sum(s.frames for s in shards):,} frames "
           f"(worst at shard {worst_at[0]} frame {worst_at[1]}), ceiling 24")
 
-    # F-9's sweep, on a sample spread across every shard. The full vector costs
-    # a per-colour PCA, so this is thousands of frames rather than 300k - and a
-    # threshold that holds on 8,000 frames drawn from 500 episodes is what F-9
-    # asks for.
+    # The sweep, on a sample spread across every shard. Full measurements need a
+    # PCA per colour, so this is thousands of frames rather than 300k; a
+    # threshold that holds on 8,000 frames from 500 episodes is what is required.
     rng = np.random.default_rng(0)
     picks = rng.integers(0, len(sampler), size=min(500, len(sampler)))
     frames = np.concatenate([sampler[int(i)].frames for i in picks])
@@ -494,14 +487,12 @@ def _self_check(config_path: Path | str | None = None) -> None:
     )
     assert result.min_visible_px > 0, "a block truth calls visible reads 0 px - the mapping is wrong"
 
-    # What the sweep actually licenses, stated rather than implied. F-7 makes
-    # partial occlusion common, so a visible block's px_count reaches all the
-    # way down to 1 - a "block missing if px_count < min_px" rule therefore has
-    # no headroom at all and cannot be part of the verdict expression on its
-    # own. `offpalette_px` does have headroom, which is what the architecture
-    # doc predicted when it said the verdict is minimal and built from
-    # uncorrelated fields. Recorded here so a future session does not read a
-    # green check as "any threshold set works".
+    # What the sweep does and does not allow, stated outright. Partial
+    # occlusion is common, so a visible block's px_count goes all the way down
+    # to 1. A "block missing if px_count < min_px" rule therefore has no margin
+    # and cannot be a pass/fail rule on its own. `offpalette_px` does have
+    # margin, as the design predicted. Printed so a passing check is not read as
+    # "any thresholds work".
     if result.px_count_margin == 0:
         print(f"  -> px_count is NOT usable as a per-frame threshold: a visible block reaches "
               f"{result.min_visible_px} px, margin {result.px_count_margin}. Occlusion, not a bug")
@@ -512,10 +503,10 @@ def _self_check(config_path: Path | str | None = None) -> None:
           f"{cfg.validator['offpalette_frac_max']:.5%}, which is gate row 6 and "
           f"not this check - see fsq_eval.reconstruction_sweep")
 
-    # The claim underneath mode 2: a pixel-only count tracks the segmentation
-    # count. Under offsamples=0 there is no anti-aliasing, so these should agree
-    # closely; a large gap means the palette or the id-colour decode is wrong,
-    # and no threshold sweep would reveal it.
+    # The assumption behind pixel-only mode: counting a block's colour matches
+    # the simulator's segmentation count. With anti-aliasing off (offsamples=0)
+    # they should agree closely. A large gap means the palette or the id-colour
+    # decode is wrong, which no threshold sweep would reveal.
     diffs = []
     for frame, meta in zip(frames[:2000], metas[:2000]):
         m, truth = measure_with_truth(frame, meta, palette, tau)
@@ -527,23 +518,22 @@ def _self_check(config_path: Path | str | None = None) -> None:
           f"exact on {(diffs == 0).mean():.1%}")
     assert np.abs(diffs).max() <= 4, f"pixel-only count is off truth by {np.abs(diffs).max()} px"
 
-    # F-6 and F-7, over the full set, against the thresholds config carries.
-    # Skipped on the fixture: these are claims about the *dataset*, not about
-    # this module, and 40 frames from 2 episodes would either fail them or pass
-    # them by luck. Neither reading is worth anything.
+    # Contact and occlusion rates over the whole dataset, against the config's
+    # minimums. Skipped on the fixture: these are claims about the *dataset*,
+    # not this module, and 40 frames from 2 episodes would pass or fail by luck.
     if fixture:
         print("F-6 and F-7: skipped - dataset-scale rates, and the fixture is 40 frames")
     else:
         contact = np.concatenate([data.contact_bits(s.meta) for s in shards])
         f6 = float((contact != 0).mean())
 
-        # F-7 counts a frame only when a block is hidden *and comes back*. A
-        # block that reads 0 px for the rest of the episode is gone, not
-        # occluded, and counting it inflated this from 5.35% to 19.83% - 73% of
-        # the old number - while making Q-6 score object permanence on events
-        # that can never end. Per episode, never across the concatenation: a
-        # block hidden at one episode's end would otherwise be "seen again" at
-        # the next episode's start, which is a reset.
+        # A frame counts only when a block is hidden *and comes back*. A block
+        # that reads 0 px for the rest of the episode is gone, not hidden.
+        # Counting those once inflated this rate from 5.35% to 19.83%, and would
+        # make the object-permanence test score events that can never end.
+        # Computed per episode, never across episodes: a block hidden at one
+        # episode's end would otherwise be "seen again" at the next one's start,
+        # which is a reset.
         occluded = 0
         for ep in index:
             block = shards[ep.shard].meta[ep.start:ep.start + ep.length]
@@ -559,7 +549,7 @@ def _self_check(config_path: Path | str | None = None) -> None:
               f"F-7 recoverable occlusion {f7:.2%} (floor {floor:.0%}) - "
               f"blocks that never return are excluded, see bench/occlusion_probe.py")
 
-    # Mode 2 must not need meta. Called with a frame alone, on purpose.
+    # Pixel-only mode must not need meta. Called with a frame alone, on purpose.
     only = measure_pixels_only(frames[0], palette, tau)
     assert only.px_count.sum() == frames[0].shape[0] * frames[0].shape[1]
     assert np.all((only.link_angle >= 0) & (only.link_angle < np.pi))

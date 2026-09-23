@@ -1,31 +1,31 @@
-"""Are a run's tokens stable in time, and do they flip for no local reason?
+"""Are a run's tokens stable over time, and do they change for no local reason?
 
-Two numbers per run, both over held-out episodes and both read off artifacts
-already on disk - the token cache and the shard pixels. No GPU, no training.
+Two numbers per run, over held-out episodes, read from files already on disk
+(the token cache and the shard pixels). No GPU, no training.
 
-**persistence** - the share of cell-transitions where a token equals the token
-at the same cell in the previous frame. This is the baseline F-11's "3x the
-marginal top-1" bar has to beat and does not: a zero-parameter copy of the
-previous frame scores far above it.
+**persistence** - the share of frame-to-frame steps where a cell's token is the
+same as in the previous frame. This is the "just copy the last frame" baseline
+the dynamics model must beat. The old accuracy target (3x the rate of always
+guessing the most common token) is far below it: copying the previous frame,
+with zero parameters, already beats that target easily.
 
-**spurious flip rate** - P(a token flips | not one pixel of its own 15x15
-convolutional receptive field changed). Under `GroupNorm` the encoder's
-statistics span the whole feature map, so a cell's output depends on pixels it
-never convolved with, and this reads well above zero. Rung `r1c` replaces that
-normalisation with a per-pixel one; if the mechanism is what this measures, r1c
-must read ~0 here. That is the falsifier.
+**spurious flip rate** - the chance a token changes when not one pixel in its
+own 15x15 input window changed. With `GroupNorm`, the encoder's statistics
+cover the whole image, so a cell's output depends on pixels outside its window,
+and this reads well above zero. Rung `r1c` switches to per-pixel normalisation;
+if that is the cause, r1c must read about 0 here. That is the test.
 
-The 15x15 window: three stride-2, pad-1, 3x3 convs compose to input rows
-[8*i - 7, 8*i + 7] for latent row i, clipped at the frame edge.
+The 15x15 window: three stride-2, pad-1, 3x3 convs map latent row i to input
+rows [8*i - 7, 8*i + 7], clipped at the frame edge.
 
-**The population is an option, and the default is r46's.** F-11 scores the
-baseline like-for-like on the population the model is scored on, so a model
-scored elsewhere needs the baseline re-measured here, not r46's figure quoted.
-`--episodes` takes the first N val episodes in index order, or `all`;
-`--first-target` drops transitions whose *target* frame sits before that step of
-its episode - 15 keeps only frames with a full `ctx` 15 of history before them.
-The defaults, 12 and 1, are the population r46 measured, and must keep
-reproducing its figures exactly.
+**Which frames are scored is an option.** The baseline must be measured on the
+same frames the model is scored on, so a model scored on other frames needs
+the baseline re-measured here, not an old figure quoted. `--episodes` takes the
+first N validation episodes in order, or `all`. `--first-target` skips steps
+whose *target* frame comes before that step of its episode; 15 keeps only
+frames with a full 15 frames of history. The defaults, 12 and 1, match the
+original measurement recorded in runs.jsonl and must keep reproducing it
+exactly.
 
     python bench/token_stability_probe.py 20260829-005439-r1 [more run ids...]
     python bench/token_stability_probe.py 20260829-005439-r1 --episodes all --first-target 15
@@ -40,15 +40,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mirage import config, data  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-EPISODES = 12  # what the finding this reproduces used
-RF = 15        # the true conv field. bench/patch_probe.py's RF = 22 is wrong.
+EPISODES = 12  # what the original measurement used
+RF = 15        # the real conv window size. bench/patch_probe.py's RF = 22 is wrong.
 
 
 def _field_changed(px: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """(T, h, w, 3) uint8 -> (T-1, gh, gw) bool: did this cell's 15x15 field move?
+    """(T, h, w, 3) uint8 -> (T-1, gh, gw) bool: did any pixel in this cell's 15x15 window change?
 
-    Integral image over the changed-pixel mask, so the 64 windows per frame cost
-    one cumsum rather than 64 slices.
+    Uses a summed-area table over the changed-pixel mask, so the 64 windows per
+    frame cost one cumulative sum instead of 64 slices.
     """
     changed = (px[1:] != px[:-1]).any(-1).astype(np.int32)
     s = np.zeros((len(changed), px.shape[1] + 1, px.shape[2] + 1), np.int32)
@@ -66,8 +66,8 @@ def _field_changed(px: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
 
 def probe(run_id: str, cfg: config.Config, episodes: int | None = EPISODES,
           first_target: int = 1) -> dict:
-    """`episodes=None` is every val episode. `first_target` is the first frame
-    of an episode scored as a transition's target, so 1 is every transition."""
+    """`episodes=None` means every validation episode. `first_target` is the
+    first frame of an episode scored as a step's target, so 1 scores every step."""
     if first_target < 1:
         raise ValueError(f"first_target is {first_target}; frame 0 has no previous frame")
     shards = data.load_shards(ROOT / cfg.data["shard_dir"], cfg.data_hash)
@@ -85,9 +85,9 @@ def probe(run_id: str, cfg: config.Config, episodes: int | None = EPISODES,
         toks = np.load(tok_dir / f"shard_{sh.index:03d}.npy")
         assert len(toks) == sh.frames, f"shard {sh.index}: token rows != frames"
         t = toks[ep.start:ep.start + ep.length].astype(np.int32)
-        # ::-1 to match write_token_cache: the blob holds rows bottom-up.
+        # ::-1 to match write_token_cache: frames are stored bottom-up.
         px = np.ascontiguousarray(sh.pixels[ep.start:ep.start + ep.length, ::-1])
-        # Transition k has frame k + 1 as its target.
+        # Step k has frame k + 1 as its target.
         f = (t[1:] != t[:-1])[first_target - 1:]
         quiet = ~_field_changed(px, grid)[first_target - 1:]
         flips += int(f.sum())
