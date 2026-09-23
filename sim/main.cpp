@@ -397,7 +397,8 @@ int main(int argc, const char** argv) {
         const int base_episodes = cfg.episodes / shards;
         const int extra_episodes = cfg.episodes % shards;
 
-        const ShardProvenance provenance{args.data_hash, args.git_sha, cfg.seed};
+        const ShardProvenance provenance{args.data_hash, args.git_sha, cfg.seed,
+                                         context.renderer(), context.version()};
 
         printf("Generating %d episodes x %d steps = %d frames over %d shards "
                "into '%s'\n",
