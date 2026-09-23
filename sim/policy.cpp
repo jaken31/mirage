@@ -163,20 +163,21 @@ void policy_self_check(const mjModel* model) {
         action_to_control(model, action, ctrl.data());
         for (int i = 0; i < nu; ++i) {
             const ControlRange range = ActuatorRange(model, i);
+            const std::size_t k = static_cast<std::size_t>(i);
             // Exact comparison, no tolerance: both sides come from the same
             // computation on the same doubles, so any difference is a bug, not
             // rounding. It also catches a stray fourth value that a tolerance
             // would silently round to one of the three.
-            if (ctrl[i] == range.low) {
-                signs[i] = -1;
-            } else if (ctrl[i] == range.high) {
-                signs[i] = +1;
-            } else if (ctrl[i] == NeutralControl(range)) {
-                signs[i] = 0;
+            if (ctrl[k] == range.low) {
+                signs[k] = -1;
+            } else if (ctrl[k] == range.high) {
+                signs[k] = +1;
+            } else if (ctrl[k] == NeutralControl(range)) {
+                signs[k] = 0;
             } else {
                 mju_error("action %d wrote ctrl[%d] = %g, which is none of the three "
                           "commandable values [%g, %g, %g]",
-                          action, i, ctrl[i],
+                          action, i, ctrl[k],
                           range.low, NeutralControl(range), range.high);
             }
         }
