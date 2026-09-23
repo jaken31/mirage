@@ -18,8 +18,19 @@ must read ~0 here. That is the falsifier.
 The 15x15 window: three stride-2, pad-1, 3x3 convs compose to input rows
 [8*i - 7, 8*i + 7] for latent row i, clipped at the frame edge.
 
+**The population is an option, and the default is r46's.** F-11 scores the
+baseline like-for-like on the population the model is scored on, so a model
+scored elsewhere needs the baseline re-measured here, not r46's figure quoted.
+`--episodes` takes the first N val episodes in index order, or `all`;
+`--first-target` drops transitions whose *target* frame sits before that step of
+its episode - 15 keeps only frames with a full `ctx` 15 of history before them.
+The defaults, 12 and 1, are the population r46 measured, and must keep
+reproducing its figures exactly.
+
     python bench/token_stability_probe.py 20260829-005439-r1 [more run ids...]
+    python bench/token_stability_probe.py 20260829-005439-r1 --episodes all --first-target 15
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -53,12 +64,18 @@ def _field_changed(px: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
     return tot > 0
 
 
-def probe(run_id: str, cfg: config.Config, episodes: int = EPISODES) -> dict:
+def probe(run_id: str, cfg: config.Config, episodes: int | None = EPISODES,
+          first_target: int = 1) -> dict:
+    """`episodes=None` is every val episode. `first_target` is the first frame
+    of an episode scored as a transition's target, so 1 is every transition."""
+    if first_target < 1:
+        raise ValueError(f"first_target is {first_target}; frame 0 has no previous frame")
     shards = data.load_shards(ROOT / cfg.data["shard_dir"], cfg.data_hash)
     index = data.episode_index(shards)
-    val = [e for e in index
-           if data.is_val(e.episode_id, cfg.data["val_fraction"])][:episodes]
-    assert len(val) == episodes, f"only {len(val)} val episodes available"
+    val = data.split_episodes(index, "val", cfg.data["val_fraction"])
+    if episodes is not None:
+        assert len(val) >= episodes, f"only {len(val)} val episodes available"
+        val = val[:episodes]
     grid = tuple(cfg.shapes.token_grid)
     tok_dir = ROOT / "runs" / run_id / "tokens"
 
@@ -70,8 +87,9 @@ def probe(run_id: str, cfg: config.Config, episodes: int = EPISODES) -> dict:
         t = toks[ep.start:ep.start + ep.length].astype(np.int32)
         # ::-1 to match write_token_cache: the blob holds rows bottom-up.
         px = np.ascontiguousarray(sh.pixels[ep.start:ep.start + ep.length, ::-1])
-        f = t[1:] != t[:-1]
-        quiet = ~_field_changed(px, grid)
+        # Transition k has frame k + 1 as its target.
+        f = (t[1:] != t[:-1])[first_target - 1:]
+        quiet = ~_field_changed(px, grid)[first_target - 1:]
         flips += int(f.sum())
         trans += f.size
         still += int(quiet.sum())
@@ -79,6 +97,8 @@ def probe(run_id: str, cfg: config.Config, episodes: int = EPISODES) -> dict:
 
     return {
         "run_id": run_id,
+        "episodes": len(val),
+        "first_target": first_target,
         "transitions": trans,
         "persistence": 1 - flips / trans,
         "p_flip_given_quiet_field": spurious / still,
@@ -88,14 +108,21 @@ def probe(run_id: str, cfg: config.Config, episodes: int = EPISODES) -> dict:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("runs", nargs="+", metavar="RUN_ID")
+    ap.add_argument("--episodes", default=str(EPISODES),
+                    help=f"first N val episodes, or 'all' (default {EPISODES}, r46's)")
+    ap.add_argument("--first-target", type=int, default=1,
+                    help="first frame of an episode scored as a target (default 1, r46's)")
+    a = ap.parse_args()
+    episodes = None if a.episodes == "all" else int(a.episodes)
     cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
-    runs = sys.argv[1:]
-    if not runs:
-        raise SystemExit(__doc__)
+    print(f"population: {a.episodes} val episodes, targets from frame {a.first_target}")
     print(f"{'run':<24} {'transitions':>12} {'persistence':>12} "
           f"{'P(flip|quiet)':>14} {'spurious share':>15}")
-    for r in runs:
-        d = probe(r, cfg)
+    for r in a.runs:
+        d = probe(r, cfg, episodes, a.first_target)
         print(f"{d['run_id']:<24} {d['transitions']:>12,} "
               f"{d['persistence']:>11.2%} {d['p_flip_given_quiet_field']:>14.2%} "
               f"{d['spurious_share_of_flips']:>15.2%}")
