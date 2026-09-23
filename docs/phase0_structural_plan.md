@@ -1,17 +1,18 @@
 # Phase 0: Structural Plan
 
 Guidance for implementing the eight Phase 0 files - `scene/`, `sim/`, and
-`mirage/` - one at a time. Names the calls and the order; does not write the code.
-Design rationale is in `world_model_architecture.md` - not repeated here.
+`mirage/` - one at a time. It names the calls and the order, and does not write
+the code. The design reasons are in `world_model_architecture.md` and are not
+repeated here.
 
 Numbering below matches `AGENDA.md` exactly. If the two ever disagree, AGENDA is
 the order of record and this file is the stale one.
 
-**Phase 0 closed 2026-08-27 - gate met on all three conditions.** This file is
-kept as the record of how it was built and as the template for later phases.
-Statuses below are final, not pending. The gotchas table was updated at phase
-close with what running the code actually turned up; per `phase0_debt_checklist.md`
-D8, that update is the practice, not a one-off.
+**Phase 0 closed 2026-08-27, with the gate met on all three conditions.** This
+file is kept as the record of how it was built and as the template for later
+phases. Statuses below are final, not pending. The gotchas table was updated at
+phase close with what running the code actually turned up. Per
+`phase0_debt_checklist.md` D8, that update is standard practice, not a one-off.
 
 **Vocabulary, once.** A *GL context* is the handle that lets you issue drawing
 commands; nothing draws without one. *Offscreen* means drawing into a memory
@@ -70,11 +71,12 @@ the build failing:
 | `/Zi` plus linker `/DEBUG` | without debug info MSVC emits `C5072`, which `/WX` makes fatal, and an ASan report without symbols is useless anyway |
 | post-build copy of `clang_rt.asan_dynamic-x86_64.dll` | MSVC links the ASan runtime dynamically whatever the CRT setting, and the DLL is on `PATH` only inside a Developer prompt. Derived from `CMAKE_CXX_COMPILER`'s directory, so no MSVC version is hardcoded |
 
-**Settled 2026-08-26: E-3 is ASan-clean only.** MSVC has no UBSan and the clang-cl
-configuration was rejected. The one UBSan class that matters here - signed overflow
-on shard byte offsets - is handled by 64-bit offsets plus a bounds assert at the
-write site, which lands in `shard_writer` (item 6). Reasoning and reversal trigger
-in `world_model_architecture.md`, "Sanitizer cost".
+**Settled 2026-08-26: the sanitizer requirement is ASan-clean only.** MSVC
+has no UBSan, and the clang-cl configuration was rejected. The one UBSan class that
+matters here - signed overflow on shard byte offsets - is handled by 64-bit
+offsets plus a bounds assert at the write site, which lands in `shard_writer`
+(item 6). The reasoning and the trigger to reverse it are in
+`world_model_architecture.md`, "Sanitizer cost".
 
 `main.cpp` grows alongside items 3 through 6 and is finished with item 6.
 
@@ -93,8 +95,9 @@ Four things it must carry, all measured rather than stylistic:
    ambient-only light measured 6 colours on the first working scene.
 3. `offwidth`/`offheight` in `<visual><global>`, or the offscreen buffer stays at
    its 640x480 default.
-4. Two arm links in different colours, three blocks in three more. Current count
-   is ~7 including background and table, against F-2's ceiling of 24.
+4. Two arm links in different colours, three blocks in three more. The current
+   count is ~7 including background and table, against the flat-render ceiling of
+   24 colours.
 
 The `rgba` attributes are the palette's only home. The validator reads them with
 `xml.etree.ElementTree`; nothing duplicates the list into config JSON.
@@ -111,8 +114,8 @@ with the hash tree rooted at `data_hash`, and `Shapes` for the tensor dimensions
 every later phase derives from. Roughly 20 lines for the hash tree.
 
 `data_hash` covers `canon(sim)`, `canon(data)`, and the scene XML's bytes. The
-XML is inside it or E-4 has a hole: a bench number from a different scene is not
-comparable. `validator_hash` branches off `data_hash` rather than off
+XML must be inside it, or bench reproducibility has a hole: a bench number
+from a different scene is not comparable. `validator_hash` branches off `data_hash` rather than off
 `dynamics_hash`, so re-tuning a threshold does not invalidate a checkpoint whose
 rollouts never changed.
 
@@ -125,8 +128,8 @@ touching the XML changes all of them.
 
 ### 3. `sim/gl_context.{h,cpp}`
 
-Give it real time. It is the file most likely to cost you a day, though the day-1
-readback probe already cleared GLFW, so this is a port of what
+Give it real time. It is the file most likely to cost you a day. The day-1
+readback probe already cleared GLFW, though, so this is a port of what
 `bench/readback_probe.py` does rather than an open question. No pbuffer.
 
 Order of operations:
@@ -186,12 +189,12 @@ reads zero, and with it in the open the count is roughly its pixel area.
 ### 6. `sim/shard_writer.{h,cpp}`, and `main.cpp` with it
 
 Open the pixel blob and the meta blob, append per frame, close both, *then* write
-the sidecar JSON. The write order is the whole correctness argument - the sidecar
+the sidecar JSON. The write order is the whole correctness argument: the sidecar
 existing is what marks the shard complete.
 
-Meta record is fixed-width, 46 bytes, fields in the order the architecture doc
-lists. Write it with explicit widths, not by dumping a struct - padding differs
-between compilers and the reader on the Python side assumes exact offsets.
+The meta record is fixed-width, 46 bytes, fields in the order the architecture
+doc lists. Write it with explicit widths, not by dumping a struct: padding differs
+between compilers, and the Python reader assumes exact offsets.
 
 Doc page: none. `nlohmann/json`, single header, for the sidecar.
 
@@ -210,9 +213,9 @@ reports nothing over a short run.
 
 ### 7. `mirage/data.py`
 
-`np.memmap` over the pixel blob, reshaped to `(-1, H, W, 3)` - no stride
-arithmetic, which is the entire reason pixels and meta are separate files. Meta
-is read as a structured dtype whose field widths match the C++ writer's explicit
+`np.memmap` over the pixel blob, reshaped to `(-1, H, W, 3)`. No stride
+arithmetic - that is the whole reason pixels and meta are separate files. Meta is
+read as a structured dtype whose field widths match the C++ writer's explicit
 widths exactly.
 
 Episode-aware means a sampled window never straddles an `episode_id` boundary;
@@ -222,36 +225,37 @@ rather than assumed.
 Doc page: **NumPy → `np.memmap`, structured dtypes**.
 
 **Working when:** the byte-compare against a known C++-written buffer passes
-(F-8), and a few thousand sampled windows all report a single `episode_id`.
+(the round-trip requirement), and a few thousand sampled windows all report a
+single `episode_id`.
 
 ### 8. `mirage/validator.py`
 
-Roughly 50 lines with no dependencies beyond NumPy, and it emits measurements
-rather than verdicts - the verdict is a threshold expression in config.
+Roughly 50 lines with no dependencies beyond NumPy. It emits measurements, not
+verdicts; the verdict is a threshold expression in config.
 
 Per-frame vector: `px_count`, `bbox`, `compactness` per colour; `link_extent` and
 `link_angle` per arm link; `offpalette_px` and `n_unique_colors` per frame.
 
-Two orderings are load-bearing:
+Two orderings matter:
 
 - **Compute `n_unique_colors` on the raw frame first**, then do
-  nearest-palette assignment, then everything else. Post-mapping, the count
-  cannot exceed the palette size, so computing it later silently stops serving
-  F-2.
+  nearest-palette assignment, then everything else. After mapping, the count
+  cannot exceed the palette size, so computing it later silently stops it
+  checking the 24-colour ceiling.
 - **Nearest-palette by `np.argmin` over squared distances, not exact RGB
   equality.** Exact equality on a slightly off shade counts zero pixels and
-  reports "block missing", conflating palette drift with a lost object.
+  reports "block missing", mixing up palette drift with a lost object.
 
 `compactness` uses an oriented bbox from PCA on the mask coordinates, not an
-axis-aligned one - both arm links revolve and a pushed block rotates, and an
-axis-aligned box around a 45-degree-rotated square has 2x the area, which
-collides with the occluded case. The same PCA yields `link_extent` and
+axis-aligned one. Both arm links rotate and a pushed block rotates, and an
+axis-aligned box around a square rotated 45 degrees has 2x the area, which
+collides with the occluded case. The same PCA gives `link_extent` and
 `link_angle`.
 
-Both modes are required, not optional: `measure_with_truth(frame, meta)` for
-Phase 0 and `measure_pixels_only(frame)` for later phases. F-9's "zero false
-positives" *is* the threshold sweep of mode 2 against mode 1 - without both modes
-that criterion has no procedure.
+Both modes are required: `measure_with_truth(frame, meta)` for Phase 0 and
+`measure_pixels_only(frame)` for later phases. The validator requirement's "zero
+false positives" *is* the threshold sweep of mode 2 against mode 1. Without
+both modes there is no way to test it.
 
 Doc page: none. NumPy plus stdlib `xml.etree.ElementTree` for reading the palette
 out of the XML.
@@ -272,13 +276,13 @@ corrected against what actually happened - marked below.
 | Gotcha | What breaks | How you notice |
 |---|---|---|
 | The offscreen buffer size defaults to 640x480 | You render into the wrong region, or get a clipped image | Pictures are the wrong size or partly black. Set `offwidth`/`offheight` in the XML `<visual><global>` block. `GlContext` now checks the two against each other and aborts, so this cannot reach a data run |
-| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. **Settled: nothing in `sim/` flips it and the blob stays bottom-up; the flip lives in `WindowSampler`**, so `Shard.pixels` stays raw and F-8 has something byte-exact to compare |
+| `mjr_readPixels` returns rows bottom-up | Every picture is vertically mirrored | Obvious on first look, silent forever if you never look. **Settled: nothing in `sim/` flips it and the blob stays bottom-up; the flip lives in `WindowSampler`**, so `Shard.pixels` stays raw and the round-trip check has something byte-exact to compare |
 | Forgetting `mjr_setBuffer` | You render to the hidden window instead of the buffer | Readback returns garbage or blank |
 | `mjRND_IDCOLOR` without `mjRND_SEGMENT` | The colour-coded pass isn't colour-coded | Counts come out nonsensical |
 | **Corrected.** Visualization decorations left on | Contact dots and joint axes add colours | They are already off - `mjv_defaultOption` leaves every decoration cleared, so call it and change nothing. **Do not zero the flag array to be sure:** that also clears `mjVIS_STATIC` and every worldbody geom stops drawing |
 | A GL context belongs to one thread | Threads cannot share it | If you ever parallelise, use processes. This is why shards are the unit of both determinism and parallelism |
 | `rand()` instead of a seeded generator | Determinism silently gone | The generate-twice-and-compare check fails, and only that check would catch it |
-| **Corrected - does not apply.** Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | MSVC ships **no leak detection at all**, so there is no suppression file to write. On this toolchain E-3 is ASan only |
+| **Corrected - does not apply.** Prebuilt MuJoCo plus the leak checker | Spurious leak reports from the graphics driver | MSVC ships **no leak detection at all**, so there is no suppression file to write. On this toolchain the sanitizer requirement is ASan only |
 
 ### Found by running Phase 0
 
@@ -312,10 +316,10 @@ Both from Python, before any C++ exists, because they can change what you build:
 2. **`mj_step` time alone**, to know the remaining headroom. **Done** - 10.5-10.8
    us median driven, p99 32-60 us, `bench/step_probe.py`. Render plus readback
    leaves ~1850 of the 2000 us frame, so this was the only day-1 number that could
-   still break P-6; it came in 131-176x under. CPU work, so no GPU clock gate
-   applies to it.
+   still break the 500 fps generation bar. It came in 131-176x under. It is
+   CPU work, so no GPU clock gate applies to it.
 
-Record the GPU clock state next to each. A timing without it is not a number -
-and gate it on **SM clock plus power draw** for compute, **memory clock == max**
-for bandwidth. Not on `pstate == P0`, which follows the memory domain and reads
-P4 during correct compute-bound work; see `README.md`, "Taking a measurement".
+Record the GPU clock state next to each; a timing without it is not a number.
+Gate on **SM clock plus power draw** for compute, and **memory clock == max** for
+bandwidth. Not on `pstate == P0`, which follows the memory domain and reads P4
+during correct compute-bound work; see `README.md`, "Taking a measurement".

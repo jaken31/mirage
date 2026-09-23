@@ -1,12 +1,12 @@
 # Research: token stability, normalisation, and rollout length
 
-**Doc class: Live.** Measured and derived mirage values are cited by name and
-`NUM-` id, never restated. External values are stated inline with the paper
-section or the repo file and line that owns them, because those numbers are not
-in the register and never will be.
+**Doc class: Live.** Mirage values are stated in plain words, and
+`canonical_numbers.md` holds the current value of each. External values are
+stated inline with the paper section or the repo file and line that owns them,
+because those numbers are not in the register and never will be.
 
 **What this is.** A survey of primary sources on four questions raised by the
-Phase 1 token-persistence measurement. It is dated 2026-08-29 and it is a
+Phase 1 token-persistence measurement. It is dated 2026-08-29, and it is a
 *survey*, not a decision. The decisions it feeds are at the end, ranked and
 costed. Nothing here has been run on mirage except the two probes in section (a),
 which are reproduced inline so they can be re-run.
@@ -22,57 +22,58 @@ table.
 
 ## Status as of 2026-08-30: options 1 and 2 have been run
 
-This survey is kept as written, dated 2026-08-29. What follows is what happened
-when its first two recommendations were executed the next day, `runs.jsonl` r46.
+The survey below is kept as written, dated 2026-08-29. This section records what
+happened when its first two recommendations were carried out the next day (the
+r1c token-stability row in `runs.jsonl`).
 
-**Option 1 ran, and did not falsify the line of work.** The spurious-flip rate
+**Option 1 ran, and did not rule out this line of work.** The spurious-flip rate
 was measured by `bench/token_stability_probe.py` over 12 held-out episodes and
-460,032 cell-transitions: **8.86%** on the R1 checkpoint, **18.75%** on R2, with
-**53.21%** and **71.06%** of all flips spurious. This document named a rate near
-zero as the falsifier. It did not happen, and attention makes it worse.
+460,032 cell-transitions: **8.86%** on the R1 checkpoint and **18.75%** on R2, with
+**53.21%** and **71.06%** of all flips spurious. This document said a rate near
+zero would rule the work out. That did not happen, and attention makes it worse.
 
 **Option 2 ran, as rung `r1c`.** Channel-only encoder normalisation drives the
-spurious-flip rate to **exactly 0 of 396,013** quiet-field transitions, so the
-mechanism this survey identified is not merely real but is the *entire* cause.
-The cost is the part no source predicted: **Q-2 token entropy falls 74.1% ->
-54.6%**, failing the 70% bar, for only 0.282 dB of Q-1. **Phase 2 therefore stayed
-on R1** - see `world_model_architecture.md`, "Phase 2 inherits R1", and
+spurious-flip rate to **exactly 0 of 396,013** quiet-field transitions. So the
+mechanism this survey identified is not just real; it is the *entire* cause. The
+cost is the part no source predicted: **token entropy falls 74.1% ->
+54.6%**, failing the 70% bar, for only 0.282 dB of PSNR. **So Phase 2 stayed on
+R1** - see `world_model_architecture.md`, "Phase 2 inherits R1", and
 `handoff_tokenizer_decision.md` for the reasoning.
 
 **The companion probe in option 1 is REFUTED.** This document proposes that
 encoding a frame and the same frame shifted one pixel "separates the aliasing
 mechanism from the global-coupling mechanism". **It does not.** A one-pixel shift
 moves the input to *every* receptive field in the frame, so both mechanisms fire
-together and the measurement cannot attribute the change to either. The
-separating measurement is the one option 1 already specifies - conditioning on
+together, and the measurement cannot pin the change on either. The measurement
+that does separate them is the one option 1 already specifies - conditioning on
 whether the cell's own receptive field changed - and that is what was run.
 
-**The receptive-field discrepancy below is confirmed, and it has a subtlety this
-survey did not have the measurement to see.** Both directions are correct, under
+**The receptive-field discrepancy below is confirmed, with a subtlety this survey
+did not have the measurement to see.** Both directions are correct, under
 different readings of "receptive field":
 
-- The **conv** field is 15x15, as this document derives. Flat share over 15x15 is
-  **26.33%** against **20.43%** over 22x22, so on that reading the true ceiling is
-  **below** `NUM-TOK-Q2CEIL`, exactly as stated below.
-- But the derivation's premise is that two cells with identical receptive fields
-  must share a code, and under `GroupNorm` a cell's **effective** field is the
-  whole frame. The flat share over the whole frame is **0.00%**, so for the
-  encoder actually in use the derivation is **vacuous** and the ceiling is 100%.
+- The **conv** field is 15x15, as this document derives. The flat share over
+  15x15 is **26.33%**, against **20.43%** over 22x22. On that reading the true
+  entropy ceiling is **below** the registered 94.25%, exactly as stated below.
+- But the derivation assumes two cells with identical receptive fields must share
+  a code, and under `GroupNorm` a cell's **effective** field is the whole frame.
+  The flat share over the whole frame is **0.00%**, so for the encoder actually in
+  use the derivation says nothing, and the ceiling is 100%.
 
-So `NUM-TOK-Q2CEIL` is understated for a locality-respecting encoder such as
-`r1c`, and meaningless for `R1` and `R2`. Neither reading threatens Q-2 and no
-passed gate moves, which is why this is still recorded rather than fixed.
-`bench/patch_probe.py:60` still says `RF = 22`.
+So the registered 94.25% ceiling is too low for an encoder that respects locality,
+such as `r1c`, and meaningless for `R1` and `R2`. Neither reading threatens the
+entropy bar, and no passed gate moves, which is why this is still recorded rather
+than fixed. `bench/patch_probe.py:60` still says `RF = 22`.
 
 ---
 
 ## 0. The situation this answers
 
-Two converged 64x64 rungs exist: R1 without grid attention (`NUM-TOK-R1-60`,
-`NUM-TOK-ENT-R1`, `NUM-TOK-PARAMS-R1`) and R2 with it (`NUM-TOK-R2-60`,
-`NUM-TOK-ENT-R2`, `NUM-TOK-PARAMS-R2`). Both clear `NUM-BAR-Q1` and
-`NUM-BAR-Q2`. Attention buys `NUM-TOK-ATTN` of quality for `NUM-TOK-ATTNPARAM`
-parameters and `NUM-TOK-ATTNENT` of entropy.
+Two converged 64x64 rungs exist: R1 without grid attention (31.095 dB held-out
+PSNR, 74.1% token entropy, 744,966 parameters) and R2 with it (31.182 dB, 77.6%,
+1,008,646 parameters). Both clear the 30.0 dB PSNR bar and the 70% token-entropy
+bar. Attention buys +0.087 dB of quality for 263,680 parameters and +3.5 points
+of entropy.
 
 Frame-to-frame token persistence, the share of the 64 grid cells where
 `token[t] == token[t-1]` inside an episode, was measured over 19.2M tokens:
@@ -85,9 +86,9 @@ cell's gradient support is the whole 64x64 frame; with the norm's forward
 neutralised to identity it is exactly 225 pixels. Section (a) reproduces that
 result and extends it across every normalisation option.
 
-The gate this all serves is **Q-3**, coherence horizon of at least 200 frames
-before the F-9 validator fails, with **Q-5** (link-length drift over a 200-step
-rollout) and **Q-6** (object permanence through occlusion) alongside it. The
+The gate this all serves is the **coherence horizon** of at least 200 frames
+before the frame validator fails, with **link-length drift** over a 200-step
+rollout and **object permanence** through occlusion alongside it. The
 dynamics model is a decoder-only transformer over interleaved
 `[action, 64 frame tokens]` sequences.
 
@@ -324,11 +325,11 @@ adjacent evidence:
   normalisation was not the subject of the paper.
 
 For mirage specifically the risk profile is unusually mild: 745k parameters
-(`NUM-TOK-PARAMS-R1`), fp32, plain MSE, no GAN loss, no perceptual loss, no
+(744,966), fp32, plain MSE, no GAN loss, no perceptual loss, no
 discriminator, batch 128, cosine schedule. Most of what normalisation is there to
 rescue in the cited work (GAN instability, tiny batches, very deep stacks) is
 absent. That is an argument, not evidence, and the argument is cheap to settle
-with one rung (`NUM-TOK-EPOCH64` x 60).
+with one rung (60 epochs of 87.6 s each).
 
 ---
 
@@ -521,8 +522,8 @@ performance." They call it the optimization dilemma.
 (section 3, Figure 1): "both reconstruction and generation consistently improves
 as the vocabulary size increases - a property not observed in current VQ-VAE
 methods." That is direct counter-pressure on any mirage change that trades token
-entropy for stability, and mirage's headroom is thin: `NUM-TOK-ENT-R1` sits above
-`NUM-BAR-Q2` by about four points.
+entropy for stability, and mirage's headroom is thin: R1's 74.1% token entropy sits
+above the 70% bar by about four points.
 
 **No paper found reports a stability-versus-entropy trade curve.** So the
 question "would mirage rather have 90% persistence at 71% entropy or 86.6% at
@@ -586,7 +587,7 @@ since the grid is.
 ## What this implies for mirage
 
 Ranked by evidence strength times expected effect, divided by cost. One rung is
-`NUM-TOK-EPOCH64` x 60 epochs, about 88 minutes at 64x64.
+60 epochs of 87.6 s each, about 88 minutes at 64x64.
 
 | # | Option | Cost | Evidence |
 |---|---|---|---|
@@ -609,10 +610,10 @@ arithmetic receptive field differs between the two frames; report
 **Why first.** Everything in section (a) establishes that GroupNorm *can* make a
 token depend on the whole frame. It does not establish that the trained network
 *uses* that dependence. This measurement is the difference between a mechanism
-and a cause, and it is the same discipline that killed `NUM-VAL-PCTL` and the
-30 ms readback figure.
+and a cause, and it is the same discipline that killed the palette-distance
+quantile verdict and the 30 ms readback figure.
 
-**Cost.** One forward pass of the encoder over `NUM-DATA-VALFRAMES` held-out
+**Cost.** One forward pass of the encoder over the 16,200 held-out
 frames plus a pixel-difference pass. No training, no new checkpoint. Comparable
 to an existing eval, so minutes.
 
@@ -644,14 +645,14 @@ spurious-flip re-measurement. Measured effect on gradient support is already
 known exactly: 4096 pixels to 225.
 
 **What would falsify it.** Any of: persistence does not rise materially above
-86.62%; held-out PSNR drops below `NUM-BAR-Q1`; token entropy drops below
-`NUM-BAR-Q2`. Run-to-run noise is `NUM-PERF-NOISE` at one epoch, so a persistence
+86.62%; held-out PSNR drops below the 30.0 dB bar; token entropy drops
+below the 70% bar. Run-to-run noise is 0.00167 dB at one epoch, so a persistence
 move of a few points is well outside it and a PSNR move of hundredths is not.
 
 **What it risks breaking.** Two things, in order of likelihood.
 
-- **Q-2.** `NUM-TOK-ENT-R1` clears `NUM-BAR-Q2` by roughly four points. Attention
-  bought `NUM-TOK-ATTNENT` of entropy specifically by decorrelating the FSQ
+- **The token-entropy requirement.** R1's 74.1% clears the 70% bar by roughly
+  four points. Attention bought +3.5 points of entropy specifically by decorrelating the FSQ
   digits, which is a *global mixing* effect. Removing the other global mixing
   mechanism could plausibly cost entropy in the same direction. This is the
   single most likely way the rung fails, and it fails on a gate that is already
@@ -677,13 +678,15 @@ previous token unless the model's top-1 probability for a different token exceed
 a margin).
 
 **Cost to try.** No training at all. Implementation in the inference path plus a
-threshold sweep against Q-3, Q-5, Q-6.
+threshold sweep against coherence horizon, arm plausibility and object
+permanence.
 
 **What would falsify it.** No improvement in coherence horizon at any bias
-strength, or an improvement that comes with a Q-4 action-following regression
+strength, or an improvement that comes with an action-following regression
 (the arm stops moving because the copy prior is too strong).
 
-**What it risks breaking.** Q-4 directly, and Q-5 indirectly: a copy bias that is
+**What it risks breaking.** Action following directly, and arm plausibility
+indirectly: a copy bias that is
 too strong freezes the arm, which is exactly the failure mode that scores well on
 kinematic stability and badly on everything else. ITC guards this with a distance
 cap (`d <= 4` grid cells) rather than a probability threshold, which is the
@@ -691,7 +694,7 @@ better-tested shape.
 
 **Honest weighting.** ITC's own ablation attributes most of its headline gain to
 3D RoPE rather than to the correspondence step. Expect a small effect. It is
-ranked third only because it costs no training and because it targets Q-6's exact
+ranked third only because it costs no training and because it targets object permanence's exact
 failure mode by name ("object duplication, disappearance, and transmutation").
 
 ### 4. Blur-pool the stride-2 downsamples
@@ -728,7 +731,7 @@ discarded at inference time").
 more than a rung of wall clock. Also a new hyperparameter (alpha), and LARP notes
 it needs a higher learning rate on the prior's parameters.
 
-**What would falsify it.** No improvement in Q-3 horizon over the plain rung, at
+**What would falsify it.** No improvement in coherence horizon over the plain rung, at
 any alpha tried.
 
 **What it risks breaking.** It optimises the tokenizer against a *proxy* for the
@@ -747,7 +750,7 @@ problem is real.
 latent for adjacent frames.
 
 **Why it ranks last among the tokenizer changes.** Zero published support
-(section b.1). It fights `NUM-BAR-Q2` directly, since the cheapest way to satisfy
+(section b.1). It fights the 70% token-entropy bar directly, since the cheapest way to satisfy
 a smoothness penalty is to use fewer distinct codes. And it requires the loader
 to serve adjacent frame pairs, which the current sampler is not built for. The
 mechanism it targets is better addressed by removing the *cause* of spurious
@@ -759,7 +762,7 @@ Usable in principle under the one-frame-at-a-time constraint, since both
 MAGVIT-v2 and Cosmos are designed so the first frame is encodable alone. Ruled
 out on cost: it breaks the fixed 64-tokens-per-frame contract the dynamics model
 sequence layout assumes, and it needs encoder state carried across rollout steps.
-Record the trigger rather than the plan: **if Q-3 fails at 200 frames after
+Record the trigger rather than the plan: **if the coherence horizon falls short of 200 frames after
 options 1 through 3, and the spurious-flip rate is low (so locality is not the
 cause), a causal temporal encoder is the next structural lever.**
 
@@ -782,16 +785,16 @@ derivations:
   spatial coupling is removed. This also matches the 225-pixel figure the project
   already measured with GroupNorm neutralised.
 
-**Consequence, and its direction.** `NUM-TOK-FLAT` is the share of interior cells
-whose receptive field is one flat colour, and `NUM-TOK-Q2CEIL` is derived from it
+**Consequence, and its direction.** 20.28% is the share of interior cells
+whose receptive field is one flat colour, and the 94.25% entropy ceiling is derived from it
 by the argument that cells with identical receptive fields must get identical
 codes. A **smaller** window is **more** likely to be flat, so the true flat share
-is higher than `NUM-TOK-FLAT` and the true entropy ceiling is **below**
-`NUM-TOK-Q2CEIL`. By how much is unmeasured; settling it is one edit to
+is higher than 20.28% and the true entropy ceiling is **below**
+94.25%. By how much is unmeasured; settling it is one edit to
 `bench/patch_probe.py` and one rerun.
 
-This is very unlikely to threaten Q-2, since `NUM-TOK-Q2CEIL` sits far above
-`NUM-BAR-Q2`. It is recorded because a registered number that no longer matches
+This is very unlikely to threaten the token-entropy requirement, since the
+94.25% ceiling sits far above the 70% bar. It is recorded because a registered number that no longer matches
 its own derivation is exactly what `canonical_numbers.md` exists to catch, and
 because the 22 figure is quoted in five places. **Not changed here**, since this
 document was scoped to create one file.

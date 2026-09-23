@@ -3,75 +3,74 @@
 **The current value of every number this project quotes in more than one place.**
 Created 2026-08-29.
 
-Named `canonical_numbers`, not `figures`, because `docs/figures/` holds PNG plots
-and `docs/tokenizer_figures.md` is their index - "figure" was already taken.
+It is called `canonical_numbers`, not `figures`, because `docs/figures/` holds PNG
+plots and `docs/tokenizer_figures.md` is their index. "Figure" was already taken.
 
 ## What this file is for, and the rule that makes it work
 
 `runs.jsonl` is an **append-only event log**. It answers *what was measured, when,
-and by what method*, and it is authoritative for that. It deliberately keeps
-superseded values: `gate_row2_bar_db` appears in it as both `0.98` and `1.73`,
-because both were once believed and the log does not rewrite history.
+and how*, and it is the authority on that. It keeps superseded values on purpose:
+`gate_row2_bar_db` appears in it as both `0.98` and `1.73`, because both were once
+believed and the log does not rewrite history.
 
-That makes it unable to answer a different question - *what is true now* - and
-because nothing answered that question, **seventeen documents each kept their own
-private answer.** 51% of the distinct figures in the doc corpus appear in two or
-more files; the k-means floor moved three times and the bar derived from it was
-published as `+3.6`, then `+0.98`, then `+1.73`, each one correct arithmetic on a
-stale input.
+That means the log cannot answer a different question: *what is true now?*
+Because nothing answered that question, **seventeen documents each kept their own
+private answer.** 51% of the distinct figures in the docs appeared in two or more
+files. The k-means floor moved three times, and the bar derived from it was
+published as `+3.6`, then `+0.98`, then `+1.73` - each one correct arithmetic on
+a stale input.
 
-This file is the current-state view over that log. The split that keeps it honest:
+This file is the current-state view over that log. Docs fall into four classes:
 
 | Doc class | Examples | May state a number inline? |
 |---|---|---|
 | **Log** | `runs.jsonl`, the verification log in `world_model_architecture.md` | yes - it *is* the evidence |
-| **Register** | this file | yes - exactly once, and it says where from |
-| **Live** | `AGENDA.md`, the phase structural plans, `CLAUDE.md`, `README.md`, the derived explainers | **measured or derived values: no** - cite the name and the `NUM-` id. **Chosen bars: yes**, with the id beside them |
+| **Register** | this file | yes - exactly once, with where it came from |
+| **Live** | `AGENDA.md`, the phase structural plans, `CLAUDE.md`, `README.md`, the derived explainers | yes, in plain words. **This file stays the one place to check the current value** |
 | **Frozen** | `phase0_report.md`, `phase1_item5_report.md`, `phase1_progress_report.md`, `tokenizer_figures.md`, `writeup_part1.md` | yes - they are dated snapshots, and preserving what was believed at the time is their whole job |
 
 > `writeup_part1.md` is frozen for an unusual reason: it is written for readers
-> outside this repo, who cannot resolve a `NUM-` id. It cites ids in its prose
-> like a live doc **and** carries a resolution table at the end that states every
-> value once. That table is a filtered copy of this file, so it goes stale the
-> day a number moves - which is correct for a dated publication and would be a
-> bug in anything else. **If a number moves after publication, the writeup gets
-> an erratum, not a silent edit.**
+> outside this repo, who cannot look up a `NUM-` id. It cites ids in its prose
+> **and** carries a table at the end that states every value once. That table is
+> a filtered copy of this file, so it goes stale the day a number moves. That is
+> correct for a dated publication and would be a bug in anything else. **If a
+> number moves after publication, the writeup gets an erratum, not a silent
+> edit.**
 
-The live row is split that way because the split is what the history actually
-shows. **Every figure that went stale was measured or derived** - the k-means
-floor moved three times, the bar derived from it moved three times, F-7 was
-restated, `data_hash` moved twice. **No chosen bar has ever moved**: 30 dB, 70%,
-3% and 20 GB are the same today as the day they were written, because changing
-one is a decision someone makes on purpose rather than a number that drifts. A
-gate table that hides its own threshold behind an id is unusable, and hiding it
-would buy nothing.
+**Live docs state their numbers in plain words** rather than behind a `NUM-` id,
+so a reader never has to look one up. The price is that a live doc can now go
+stale on its own, so the rule moves to the moment a number changes: **update the
+entry here first, then search the live docs for the old value and for the
+conclusions built on it.** A conclusion that silently flipped is harder to find
+than a digit.
 
-So: `**>= 30.0 dB** (\`NUM-BAR-Q1\`)` is correct in a live doc. `28.27 dB` is
-not - write *the held-out k-means floor (`NUM-TOK-FLOOR512`)*.
+History shows where the risk sits. **Every figure that went stale was measured or
+derived**: the k-means floor moved three times, the bar derived from it moved
+three times, the occlusion floor was restated, and `data_hash` moved twice. **No chosen bar has
+ever moved.** 30 dB, 70%, 3% and 20 GB are the same today as the day they were
+written, because changing one is a deliberate decision, not a number that drifts.
+So measured and derived values are the ones to re-check when this file changes.
 
-A frozen report holding a stale number is **correct behaviour**. A live doc
-holding one is the bug this file exists to prevent.
+A frozen report holding a stale number is **correct**. A live doc holding one is
+the bug this file exists to prevent.
 
-## How to cite
+## How ids work
 
-Write the name and the id, never the bare value:
-
-> the held-out k-means floor (`NUM-TOK-FLOOR512`)
-
-`python check.py` verifies that every `NUM-` id cited anywhere exists here, and
-that **no live doc cites a superseded id**. That last check is the one that would
-have caught all three versions of the gate row 2 bar.
+Each entry has a `NUM-` id. Live docs no longer cite them in prose, but code and
+the frozen writeup still do. `python check.py` verifies that every `NUM-` id
+cited anywhere in the tree is defined here, so an entry can be renamed safely.
 
 **Source column:** `r<N>` is `runs.jsonl` row N, 1-based, counting from the top of
-the file - the convention `phase1_item5_report.md` already uses ("rows 32 to 39").
-`VLOG` is the verification log at the end of `world_model_architecture.md`.
+the file - the convention `phase1_item5_report.md` already uses ("rows 32 to
+39"). `check.py` also verifies that every `r<N>` here points at a row that
+exists. `VLOG` is the verification log at the end of `world_model_architecture.md`.
 `REQ` is `world_model_requirements.md`. `CALC` is computed on demand from config.
 
 ---
 
 ## Bars and requirements
 
-These are chosen, not measured. They move only by decision.
+These are chosen, not measured. They move only when someone decides to move them.
 
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
@@ -85,11 +84,12 @@ These are chosen, not measured. They move only by decision.
 | `NUM-BAR-E4` | **5%** | A rerun must match a recorded bench number within this | REQ E-4 | current |
 | `NUM-BAR-ROW2` | **+1.73 dB** | Gate row 2's bar. **DERIVED**: `NUM-BAR-Q1` minus `NUM-TOK-FLOOR512` | r33 | **derived - recompute, do not restate** |
 
-> `NUM-BAR-ROW2` is the one entry here that is not independent. It is written down
-> only because `mirage/fsq_eval.py` charges against a recorded constant rather than
-> refitting. **If `NUM-TOK-FLOOR512` ever moves, this moves with it** - that
-> coupling is what three published values of this bar cost the project, and naming
-> it here is the whole point of the register.
+> `NUM-BAR-ROW2` is the one entry here that is not independent: it is the 30 dB bar
+> minus the held-out k-means floor. It is written down only because
+> `mirage/fsq_eval.py` compares against a recorded constant rather than refitting
+> the floor. **If `NUM-TOK-FLOOR512` ever moves, this moves with it.** Missing that
+> link is how this bar came to be published with three different values, and
+> naming it here is the whole point of the register.
 
 ## Hardware
 
@@ -112,12 +112,12 @@ These are chosen, not measured. They move only by decision.
 | `NUM-DATA-SIZE64` | **3.686 GB** | On disk | r23 | current |
 | `NUM-DATA-VALFRAMES` | **16,200** | Held-out frames | r30 | current |
 | `NUM-DATA-SPLIT` | **473 / 27** | Train / val episodes of 500, split by hashed episode id | r33 | current |
-| `NUM-DATA-COLOURS` | **7** | F-2 distinct byte triples over the whole set - a union, not per frame | r23 | current |
+| `NUM-DATA-COLOURS` | **7** | Flat-render distinct byte triples over the whole set - a union, not per frame | r23 | current |
 | `NUM-DATA-F6` | **16.63%** | Contact rate. Read the masked byte, not the raw one | r23 | current |
 | `NUM-DATA-F7` | **5.35%** | Recoverable occlusion - blocks that return | r26 | current |
-| `NUM-DATA-F5RATIO` | **2.15** | F-5 flatness ratio at the shipped physics | r20 | current |
+| `NUM-DATA-F5RATIO` | **2.15** | Data-policy flatness ratio at the shipped physics | r20 | current |
 | `NUM-DATA-GENFPS` | **4,980 fps** | Full regeneration, 60.2 s for the set | r29 | current |
-| `NUM-DATA-Q4CEIL` | **83.1%** | Ground truth's own action-agreement score, i.e. **Q-4 sits above its own ceiling** | r20 | current |
+| `NUM-DATA-Q4CEIL` | **83.1%** | Ground truth's own action-agreement score, i.e. **the absolute action-following bar sits above its own ceiling** | r20 | current |
 
 ## Dataset - the 96x96 fork
 
@@ -145,29 +145,29 @@ These are chosen, not measured. They move only by decision.
 ## Validator thresholds - recalibrated by item 6 against decoder output
 
 > **Landed 2026-08-29, r42.** `NUM-VAL-TAU` rose as predicted. The other half of
-> the prediction was wrong in an instructive way: `NUM-VAL-FALSEPOS` did **not**
-> stop reading zero, because it is defined over *ground-truth* frames and those
-> are unaffected by a wider radius - at 0.75 they clear any tau in play. What is
-> non-zero is a **different quantity on different pixels**, so it got its own id
+> the prediction was wrong, and usefully so: `NUM-VAL-FALSEPOS` did **not** stop
+> reading zero. It is defined over *ground-truth* frames, and a wider radius does
+> not affect them - at 0.75 they clear any tau in play. What is non-zero is a
+> **different quantity on different pixels**, so it got its own id
 > (`NUM-VAL-RECONFP`) rather than overwriting this one. Two regimes now coexist
-> on purpose: renders must have zero off-palette pixels, decoder output may have
-> up to `NUM-VAL-FRACMAX`, and conflating them is exactly how a threshold ends up
+> on purpose: renders must have zero off-palette pixels, and decoder output may
+> have up to `NUM-VAL-FRACMAX`. Mixing them up is exactly how a threshold ends up
 > measuring the wrong population.
 >
-> **The verdict became a share of the frame on 2026-08-29, not a pixel count**
-> (`NUM-VAL-FRACMAX` supersedes `NUM-VAL-PXMAX`). A count is resolution-dependent,
-> so the 96x96 fork needed a second calibrated number and the one on disk was an
-> unevidenced area rescale. The share is a **single** number with a testable
-> claim attached: that it transfers unchanged across resolutions. It has been
-> verified at 64x64 and is **not yet verified at 96x96** - see the trigger in the
-> architecture doc's verification log.
+> **On 2026-08-29 the verdict became a share of the frame, not a pixel count**
+> (`NUM-VAL-FRACMAX` supersedes `NUM-VAL-PXMAX`). A count depends on resolution,
+> so the 96x96 fork needed a second calibrated number, and the one on disk was an
+> area rescale with no evidence behind it. The share is a **single** number with a
+> testable claim attached: it transfers unchanged across resolutions. That has
+> been verified at 64x64 and is **not yet verified at 96x96** - see the trigger in
+> the architecture doc's verification log.
 
 | ID | Value | What it is | Source | Status |
 |---|---|---|---|---|
 | `NUM-VAL-TAU` | **32.0** | `validator.offpalette_tau` - the RGB Euclidean radius inside which a pixel counts as on-palette. Lives in config, so editing it moves `validator_hash`. **An interior optimum, not a compromise**: at a threshold pinned to the clean maximum, blended-futures detection runs 23% at tau 8 and 87% here, while gaussian-noise detection collapses to 0.3% by tau 64 once the ball is wider than the perturbation | r18, r23, r42 | current, **recalibrated on decoder output** |
 | `NUM-VAL-WORSTDIST` | **0.75 RGB units** | Worst distance any *ground-truth* pixel sits from its palette entry. `rgba * 255` does not land on integers, which is the whole reason this is not zero. **Digit collision: `NUM-TOK-LEAK` is also 0.75 and is dB of PSNR, not colour distance.** It has already caused one misreading - see `mathematics_notes.md` section 1 | r18, r29 | current |
 | `NUM-VAL-HEADROOM` | **43x** | `NUM-VAL-TAU` over `NUM-VAL-WORSTDIST`. Slack over *renders* only - against `NUM-VAL-RECONDIST` the same tau has no slack at all, which is the whole finding | r42 | derived |
-| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the F-9 acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
+| `NUM-VAL-FALSEPOS` | **0 px** | Off-palette pixels over every ground-truth frame at that tau - the frame validator's acceptance condition. Unchanged by the recalibration, and asserted in `validator._self_check` | r23, r42 | current, **on ground truth only - decoder output is `NUM-VAL-RECONFP`** |
 | `NUM-VAL-FRACMAX` | **8.5449% of a frame** | `validator.offpalette_frac_max` - the largest off-palette *share* a reconstruction may carry before the frame is a fault. **Exactly `NUM-VAL-PXMAX` / 4,096**, so at 64x64 the verdict is bit-identical to the pixel count it replaced; the point of the change is that the same number is meaningful at any resolution. 1.11x `NUM-VAL-RECONFP`, a deliberately thin margin: 512 px would drop blur detection from 100% to 1.1% | r42, r43 | current |
 | `NUM-VAL-PXMAX` | **350 px** | The same bar as a pixel count, at 64x64 only. `validator.offpalette_px_max` **no longer exists** - it was replaced by `NUM-VAL-FRACMAX` on 2026-08-29 because a count needs one calibrated value per resolution. Kept as an id because item 6's whole table is quoted in pixels | r42 | **superseded by `NUM-VAL-FRACMAX`**, still correct at 64x64 |
 | `NUM-VAL-PCTL` | **refuted** | A *quantile of palette distance* was the first candidate for a resolution-free verdict, and it is the one this project would have shipped on the argument alone. Measured, it fails: at the best quantile of the ladder, gaussian noise at sigma 16 is caught **0.1%** of the time against `NUM-VAL-FRACMAX`'s 100%. A quantile is a *tail* statistic and the failures that matter are *bulk* | r43 | **refuted - do not revive without reading r43** |
@@ -181,7 +181,7 @@ These are chosen, not measured. They move only by decision.
 | `NUM-TOK-FLOOR512` | **28.27 dB** | k-means++ 512 codes, **fit on train episodes, scored on val**, at 64x64 | r33 | current |
 | `NUM-TOK-FLOOR512-96` | **29.97 dB** | The same, at 96x96, same 179,200-patch budget. **Higher, not lower**: an 8x8 patch covers 2.25x less scene, so `NUM-D96-FLATPATCH` of patches are one flat colour and a per-patch codebook finds them easier. Makes gate row 2's bar **+0.03 dB** at 96x96, i.e. nearly vacuous | r43 | current |
 | `NUM-D96-FLATPATCH` | **73.09%** | Share of 8x8 patches that are a single flat colour at 96x96, against **63.47%** at 64x64. **One cause, two opposite consequences**: it raises `NUM-TOK-FLOOR512-96` and it is why `NUM-TOK-ENT-R1-96` falls below `NUM-BAR-Q2` | r43 | current |
-| `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first Q-2 shrink step | r33 | current |
+| `NUM-TOK-FLOOR240` | **27.09 dB** | Same, 240 codes - the cost of the first codebook shrink step | r33 | current |
 | `NUM-TOK-FLOOR1024` | **29.39 dB** | Same, 1024 codes - **still misses `NUM-BAR-Q1`** | r33 | current |
 | `NUM-TOK-LIVE512` | **486 of 512** | Centroids alive on held-out patches | r33 | current |
 | `NUM-TOK-LEAK` | **0.75 dB** | Whole-set floor minus held-out floor - the split leak. **Digit collision: `NUM-VAL-WORSTDIST` is also 0.75 and is RGB colour distance, not dB.** Unrelated quantities, no shared derivation - check the unit before quoting either | r33 | current |
@@ -208,7 +208,7 @@ These are chosen, not measured. They move only by decision.
 | `NUM-TOK-SKEW-96` | **2.922 bits** of the 4.018 short | Marginal skew at 96x96 against **1.440** at 64x64 - the entropy loss is skew, not collapse. **0 of 512 codes are unused** and 422 carry mass > 1e-4, so the shrink ladder addresses skew rather than dead codes | r44 | current |
 | `NUM-TOK-MARGSUM-96` | **6.078 bits = 67.5%** | Sum of the three channel marginals at 96x96. **`H_joint` can never exceed it**, so this is a hard ceiling on any method that only *decorrelates* channels - attention included - and it sits **below `NUM-BAR-Q2`**. An identity, not an estimate: it is why the R2 rung at 96x96 was never run | r45 | derived |
 | `NUM-TOK-SHRINK240-UB` | **63.0%** | Upper bound on `[8,6,5]` = 240 codes at 96x96, being `NUM-TOK-ENT-R1-96`'s bits over `log2(240)`. Coarsening only destroys information, so no re-binning beats it - and it is **below `NUM-BAR-Q2`**, which kills the shrink ladder's **first step** model-independently | r45 | derived |
-| `NUM-TOK-BITSFRAME-96` | **717.4 bits/frame** | 144 tokens x `NUM-TOK-ENT-R1-96`, against **426.9** at 64x64 - **1.68x**. Recorded because Q-2's stated purpose is that Phase 2 not inherit a shrunken vocabulary, and by that measure 96x96 delivers more. **The bar was NOT moved**; this is an observation, and `NUM-BAR-Q2` stands as written | r45 | derived, **observation only** |
+| `NUM-TOK-BITSFRAME-96` | **717.4 bits/frame** | 144 tokens x `NUM-TOK-ENT-R1-96`, against **426.9** at 64x64 - **1.68x**. Recorded because the token entropy bar's stated purpose is that Phase 2 not inherit a shrunken vocabulary, and by that measure 96x96 delivers more. **The bar was NOT moved**; this is an observation, and `NUM-BAR-Q2` stands as written | r45 | derived, **observation only** |
 | `NUM-TOK-PARAMS-R1` | **744,966** | R1 parameter count | r32 | current |
 | `NUM-TOK-PARAMS-R2` | **1,008,646** | R2 parameter count | r32 | current |
 | `NUM-TOK-EPOCH64` | **87.6 s** | One clean 64x64 epoch, 2,217 steps at batch 128 | r32 | current |
@@ -231,28 +231,30 @@ These are chosen, not measured. They move only by decision.
 
 ## Superseded - kept, because a chain is more useful than an overwrite
 
-Nothing here is wrong to find in a **frozen** doc. Finding one in a **live** doc is
-the failure `check.py` looks for.
+Each row shows how one value moved. Finding an old value in a **frozen** doc is
+fine. Finding one in a **live** doc is a bug, unless the doc is telling the story
+of the change. `check.py` does not look for these: the old values also appear
+legitimately wherever a doc explains the refutation that retired them.
 
 | Chain | Values, oldest first | Why it moved |
 |---|---|---|
 | `NUM-TOK-FLOOR512` | 26.39 -> 29.02 -> **28.27 dB** | 26.39 was random k-means init and had no provenance row; k-means++ beat it by 2.6 dB; then 29.02 turned out to be fit *and* scored on a sample straddling the split, worth another 0.75. r27, r33 |
 | `NUM-BAR-ROW2` | +3.6 -> +0.98 -> **+1.73 dB** | Purely a consequence of the row above. Three published values, each correct arithmetic on a stale input. **This is the incident this file exists to prevent.** |
-| `NUM-DATA-F7` | 19.83% -> **5.35%** | The old counter scored any frame with zero visible pixels. 73% of it was blocks that never return, which Q-6 cannot score object permanence on. r25, r26 |
+| `NUM-DATA-F7` | 19.83% -> **5.35%** | The old counter scored any frame with zero visible pixels. 73% of it was blocks that never return, which object permanence cannot be scored on. r25, r26 |
 | `NUM-DATA-HASH64` | `0259947e` -> `219ab0af` -> **`18a76531`** | Original physics; then the `gear 6 / damping 1.5` scene change; then CRLF normalised out of the hash. Do not quote a figure taken before 2026-08-28. r20, r22, r23 |
 | `NUM-HW-FP16` | 3.0 -> **27.6 TFLOP/s** | A chassis cooling fix moved the enforced power limit 55 -> 100 W. The throttle *flags* read `Not Active` the whole time it was capped; the evidence was in the counters. r4 |
-| `NUM-TOK-LIVE512` | 150 -> **486 of 512** | An initialisation artifact. This was the entire evidence base for the Q-2 collapse risk, and it is gone. r27, r33 |
+| `NUM-TOK-LIVE512` | 150 -> **486 of 512** | An initialisation artifact. This was the entire evidence base for the token-entropy collapse risk, and it is gone. r27, r33 |
 | `NUM-TOK-FLAT` | 19.96% -> **20.28%** | Re-measured after the regeneration. Confirms rather than refutes. r27 |
-| `NUM-VAL-TAU` | 8.0 -> **32.0** | 8.0 was calibrated on renders, whose worst pixel sits at `NUM-VAL-WORSTDIST`. Q-3 measures decoder output, whose worst sits at `NUM-VAL-RECONDIST`. Chosen by detection rate at zero false positives, not by clearing the worst distance - clearing it needs ~160 and gives up the palette constraint entirely. r42 |
+| `NUM-VAL-TAU` | 8.0 -> **32.0** | 8.0 was calibrated on renders, whose worst pixel sits at `NUM-VAL-WORSTDIST`. The coherence horizon measures decoder output, whose worst sits at `NUM-VAL-RECONDIST`. Chosen by detection rate at zero false positives, not by clearing the worst distance - clearing it needs ~160 and gives up the palette constraint entirely. r42 |
 | `NUM-VAL-HEADROOM` | 11x -> **43x** | Arithmetic on the row above, and a reminder that the slack is over renders only. r42 |
 | `NUM-TOK-Q2CEIL` | 94.4% -> **94.25%** | Same re-measurement. r27 |
 
 ## Not in this register, on purpose
 
 - **Per-run values that are supposed to differ** - a given run's `val_psnr_db`,
-  wall clocks, run ids. Those live in `runs.jsonl` and `runs/<id>/result.json`,
-  and collapsing them to one "current" value would be a category error.
+  wall clocks, run ids. Those live in `runs.jsonl` and `runs/<id>/result.json`.
+  They have no single "current" value, so collapsing them to one would be wrong.
 - **Numbers quoted in exactly one place.** 85% of `runs.jsonl`'s 533 keys are used
-  once. An entry for each would be a second copy of the log, which is the disease
-  and not the cure. **Add an entry when a number reaches its second live doc**,
-  not before.
+  once. An entry for each would be a second copy of the log, which recreates the
+  problem instead of solving it. **Add an entry when a number reaches its second
+  live doc**, not before.
