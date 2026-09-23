@@ -9,20 +9,22 @@ world model on it. `AGENDA.md` is the ordered list of what to do next.
 - `docs/world_model_architecture.md` - design decisions, and the explicit trigger
   that would change each one.
 - `docs/world_model_requirements.md` - the `P-` / `F-` / `E-` / `Q-` requirement
-  IDs referenced everywhere else. Note: you must explain what these IDs says 
+  IDs that table rows, headings and code link to. Note: you must explain what these IDs says 
   rather than just simply stating them.
 - `docs/canonical_numbers.md` - **the current value of every number quoted in more
   than one place**, each with the `runs.jsonl` row that asserts it. `runs.jsonl`
   stays the evidence and keeps superseded values on purpose; this is the
   current-state view over it, which is the one question an append-only log cannot
-  answer. **Cite the `NUM-` id, do not copy the value.** `python check.py` fails
-  on a citation to an id that does not exist, which is what makes renaming safe.
+  answer. **Live docs state numbers in plain words; when one changes, update the
+  register entry first, then search the live docs for the old value.**
+  `python check.py` fails on a `NUM-` citation to an id that does not exist,
+  which is what makes renaming safe.
 
 Derived explainers restate the files above in plain words and are never a citable
 source - when one disagrees with the code, the code wins: `decision_notes.md`
 (each choice with its trigger and fallbacks), `timeline.md` (schedule and gates),
-`mathematics_notes.md` (every formula the project runs, from scratch, citing
-`NUM-` ids for its inputs), `handoff_tokenizer_decision.md` (why Phase 2 took R1,
+`mathematics_notes.md` (every formula the project runs, from scratch, with its
+inputs stated in plain words), `handoff_tokenizer_decision.md` (why Phase 2 took R1,
 and the locality-versus-entropy curve behind it - a dated snapshot, so its "still
 open" sections go stale where the others do not).
 
