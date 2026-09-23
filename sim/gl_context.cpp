@@ -9,8 +9,12 @@ namespace {
         std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
     }
     const char* const kSoftwareGl[] = {
+        // Windows
         "GDI Generic",
         "Microsoft Basic Render Driver",
+        // Linux: Mesa's CPU rasterizers, e.g. "llvmpipe (LLVM 22.1.8, 256 bits)"
+        "llvmpipe",
+        "softpipe",
     };
 
 }
