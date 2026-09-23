@@ -590,8 +590,12 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
         keep = np.flatnonzero(idx % stride == 0)
         if len(keep):
             g0 = time.perf_counter()
+            k = torch.from_numpy(keep).to(dev)
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                g = generate(model, lay, x[torch.from_numpy(keep).to(dev)], mask, d.cells)
+                if info["arm"] == "block":
+                    g = generate(model, lay, x, mask, d.cells)[k]
+                else:
+                    g = generate(model, lay, x[k], mask, d.cells)
             gen[idx[keep]] = g.cpu().numpy()
             if dev.type == "cuda":
                 torch.cuda.synchronize()
@@ -682,6 +686,9 @@ def compare(run_ids: list[str]) -> dict:
         assert len(vals) == 1, f"runs disagree on {key}: {vals}"
     pops = {json.dumps({k: v for k, v in r["population"].items() if k != "gen_cells"}) for r in res}
     assert len(pops) == 1, "runs were scored on different populations"
+    assert len({r["run_id"] for r in res}) == len(res), "a run was passed twice"
+    pairs = [(r["arm"], r["seed"]) for r in res]
+    assert len(set(pairs)) == len(pairs), f"an arm repeats a seed: {sorted(pairs)}"
     scores: dict[str, list[float]] = {}
     for r in sorted(res, key=lambda r: (r["arm"], r["seed"])):
         scores.setdefault(r["arm"], []).append(r["score"]["acc_gen"])
