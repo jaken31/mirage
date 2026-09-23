@@ -86,12 +86,11 @@ GlContext::GlContext(const mjModel* model) {
     }
 #endif
 
-    // GL_VERSION carries the driver version on NVIDIA ("4.6.0 NVIDIA
-    // 610.57.04") and on Mesa alike.
     const GLubyte* version_raw = glGetString(GL_VERSION);
+    renderer_ = renderer;
+    version_ = version_raw ? reinterpret_cast<const char*>(version_raw) : "";
     printf("GL_RENDERER:  %s\n", renderer);
-    printf("GL_VERSION:   %s\n",
-           version_raw ? reinterpret_cast<const char*>(version_raw) : "(null)");
+    printf("GL_VERSION:   %s\n", version_.c_str());
 
     mjr_defaultContext(&con_);
     mjr_makeContext(model, &con_, mjFONTSCALE_100);

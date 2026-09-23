@@ -69,7 +69,7 @@ MuJoCo.
 |---|---|---|
 | `shard_NNN.pixels` | raw `uint8`, contiguous, no header | 3.686 GB |
 | `shard_NNN.meta` | fixed-width record per frame, 46 B | 13.8 MB |
-| `shard_NNN.json` | frame count, H/W, dtype spec, seed, `data_hash`, git SHA | ~1 KB |
+| `shard_NNN.json` | frame count, H/W, dtype spec, seed, `data_hash`, git SHA, GL renderer and version | ~1 KB |
 
 Meta record: `action` u8; `qpos[2]` f32; `block_xy[3][2]` f32; `visible_px[3]` u16;
 `contact_mask` u8; `episode_id` u32; `step_idx` u16. **46 B, 0.37% of pixel bytes.**
@@ -91,12 +91,18 @@ one per language, the same arrangement `meta_dtype` uses.
 
 As written by `sim/shard_writer.cpp`, the sidecar carries `frames`, `height`,
 `width`, `channels`, `pixel_dtype`, `meta_record_bytes`, `meta_joints`,
-`meta_blocks`, `seed`, `shard_index`, `data_hash`, `git_sha`. The three `meta_*`
-fields let the reader build its dtype from the file instead of hardcoding 46 -
-the "no hardcoded shapes" rule, applied across the language boundary. The object
-is flat, and every value is an integer or a character-checked atom, so the writer
-needs no JSON library and no escaping. Nesting anything in it is the trigger to
-use `nlohmann/json`, which the config reader already links.
+`meta_blocks`, `seed`, `shard_index`, `data_hash`, `git_sha`, `gl_renderer`,
+`gl_version`. The three `meta_*` fields let the reader build its dtype from the
+file instead of hardcoding 46 - the "no hardcoded shapes" rule, applied across
+the language boundary. The two `gl_*` fields are the context's `GL_RENDERER` and
+`GL_VERSION` - the GPU that drew the frames, and on NVIDIA and Mesa the driver
+version too. `data_hash` cannot say which GPU that was, and two GPUs give
+different bytes under one hash (`runs.jsonl` r55). They are recorded, not
+checked: `mirage/data.load_shards` reads neither, so shards written before them
+(the canonical set among them) load unchanged. The object is flat. Every value
+is an integer, a character-checked atom, or one of the two GL strings, which
+come from the driver and are escaped through `nlohmann/json`. Nesting anything
+in it is the trigger to build the whole object with that library instead.
 
 Each field has one named consumer - a field with no named consumer does not ship:
 
