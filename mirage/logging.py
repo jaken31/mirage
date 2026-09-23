@@ -157,7 +157,9 @@ class Run:
                 # relies on that. We ask wandb which mode is active instead of
                 # listing mode names here. In 0.29.0 `_offline` means "offline" or
                 # "dryrun" and `_noop` means "disabled" (checked for all six mode
-                # names), so the "dryrun" alias is covered too. These attributes are
+                # names; the command is in the verification log of
+                # `docs/world_model_architecture.md`), so the "dryrun" alias is
+                # covered too. These attributes are
                 # private and an upgrade could rename them, which is why
                 # `_bad_credentials_check` fails on an `AttributeError`. Accepted
                 # side effect: wandb reports "server unreachable" as an auth error,
