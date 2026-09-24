@@ -388,7 +388,12 @@ carries a second, dated amendment in `world_model_requirements.md`, and the plan
 
 **Item 1 landed 2026-09-24**: the block-causal layout and the token/action
 window sampler, in `mirage/dynamics.py`, self-checked by `python -m mirage.dynamics`
-(and so by `python check.py`). Item 2 is next.
+(and so by `python check.py`).
+
+**Item 2 landed 2026-09-24**: the `dynamics` config section names every shape
+knob - head count, MLP ratio, RoPE, the untied head and the block-causal mask
+beside `d_model` and `n_layers` - so `dynamics_hash` changes when any of them
+does. Item 3 is next.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

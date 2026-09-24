@@ -29,7 +29,12 @@
     },
     "dynamics": {
         "d_model": 384,
-        "n_layers": 8
+        "n_layers": 8,
+        "n_heads": 6,
+        "mlp_ratio": 4,
+        "pos_encoding": "rope",
+        "output_head": "untied",
+        "mask": "block_causal"
     },
     "engine": {}
 }

@@ -81,6 +81,7 @@ import math
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -104,6 +105,18 @@ TOKENIZER_RUN = "20260829-005439-r1"   # R1, the tokenizer the dynamics model bu
 R49_ROPE_UNTIED = 14_593_152           # runs.jsonl param count, RoPE + untied variant
 ROPE_BASE = 10_000.0
 ARMS = ("strict", "block")
+ARM_MASK = {"strict": "strict_causal", "block": "block_causal"}
+
+
+def arm_config(arm: str) -> config.Config:
+    """base.json with `dynamics.mask` set to the arm's, through `config.load`, so
+    each arm's `dynamics_hash` names its own mask and nothing else differs."""
+    raw = json.loads(CONFIG.read_text(encoding="utf-8"))
+    raw["dynamics"]["mask"] = ARM_MASK[arm]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"{arm}.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return config.load(path)
 
 # The shared schedule. Tokenizer training's values (`fsq.train`) wherever
 # they apply, since that is the only precedent. Weight decay stays at a
@@ -209,7 +222,7 @@ class Dynamics(nn.Module):
     """The sized RoPE + untied-output variant: vocab 521 in, 512 out."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int, vocab_out: int,
-                 max_len: int, mlp_ratio: int = dyn_size_probe.MLP_RATIO) -> None:
+                 max_len: int, mlp_ratio: int) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab_in, d)
         self.blocks = nn.ModuleList([Block(d, heads, mlp_ratio) for _ in range(layers)])
@@ -242,8 +255,8 @@ class Dynamics(nn.Module):
 def build_model(cfg: config.Config, max_len: int) -> Dynamics:
     codes = cfg.tokenizer["codebook_size"]
     return Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
-                    dyn_size_probe.N_HEADS, codes + dyn_size_probe.N_ACTIONS, codes,
-                    max_len)
+                    cfg.dynamics["n_heads"], codes + dyn_size_probe.N_ACTIONS, codes,
+                    max_len, cfg.dynamics["mlp_ratio"])
 
 
 # -------------------------------------------------------- scoring a window batch
@@ -433,8 +446,10 @@ def curve_point(model: Dynamics, lay: Layout, mask: torch.Tensor, d: Data,
     return out
 
 
-def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
+def train(arm: str, seed: int, resume: str | None = None,
           steps: int | None = None) -> str:
+    cfg = arm_config(arm)
+    assert cfg.dynamics["mask"] == ARM_MASK[arm], cfg.dynamics["mask"]
     _keep_awake()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = Data(cfg)
@@ -475,7 +490,7 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
     knobs = dict(arm=arm, seed=seed, tokenizer_run=TOKENIZER_RUN, frames=d.ctx + 1,
                  seq_len=len(lay.src), targets=len(lay.tgt), params=params,
                  d_model=cfg.dynamics["d_model"], n_layers=cfg.dynamics["n_layers"],
-                 n_heads=dyn_size_probe.N_HEADS, mlp_ratio=dyn_size_probe.MLP_RATIO,
+                 n_heads=cfg.dynamics["n_heads"], mlp_ratio=cfg.dynamics["mlp_ratio"],
                  rope_base=ROPE_BASE, head="untied", precision="bf16 autocast",
                  steps=total, batch=BATCH, lr=LR, lr_floor=LR_FLOOR, warmup=WARMUP,
                  weight_decay=WEIGHT_DECAY, clip=CLIP, eval_every=EVAL_EVERY,
@@ -541,14 +556,14 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
                                             + "\n", encoding="utf-8", newline="\n")
         run.log({"final_train": True, **train_info})
         run_id = run.run_id
-    evaluate(run_id, cfg, d)
+    evaluate(run_id, d)
     return run_id
 
 
 # ------------------------------------------------------------------ evaluate
 
 @torch.no_grad()
-def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
+def evaluate(run_id: str, d: Data | None = None,
              stride: int = 1, batch: int = 64) -> dict:
     """Score a finished run on the scored frames, and write `result.json`.
 
@@ -560,9 +575,10 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
     kernels and break its exact generated == teacher-forced check.
     """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    d = d or Data(cfg)
     run_dir = ROOT / "runs" / run_id
     info = json.loads((run_dir / "train.json").read_text(encoding="utf-8"))
+    cfg = arm_config(info["arm"])
+    d = d or Data(cfg)
     ck = torch.load(run_dir / "model.pt", map_location=dev, weights_only=True)
     assert ck["step"] == info["steps"], f"{run_id} stopped at step {ck['step']} of {info['steps']}"
     for k in ("data_hash", "tokenizer_hash", "dynamics_hash"):
@@ -691,10 +707,13 @@ def decide(scores: dict[str, list[float]]) -> dict:
 
 def compare(run_ids: list[str]) -> dict:
     res = [json.loads((ROOT / "runs" / r / "result.json").read_text(encoding="utf-8")) for r in run_ids]
-    for key in ("data_hash", "tokenizer_hash", "dynamics_hash", "steps", "batch", "lr",
+    for key in ("data_hash", "tokenizer_hash", "steps", "batch", "lr",
                 "tokenizer_run", "frames"):
         vals = {json.dumps(r[key]) for r in res}
         assert len(vals) == 1, f"runs disagree on {key}: {vals}"
+    for r in res:
+        want = arm_config(r["arm"]).dynamics_hash
+        assert r["dynamics_hash"] == want, f"{r['run_id']}: dynamics_hash is not the {r['arm']} arm's"
     pops = {json.dumps({k: v for k, v in r["population"].items() if k != "gen_cells"}) for r in res}
     assert len(pops) == 1, "runs were scored on different populations"
     assert len({r["run_id"] for r in res}) == len(res), "a run was passed twice"
@@ -742,15 +761,16 @@ def _self_check() -> None:
     cfg = config.load(CONFIG)
     full = build_model(cfg, 1039)
     priced = dyn_size_probe.Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
-                                     dyn_size_probe.N_HEADS, codes + dyn_size_probe.N_ACTIONS,
-                                     codes, 975, learned_pos=False, tied=False)
+                                     cfg.dynamics["n_heads"], codes + dyn_size_probe.N_ACTIONS,
+                                     codes, 975, learned_pos=False, tied=False,
+                                     mlp_ratio=cfg.dynamics["mlp_ratio"])
     n_full = sum(p.numel() for p in full.parameters())
     assert n_full == sum(p.numel() for p in priced.parameters()) == R49_ROPE_UNTIED, n_full
     print(f"model: {n_full:,} parameters, r49's rope_untied exactly")
     del full, priced
 
     # RoPE: attention depends on the distance between two positions, not where they are.
-    m = Dynamics(64, 2, 2, codes + 9, codes, 1039).double().eval()
+    m = Dynamics(64, 2, 2, codes + 9, codes, 1039, 4).double().eval()
     q, k = torch.randn(1, 1, 1, 32, dtype=torch.float64), torch.randn(1, 1, 1, 32, dtype=torch.float64)
     def dot(i: int, j: int) -> float:
         return float((_rope(q, m.cos[i], m.sin[i]) * _rope(k, m.cos[j], m.sin[j])).sum())
@@ -861,11 +881,10 @@ def main() -> None:
     if a.self_check:
         _self_check()
         return
-    cfg = config.load(CONFIG)
     if a.cmd == "train":
-        train(a.arm, a.seed, cfg, a.resume, a.steps)
+        train(a.arm, a.seed, a.resume, a.steps)
     elif a.cmd == "eval":
-        evaluate(a.run_id, cfg, stride=a.stride)
+        evaluate(a.run_id, stride=a.stride)
     elif a.cmd == "compare":
         compare(a.run_ids)
     else:
