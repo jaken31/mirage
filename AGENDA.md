@@ -384,7 +384,11 @@ one way.
 **The mask is decided: block-causal**, by the measurement ordered 2026-09-22
 (`bench/mask_probe.py`, 2026-09-23). The dynamics requirement's description
 carries a second, dated amendment in `world_model_requirements.md`, and the plan's
-"Before item 1" lists the four things it changes. Item 1 is next.
+"Before item 1" lists the four things it changes.
+
+**Item 1 landed 2026-09-24**: the block-causal layout and the token/action
+window sampler, in `mirage/dynamics.py`, self-checked by `python -m mirage.dynamics`
+(and so by `python check.py`). Item 2 is next.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
