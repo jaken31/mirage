@@ -33,8 +33,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mirage import config, data  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-N_HEADS = 6          # from world_model_ingredients.md; not in the config
-MLP_RATIO = 4        # the usual transformer default, as that doc assumes
 N_ACTIONS = 9        # 3 levels ^ 2 joints, sim/policy.h
 CHINCHILLA = 20      # tokens per parameter
 
@@ -47,12 +45,12 @@ class Block(nn.Module):
     more place to get the shapes wrong.
     """
 
-    def __init__(self, d: int, heads: int) -> None:
+    def __init__(self, d: int, heads: int, mlp_ratio: int) -> None:
         super().__init__()
         self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.attn = nn.MultiheadAttention(d, heads, batch_first=True)
-        self.mlp = nn.Sequential(nn.Linear(d, MLP_RATIO * d), nn.GELU(),
-                                 nn.Linear(MLP_RATIO * d, d))
+        self.mlp = nn.Sequential(nn.Linear(d, mlp_ratio * d), nn.GELU(),
+                                 nn.Linear(mlp_ratio * d, d))
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         h = self.n1(x)
@@ -65,11 +63,12 @@ class Dynamics(nn.Module):
     `mirage/dynamics.py` does not exist yet, and this is not meant to become it."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int,
-                 vocab_out: int, seq: int, learned_pos: bool, tied: bool) -> None:
+                 vocab_out: int, seq: int, learned_pos: bool, tied: bool,
+                 mlp_ratio: int) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab_in, d)
         self.pos = nn.Parameter(torch.zeros(seq, d)) if learned_pos else None
-        self.blocks = nn.ModuleList([Block(d, heads) for _ in range(layers)])
+        self.blocks = nn.ModuleList([Block(d, heads, mlp_ratio) for _ in range(layers)])
         self.norm = nn.LayerNorm(d)
         # Tied: reuse the input embedding's first `vocab_out` rows as the output
         # layer. Only valid because frame codes come first in the vocabulary and
@@ -117,6 +116,8 @@ def _time_step(model: nn.Module, tok: torch.Tensor, mask: torch.Tensor,
 def probe(cfg: config.Config, batch: int, steps: int) -> dict:
     d = cfg.dynamics["d_model"]
     layers = cfg.dynamics["n_layers"]
+    heads = cfg.dynamics["n_heads"]
+    mlp_ratio = cfg.dynamics["mlp_ratio"]
     ctx = cfg.data["ctx"]
     per_frame = cfg.shapes.token_grid[0] * cfg.shapes.token_grid[1]
     seq = ctx * (per_frame + 1)          # each frame's tokens followed by one action token
@@ -126,7 +127,7 @@ def probe(cfg: config.Config, batch: int, steps: int) -> dict:
     variants = {}
     for learned_pos in (False, True):
         for tied in (True, False):
-            m = Dynamics(d, layers, N_HEADS, vocab_in, vocab_out, seq, learned_pos, tied)
+            m = Dynamics(d, layers, heads, vocab_in, vocab_out, seq, learned_pos, tied, mlp_ratio)
             name = f"{'learned' if learned_pos else 'RoPE'}+{'tied' if tied else 'untied'}"
             variants[name] = sum(p.numel() for p in m.parameters())
 
@@ -140,7 +141,7 @@ def probe(cfg: config.Config, batch: int, steps: int) -> dict:
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ref = "RoPE+untied"
-    model = Dynamics(d, layers, N_HEADS, vocab_in, vocab_out, seq, False, False).to(dev)
+    model = Dynamics(d, layers, heads, vocab_in, vocab_out, seq, False, False, mlp_ratio).to(dev)
     tok = torch.randint(0, vocab_in, (batch, seq), device=dev)
     mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool, device=dev), 1)
 
@@ -156,7 +157,7 @@ def probe(cfg: config.Config, batch: int, steps: int) -> dict:
 
     params = variants[ref]
     return {
-        "d_model": d, "n_layers": layers, "n_heads": N_HEADS,
+        "d_model": d, "n_layers": layers, "n_heads": heads,
         "ctx_frames": ctx, "tokens_per_frame": per_frame, "seq_len": seq,
         "vocab_in": vocab_in, "vocab_out": vocab_out,
         "params": variants, "params_reference": ref, "params_ref_value": params,

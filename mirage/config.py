@@ -36,15 +36,16 @@ POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
 # Model choices taken by decision, each allowed only the value decided
 # (`docs/phase2_structural_plan.md`, "Decisions"): RoPE and the untied output
 # head by decisions 2 and 3, the block-causal mask by decision 9's measurement.
-# The alternatives were priced or measured and rejected, so admitting one is an
-# edit here, made when that decision's recorded trigger fires, never a JSON edit
-# alone. A misspelling would otherwise hash as a model that differs from the
-# decided one in name only.
+# The mask also admits `strict_causal`, the arm that measurement rejected, so
+# `bench/mask_probe.py`'s strict arm runs from a config that names it. Any other
+# alternative is an edit here, made when that decision's recorded trigger fires,
+# never a JSON edit alone. A misspelling would otherwise hash as a model that
+# differs from the decided one in name only.
 CHOICE_KEYS: dict[str, dict[str, frozenset[str]]] = {
     "dynamics": {
         "pos_encoding": frozenset(["rope"]),
         "output_head": frozenset(["untied"]),
-        "mask": frozenset(["block_causal"]),
+        "mask": frozenset(["block_causal", "strict_causal"]),
     },
 }
 
@@ -302,6 +303,7 @@ def _self_check() -> None:
     assert dyn.tokenizer_hash == cfg.tokenizer_hash
     assert dyn.dynamics_hash != cfg.dynamics_hash
     assert dyn.engine_hash != cfg.engine_hash
+    assert variant("dynamics", "mask", "strict_causal").dynamics_hash != cfg.dynamics_hash
 
     # A sim change must change every hash, on both branches.
     sim = variant("sim", "episodes", 2000)
@@ -326,7 +328,7 @@ def _self_check() -> None:
         ("sim", "extra", 1, "unknown keys"),
         ("dynamics", "n_heads", 0, "positive int"),
         ("dynamics", "mlp_ratio", True, "positive int"),
-        ("dynamics", "mask", "strict_causal", "must be one of"),
+        ("dynamics", "mask", "causal", "must be one of"),
         ("dynamics", "pos_encoding", "learned", "must be one of"),
         ("dynamics", "output_head", ["untied"], "must be one of"),
         ("dynamics", "n_heads", _DROP, "missing keys"),
