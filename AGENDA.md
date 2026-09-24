@@ -404,6 +404,9 @@ under Chinchilla-optimal, and one epoch draws 13.8x the dataset from window
 overlap alone. Manage overfitting, not throughput. The first run measures the
 train/val gap before any remedy is chosen, and stops at 10 epochs, or two epochs
 after held-out loss has risen two epochs running, whichever comes first.
+Alongside that rule it scores gate row 1's measure against persistence on the
+same windows at sub-epoch intervals, and keeps the best checkpoint by it
+(amended 2026-09-24).
 
 ---
 

@@ -70,6 +70,13 @@ dynamics-model run that reports that baseline alongside is where the comparison 
 number. The tier and the description are unchanged. No margin over persistence
 is set: the bar is the baseline itself.
 
+**The comparison was measured 2026-09-23, on one population** (`runs.jsonl`
+r54). `bench/mask_probe.py` computes the marginal top-1 - the single most common
+code, 474, fit on the train split's frames - at 7.00% over every val window's last
+frame, where persistence reads 86.69%, 12.4x it. On the token-stability probe's
+12-episode population the comparison is still asserted, and the paragraph above
+stands as written for it.
+
 **The dynamics model's description was amended 2026-09-23.** This is a second amendment,
 separate from the 2026-09-22 restatement above, which stands as written. The
 table row keeps its original wording, and **this paragraph supersedes its
@@ -91,6 +98,13 @@ generated accuracies are the same number by construction, so the test has one
 reading. **The mask measurement is not a verdict on this requirement.** It scored two probe
 models at a one-epoch endpoint past their held-out minimum, and both sit below
 persistence on its population. The tier is unchanged.
+
+**Added 2026-09-24:** the block-causal arm was also below persistence before its
+endpoint. Under block-causal its held-out curve's last-frame accuracy is the
+generated score, and against persistence on the curve's own 512 windows (86.47%)
+neither seed was above it at any of 18 checkpoints, the best-accuracy and
+lowest-loss points included (`runs.jsonl` r59). That is still a one-epoch probe
+model, not a verdict on this requirement.
 
 ### Inference and control
 
@@ -232,5 +246,5 @@ Photorealism. Sim-to-real transfer. Policy learning or planning on top of the mo
 | **Q-4** | **Measured 2026-08-28 to sit above its own ceiling, and restated as a relative bar** - see its row above. Remaining risk: the ground-truth term must be recomputed whenever the scene or `action_hold_steps` changes, and an action-following row quoting only the model's number cannot be checked | Report both numbers or the row does not count. `bench/hold_probe.py` produces the ground-truth term |
 | **Q-3** | **Measured 2026-08-30 to stop on a check blind to dynamics failure, and its stopping check was replaced** - see its row above. Remaining risk: the continuity bound is calibrated on ground-truth frames, which are perfectly rendered, while the horizon's inputs are decoder output. That is the same two-population trap that cost build-order item 6 its obvious recipe | Calibrate on **reconstructions**, not renders. Keep `bench/q3_blind_probe.py` as the regression test: a check that stops firing on the 300-step substitution has silently gone blind again |
 | **Q-5** | **Measured 2026-08-30 to sit far below its own ceiling, and restated as a relative bar** - see its row above. Remaining risk: the ground-truth term must be recomputed whenever the scene, the camera or the resolution changes, and an arm-plausibility row quoting only the model's number cannot be checked. The 1.1x factor is a judgement, not a measurement. Nothing has established how much worse than the simulator a *bad* model reads on this statistic, so the bar may not tell good from bad | Report both numbers or the row does not count; `bench/link_drift_probe.py` produces the ground-truth term. Before Phase 3 quotes an arm-plausibility verdict, measure the statistic on a deliberately broken rollout. If it does not separate from the simulator's own reading, the requirement cannot tell models apart and should be retired rather than re-tuned. **Do not re-attempt the deprojection**: it was measured and refuted |
-| **F-11** | **Restated 2026-09-22 against the persistence baseline** - see the first paragraph under the Models table. **Its description was amended 2026-09-23** - see the second paragraph there. The measurement of strictly-causal against block-causal attention at a fixed step budget, ordered 2026-09-22 to run before Phase 2's first build item, ran (`bench/mask_probe.py`) and selected block-causal, so "predicts next token" no longer describes the model. Two remaining risks. First, the mask measurement compared the two arms at a one-epoch endpoint past both arms' held-out minimum, and neither arm's generated score at its optimum was measured. Second, the baseline belongs to the tokenizer checkpoint, not to F-11: it reads 85.67% on R1, 93.22% on r1c and 77.28% on R2, so it moves whenever the tokenizer does | Block-causal was selected, and the description is restated in the second, separately dated amendment rather than by editing the first. Reopen the mask only on a generated-frame comparison at each arm's held-out optimum, on the mask measurement's population, with strictly-causal ahead by more than the seed spread. Re-run `bench/token_stability_probe.py` on any new tokenizer checkpoint and score against that figure, not against the 85.67% R1 figure |
+| **F-11** | **Restated 2026-09-22 against the persistence baseline** - see the first paragraph under the Models table. **Its description was amended 2026-09-23** - see the second paragraph there. The measurement of strictly-causal against block-causal attention at a fixed step budget, ordered 2026-09-22 to run before Phase 2's first build item, ran (`bench/mask_probe.py`) and selected block-causal, so "predicts next token" no longer describes the model. Two remaining risks. First, the mask measurement's block-causal model did not beat persistence at any checkpoint of its one-epoch curve, its held-out optimum included: no curve checkpoint was above persistence on the curve's 512 windows (re-read 2026-09-24, `runs.jsonl` r59). Strictly-causal's generated score at its optimum was not measured, because its curve accuracy is teacher-forced. Second, the baseline belongs to the tokenizer checkpoint, not to F-11: it reads 85.67% on R1, 93.22% on r1c and 77.28% on R2, so it moves whenever the tokenizer does | Block-causal was selected, and the description is restated in the second, separately dated amendment rather than by editing the first. Reopen the mask only on a generated-frame comparison at each arm's held-out optimum, on the mask measurement's population, with strictly-causal ahead by more than the seed spread. Re-run `bench/token_stability_probe.py` on any new tokenizer checkpoint and score against that figure, not against the 85.67% R1 figure |
 | P-6 | Two risks. A software rasterizer instead of the GPU, ~50x slower; and a fixed per-call cost for `mjr_readPixels` under GLFW, reported at ~30 ms | Assert the renderer string in Phase 0 day 1 - **not** the vendor string, which does not identify hardware. Then measure per-call readback latency in isolation: above ~0.5 ms, collapse to the single-pass render; near ~30 ms, hand-roll a WGL pbuffer context |
