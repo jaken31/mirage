@@ -29,6 +29,7 @@ import argparse
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -41,7 +42,8 @@ K = 8192
 NBYTES = 1024 << 20
 
 FIELDS = ["pstate", "clocks.current.sm", "clocks.max.sm", "clocks.current.memory",
-          "clocks.max.memory", "power.draw", "enforced.power.limit", "temperature.gpu"]
+          "clocks.max.memory", "power.draw", "enforced.power.limit", "temperature.gpu",
+          "utilization.gpu", "display_active"]
 
 
 def sample():
@@ -50,9 +52,33 @@ def sample():
     out = subprocess.run(
         ["nvidia-smi", f"--query-gpu={','.join(FIELDS)}", "--format=csv,noheader,nounits"],
         capture_output=True, text=True).stdout.strip()
-    p, sm, smx, mem, memx, pw, lim, tmp = [x.strip() for x in out.split(",")]
+    p, sm, smx, mem, memx, pw, lim, tmp, util, disp = [x.strip() for x in out.split(",")]
     return dict(t=t, pstate=p, sm=int(sm), sm_max=int(smx), mem=int(mem), mem_max=int(memx),
-                power=float(pw), limit=float(lim), temp=float(tmp))
+                power=float(pw), limit=float(lim), temp=float(tmp), util=util, display=disp)
+
+
+def nvidia_monitors():
+    """Linux: each connected monitor wired to an NVIDIA GPU, with its power state.
+
+    An awake one means the compositor shares the GPU with the load: the
+    2026-09-24 recheck measured about 16% less fp16 throughput with the external
+    monitor on. nvidia-smi's `display_active` is no substitute: its own help says
+    it can read Enabled with no monitor attached. None where there is no
+    /sys/class/drm.
+    """
+    drm = Path("/sys/class/drm")
+    if not drm.exists():
+        return None
+    out = []
+    for c in sorted(drm.glob("card*-*")):
+        card, name = c.name.split("-", 1)
+        try:
+            if ((drm / card / "device" / "vendor").read_text().strip() == "0x10de"
+                    and (c / "status").read_text().strip() == "connected"):
+                out.append(f"{name} {(c / 'dpms').read_text().strip()}")
+        except OSError:
+            continue
+    return out
 
 
 def timed(fn, iters=30):
@@ -126,7 +152,11 @@ def main():
           f"  |  {torch.cuda.get_device_properties(0).multi_processor_count} SMs")
     s0 = sample()
     print(f"idle: {s0['pstate']} {s0['sm']} MHz sm, {s0['mem']} MHz mem, "
-          f"{s0['power']:.1f} W of {s0['limit']:.0f} W, {s0['temp']:.0f} C\n")
+          f"{s0['power']:.1f} W of {s0['limit']:.0f} W, {s0['temp']:.0f} C, {s0['util']}% util")
+    mons = nvidia_monitors()
+    print(f"display: NVIDIA-driven monitors "
+          f"{'unknown (no /sys/class/drm)' if mons is None else ', '.join(mons) or 'none connected'}"
+          f"; nvidia-smi display_active {s0['display']}\n")
 
     # --- phase 1: compute ---------------------------------------------------
     a = torch.randn(K, K, device=dev, dtype=torch.float16)
