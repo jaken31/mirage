@@ -307,12 +307,28 @@ Two engineering requirements are only met by construction if the hash names the
 thing that changed. **Bench reproducibility** is "every bench number reproducible
 from a config hash", accepted when a rerun matches within 5%. **The run log** is
 "append-only run log: config hash, change, number, conclusion, one entry per
-run". Today the `dynamics` section holds `d_model` and `n_layers` and nothing
-else, so **`n_heads` is in no hash at all**. It lives as `N_HEADS = 6` in
-`bench/dyn_size_probe.py`, whose own comment says "not in config". The same is
+run". Until this item the `dynamics` section held `d_model` and `n_layers` and
+nothing else, so **`n_heads` was in no hash at all**. It lived as `N_HEADS = 6` in
+`bench/dyn_size_probe.py`, whose own comment said "not in config". The same was
 true of what decisions 2 and 3 fixed - RoPE and the untied head - and of the mask
 the measurement before item 1 selected. Each has to be named in the `dynamics`
-section, or two checkpoints that differ in it log the same hash.
+section, or two checkpoints that differ in it log the same hash - as both arms of
+the mask measurement did.
+
+**Landed 2026-09-24.** The section now also holds `n_heads` 6 and `mlp_ratio` 4,
+both positive ints, and `pos_encoding` `"rope"`, `output_head` `"untied"` and
+`mask` `"block_causal"`, each checked against a closed set in `config.py` that
+holds only the decided value - except `mask`, which also admits
+`"strict_causal"` so the mask measurement's strict arm stays runnable. Admitting
+any other alternative is a `config.py` edit, made when its decision's trigger
+fires. Both bench probes build from `n_heads` and `mlp_ratio` in the config and
+dropped their own constants. `bench/mask_probe.py` derives each arm's config
+from `base.json` with `mask` set to the arm's value, loaded through
+`config.load`, so the strict arm runs with no edit to `base.json`, each arm's
+run logs the hash of its own mask, and `compare` accepts a run only under its own
+arm's hash - which proves the arms differ in the mask alone. The move changed
+`dynamics_hash`, so the sizing probe's and the mask measurement's `runs.jsonl`
+rows carry the hash from before it.
 
 Two consequences, both verifiable by reading `mirage/config.py`:
 
@@ -819,7 +835,7 @@ separately dated amendment.
 | **Scoring gate row 1 against the probe's 85.67% on another population, or on another tokenizer** | The row compares two statistics and reports the difference as skill | The row names episodes other than the probe's 12 val ones, or a checkpoint other than R1. Re-measure the baseline with `bench/token_stability_probe.py` on the model's own population and checkpoint; 85.67% is the bar only on its own population |
 | **Quoting the sizing probe's 975 positions as the training sequence** | Tokens per epoch, step time and epoch time are all understated, and a schedule built on them runs long | The probe prices `ctx x 65`, while `WindowSampler` holds `ctx + 1` frames - 16 at `ctx` 15 - and the probe's own window count is the sampler's. **Under the block-causal mask now selected, a 16-frame window is 975 input positions**, so the gap applies to the strictly-causal case. Re-take the timings at the sequence actually built |
 | Putting the context length in `data.ctx` for the configurable-context requirement | `data_hash` moves, `load_shards` refuses the 300,000 frames, and `load_run` refuses the R1 checkpoint | Loudly, on the next run - which is the good case. The bad case is a session spent editing the register instead of passing an argument |
-| A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so bench reproducibility has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` is in this state today, as a constant in `bench/dyn_size_probe.py` |
+| A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so bench reproducibility has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` was in this state until item 2 put it in the `dynamics` section, which both bench probes now read |
 | Calibrating the coherence horizon's continuity check on **renders** | The check is tuned on the wrong population and fires on ordinary decoder output | The same two-population trap that cost Phase 1's build-order item 6 its obvious recipe: rendered pixels sit at most 0.75 RGB units from the palette, reconstructed ones up to 154.9. Calibrate on reconstructions |
 | Reusing the frame validator (the per-frame plausibility check accepted at zero false positives on ground truth) as the rollout terminator | The horizon measures decoder artifacts and nothing about dynamics | **Measured and refuted** (`bench/q3_blind_probe.py`): the validator fires on **0.00%** of frames substituted from 300 steps away, against 100% on its noise control. The validator itself is unchanged and still does its own job. The probe is the regression test that catches a replacement going blind the same way |
 | **Quoting the register's action-agreement ceiling (`NUM-DATA-Q4CEIL`) as action-following's ground-truth term** | The action-following gate row is scored against the superseded physics | That entry reads **83.1%**, measured before the `gear 6 / damping 1.5` change, while the `runs.jsonl` row it cites (the re-run at that change) measures **91.5% after it**, with a relative bar of 82.3%. `docs/phase0_debt_checklist.md` records the same before/after pair. The action-following requirement says to re-measure the ground-truth term on the same subset anyway, so **re-measure with `bench/hold_probe.py` and report both numbers**. Do not copy either stored value, and do not silently edit the register from a Phase 2 plan |
