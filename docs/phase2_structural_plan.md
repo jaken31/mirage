@@ -420,20 +420,21 @@ a measurement of anything here.
 chosen model's own timing.** `bench/gpu_probe.py` ran alongside the sizing probe
 and returned **compute FAIL**: the SMs held 2385 MHz of a 3090 MHz maximum, and
 fp16 matmul read 20.6 TFLOP/s against the 27.6 TFLOP/s this machine records when
-cool. That run's own row records an **85 W** enforced power limit (r49), not the
-99.86 W measured after the cooling fix. **The re-measurement this paragraph asked
-for exists (updated 2026-09-24).** The mask measurement timed the chosen
-block-causal model itself - SDPA with RoPE applied, 975 positions, batch 16,
-bf16 - at **159.6-160.1 ms/step**, with the SMs at a median 2606-2617 MHz drawing
-98.8-98.9 W of a 100 W limit, and one epoch took 2,813-2,822 s including 18 curve
-evaluations, about **0.78 h/epoch** (r54, on Linux). Gate any further
-re-measurement on **SM clock plus power draw**, never on `pstate == P0`. The
-pstate follows the memory clock domain and reads P4 during correct compute-bound
-work. **`bench/gpu_probe.py`'s compute verdict is not that gate as it stands**:
-its clock-decay statistic counts a sample taken before the load starts, so it
-fails a GPU that holds its clock under load (-5.7% as the probe computes it,
-+1.1% over load samples only, `runs.jsonl` r58). The enforced limit also moves
-with the platform: on Linux it reads 85 W at idle and 100 W under load (r58).
+cool on Windows (31.6 on Linux, r58). That run's own row records an **85 W**
+enforced power limit (r49), not the 99.86 W measured after the cooling fix.
+**The re-measurement this paragraph asked for exists (updated 2026-09-24).** The
+mask measurement timed the chosen block-causal model itself - SDPA with RoPE
+applied, 975 positions, batch 16, bf16 - at **159.6-160.1 ms/step**, with the
+SMs at a median 2606-2617 MHz drawing 98.8-98.9 W of a 100 W limit, and one
+epoch took 2,813-2,822 s including 18 curve evaluations, about **0.78 h/epoch**
+(r54, on Linux). Gate any further re-measurement on **SM clock plus power
+draw**, never on `pstate == P0`. The pstate follows the memory clock domain and
+reads P4 during correct compute-bound work. **`bench/gpu_probe.py`'s compute
+verdict is not that gate as it stands**: its clock-decay statistic counts a
+sample taken before the load starts, so it fails a GPU that holds its clock
+under load (-5.7% as the probe computes it, +1.1% over load samples only,
+`runs.jsonl` r58). The enforced limit also moves with the platform: on Linux it
+reads 85 W at idle and 100 W under load (r58).
 
 **The risk to manage is overfitting, and it is measured rather than feared.** The
 cache carries **19.2 M** frame tokens (`manifest.json`). The sizing probe counts
@@ -697,8 +698,10 @@ predicts every cell as unchanged scores the baseline itself, and now fails.
 - **Take the figure from the probe's `runs.jsonl` row, not from memory.** The
   sizing probe's row exists for exactly this reason, and says so: it records
   sizing "computed in an earlier session and never written down", so that a plan
-  is written against numbers instead of recollections. No register entry is
-  created for the figure; that is a separate, deliberate act.
+  is written against numbers instead of recollections. **Registered 2026-09-24**,
+  by a separate, deliberate act: `canonical_numbers.md` now carries 85.67% for
+  this population and 86.69% for every val window's last frame, each with its
+  population and checkpoint.
 - **The comparison is like-for-like or it is nothing.** The requirement
   re-measures the baseline with `bench/token_stability_probe.py` on the same
   held-out population the model is scored on, so 85.67% is the bar only when that
@@ -875,16 +878,18 @@ number. Gate compute numbers on **SM clock plus power draw**, and bandwidth on
 No part of `mirage/dynamics.py` is written here, no run was launched, and no
 measurement was taken. There is no dataset and no checkpoint on the machine this
 was written on, so every number above is quoted from the record rather than
-earned here. **No register entry is created**: registering a number is a
-separate, deliberate act, and until then the `runs.jsonl` rows for the
-token-stability probe, the sizing probe and the mask measurement are the
-sources. **No bar is moved here.** The dynamics model's acceptance test was
-raised, not lowered, and `world_model_requirements.md` restated it on 2026-09-22;
-gate row 1 is written against that. Moving a bar *down* because a run missed it
-is the failure this project's rules exist to prevent, and nothing here does
-that - the one run since, the mask measurement, selected a mask and moved no bar.
-**The decisions above are recorded here, not taken here**: they were taken
-2026-09-18, 2026-09-21 and 2026-09-23, the last by the mask measurement. The one
-new call this plan makes - `ctx + 1` frames a window, in item 1 - is written as a
+earned here. **No register entry was created by this plan**: registering a
+number is a separate, deliberate act. That act was taken 2026-09-24 for the
+persistence baseline, now in `canonical_numbers.md` for both populations; for
+everything else, the `runs.jsonl` rows for the token-stability probe, the sizing
+probe and the mask measurement are the sources. **No bar is moved here.** The
+dynamics model's acceptance test was raised, not lowered, and
+`world_model_requirements.md` restated it on 2026-09-22; gate row 1 is written
+against that. Moving a bar *down* because a run missed it is the failure this
+project's rules exist to prevent, and nothing here does that - the one run
+since, the mask measurement, selected a mask and moved no bar. **The decisions
+above are recorded here, not taken here**: they were taken 2026-09-18,
+2026-09-21 and 2026-09-23, the last by the mask measurement. The one new call
+this plan makes - `ctx + 1` frames a window, in item 1 - is written as a
 recommendation with its alternative. Phases 3 and 4 stay undrafted, which is
 "profile before changing anything" applied to planning.
