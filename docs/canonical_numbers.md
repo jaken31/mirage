@@ -100,8 +100,8 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-HW-FP16` | **27.6 TFLOP/s** | fp16 matmul, after the chassis cooling fix. **Windows** | r4 | current, **Windows only** |
 | `NUM-HW-BW` | **308.3 GB/s** | Measured streaming read, against 384 real peak | r4 | current |
 | `NUM-HW-POWER` | **99.86 W** | Enforced power limit after the cooling fix. **Windows** | r4 | current, **Windows only** |
-| `NUM-HW-FP16-LINUX` | **31.6 TFLOP/s** | fp16 matmul on Linux (Omarchy), power-bound at the 100 W limit, NVIDIA-driven display asleep. Within 1.0% of r54's 31.3; a run with that display awake read 26.5 | r58 | current, **Linux only** |
-| `NUM-HW-POWER-LINUX` | **85 W idle / 100 W under load** | Enforced power limit on Linux, on AC: it rises to 100 W once load starts. Not one fixed value, so judge a run against the limit logged beside it | r58 | current, **Linux only** |
+| `NUM-HW-FP16-LINUX` | **31.6 TFLOP/s** | fp16 matmul on Linux (Omarchy), power-bound at the 100 W limit, NVIDIA-driven display inactive. Within 1.0% of r54's 31.3; a run with that display active read 26.5 | r58 | current, **Linux only** |
+| `NUM-HW-POWER-LINUX` | **85 W idle / 100 W under load** | Enforced power limit on Linux: it rises to 100 W once load starts. Not one fixed value, so judge a run against the limit logged beside it | r58 | current, **Linux only** |
 | `NUM-HW-VRAM` | **8 GB** | RTX 5060 **Laptop**, sm_120, capability (12,0) | CLAUDE.md | current |
 
 > **Platform labels added 2026-09-24.** The hardware entries were measured on
