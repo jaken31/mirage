@@ -283,6 +283,58 @@ class Window(NamedTuple):
     meta: np.ndarray  # (ctx+1,) meta_dtype - action, truth fields, ids
 
 
+class WindowIndex:
+    """Which frames window number `i` holds: an episode and an offset into it.
+
+    The addressing half of `WindowSampler`, split out so `mirage.dynamics` reads
+    its token windows through the same arithmetic instead of a copy. Window `i`
+    is frames `ep.start + offset` up to `ep.start + offset + window` of shard
+    `ep.shard`, where `(ep, offset) = locate(i)`. A second copy of this, off by
+    one somewhere, would pair the tokens of one window with the frames of
+    another and crash nothing.
+    """
+
+    def __init__(
+        self,
+        index: Iterable[Episode],
+        ctx: int,
+        split: str = "all",
+        val_fraction: float = 0.0,
+    ) -> None:
+        if split not in ("all", "train", "val"):
+            raise ValueError(f"split must be all, train or val, got {split!r}")
+
+        self.window = ctx + 1
+        self.split = split
+
+        keep = []
+        for ep in index:
+            if ep.length < self.window:
+                continue
+            if split != "all" and is_val(ep.episode_id, val_fraction) != (split == "val"):
+                continue
+            keep.append(ep)
+        if not keep:
+            raise ValueError(f"no episode of at least {self.window} frames in split {split!r}")
+        self.episodes: list[Episode] = keep
+
+        # Running totals of window counts, so `locate` is uniform over windows,
+        # not over episodes. The same thing today (every episode is 600 steps),
+        # but not once an episode is shorter: uniform over episodes would then
+        # oversample it.
+        self._cum = np.cumsum([ep.length - self.window + 1 for ep in self.episodes])
+
+    def __len__(self) -> int:
+        return int(self._cum[-1])
+
+    def locate(self, i: int) -> tuple[Episode, int]:
+        if not 0 <= i < len(self):
+            raise IndexError(f"window {i} out of range for {len(self)} windows")
+        k = int(np.searchsorted(self._cum, i, side="right"))
+        offset = i - (int(self._cum[k - 1]) if k else 0)
+        return self.episodes[k], offset
+
+
 class WindowSampler:
     """Fixed-length windows that never cross an episode boundary.
 
@@ -308,39 +360,17 @@ class WindowSampler:
         split: str = "all",
         val_fraction: float = 0.0,
     ) -> None:
-        if split not in ("all", "train", "val"):
-            raise ValueError(f"split must be all, train or val, got {split!r}")
-
         self.shards = list(shards)
-        self.window = ctx + 1
+        self.windows = WindowIndex(index, ctx, split, val_fraction)
+        self.window = self.windows.window
         self.split = split
-
-        keep = []
-        for ep in index:
-            if ep.length < self.window:
-                continue
-            if split != "all" and is_val(ep.episode_id, val_fraction) != (split == "val"):
-                continue
-            keep.append(ep)
-        if not keep:
-            raise ValueError(f"no episode of at least {self.window} frames in split {split!r}")
-        self.episodes: list[Episode] = keep
-
-        # Running totals of window counts, so `__getitem__` is uniform over
-        # windows, not over episodes. The same thing today (every episode is 600
-        # steps), but not once an episode is shorter: uniform over episodes
-        # would then oversample it.
-        self._cum = np.cumsum([ep.length - self.window + 1 for ep in self.episodes])
+        self.episodes: list[Episode] = self.windows.episodes
 
     def __len__(self) -> int:
-        return int(self._cum[-1])
+        return len(self.windows)
 
     def __getitem__(self, i: int) -> Window:
-        if not 0 <= i < len(self):
-            raise IndexError(f"window {i} out of range for {len(self)} windows")
-        k = int(np.searchsorted(self._cum, i, side="right"))
-        offset = i - (int(self._cum[k - 1]) if k else 0)
-        ep = self.episodes[k]
+        ep, offset = self.windows.locate(i)
         lo = ep.start + offset
         hi = lo + self.window
         shard = self.shards[ep.shard]
