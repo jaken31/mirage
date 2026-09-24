@@ -81,6 +81,7 @@ import math
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -105,6 +106,17 @@ R49_ROPE_UNTIED = 14_593_152           # runs.jsonl param count, RoPE + untied v
 ROPE_BASE = 10_000.0
 ARMS = ("strict", "block")
 ARM_MASK = {"strict": "strict_causal", "block": "block_causal"}
+
+
+def arm_config(arm: str) -> config.Config:
+    """base.json with `dynamics.mask` set to the arm's, through `config.load`, so
+    each arm's `dynamics_hash` names its own mask and nothing else differs."""
+    raw = json.loads(CONFIG.read_text(encoding="utf-8"))
+    raw["dynamics"]["mask"] = ARM_MASK[arm]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"{arm}.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return config.load(path)
 
 # The shared schedule. Tokenizer training's values (`fsq.train`) wherever
 # they apply, since that is the only precedent. Weight decay stays at a
@@ -434,11 +446,10 @@ def curve_point(model: Dynamics, lay: Layout, mask: torch.Tensor, d: Data,
     return out
 
 
-def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
+def train(arm: str, seed: int, resume: str | None = None,
           steps: int | None = None) -> str:
-    if cfg.dynamics["mask"] != ARM_MASK[arm]:
-        raise SystemExit(f"--arm {arm} needs dynamics.mask {ARM_MASK[arm]!r}, "
-                         f"the config names {cfg.dynamics['mask']!r}")
+    cfg = arm_config(arm)
+    assert cfg.dynamics["mask"] == ARM_MASK[arm], cfg.dynamics["mask"]
     _keep_awake()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = Data(cfg)
@@ -545,14 +556,14 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
                                             + "\n", encoding="utf-8", newline="\n")
         run.log({"final_train": True, **train_info})
         run_id = run.run_id
-    evaluate(run_id, cfg, d)
+    evaluate(run_id, d)
     return run_id
 
 
 # ------------------------------------------------------------------ evaluate
 
 @torch.no_grad()
-def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
+def evaluate(run_id: str, d: Data | None = None,
              stride: int = 1, batch: int = 64) -> dict:
     """Score a finished run on the scored frames, and write `result.json`.
 
@@ -564,9 +575,10 @@ def evaluate(run_id: str, cfg: config.Config, d: Data | None = None,
     kernels and break its exact generated == teacher-forced check.
     """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    d = d or Data(cfg)
     run_dir = ROOT / "runs" / run_id
     info = json.loads((run_dir / "train.json").read_text(encoding="utf-8"))
+    cfg = arm_config(info["arm"])
+    d = d or Data(cfg)
     ck = torch.load(run_dir / "model.pt", map_location=dev, weights_only=True)
     assert ck["step"] == info["steps"], f"{run_id} stopped at step {ck['step']} of {info['steps']}"
     for k in ("data_hash", "tokenizer_hash", "dynamics_hash"):
@@ -695,10 +707,13 @@ def decide(scores: dict[str, list[float]]) -> dict:
 
 def compare(run_ids: list[str]) -> dict:
     res = [json.loads((ROOT / "runs" / r / "result.json").read_text(encoding="utf-8")) for r in run_ids]
-    for key in ("data_hash", "tokenizer_hash", "dynamics_hash", "steps", "batch", "lr",
+    for key in ("data_hash", "tokenizer_hash", "steps", "batch", "lr",
                 "tokenizer_run", "frames"):
         vals = {json.dumps(r[key]) for r in res}
         assert len(vals) == 1, f"runs disagree on {key}: {vals}"
+    for r in res:
+        want = arm_config(r["arm"]).dynamics_hash
+        assert r["dynamics_hash"] == want, f"{r['run_id']}: dynamics_hash is not the {r['arm']} arm's"
     pops = {json.dumps({k: v for k, v in r["population"].items() if k != "gen_cells"}) for r in res}
     assert len(pops) == 1, "runs were scored on different populations"
     assert len({r["run_id"] for r in res}) == len(res), "a run was passed twice"
@@ -866,11 +881,10 @@ def main() -> None:
     if a.self_check:
         _self_check()
         return
-    cfg = config.load(CONFIG)
     if a.cmd == "train":
-        train(a.arm, a.seed, cfg, a.resume, a.steps)
+        train(a.arm, a.seed, a.resume, a.steps)
     elif a.cmd == "eval":
-        evaluate(a.run_id, cfg, stride=a.stride)
+        evaluate(a.run_id, stride=a.stride)
     elif a.cmd == "compare":
         compare(a.run_ids)
     else:
