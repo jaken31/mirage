@@ -322,9 +322,11 @@ holds only the decided value - except `mask`, which also admits
 `"strict_causal"` so the mask measurement's strict arm stays runnable. Admitting
 any other alternative is a `config.py` edit, made when its decision's trigger
 fires. Both bench probes build from `n_heads` and `mlp_ratio` in the config and
-dropped their own constants, and `bench/mask_probe.py train` refuses an `--arm`
-the config's `mask` does not name, so each arm's run logs the hash of its own
-mask. The move changed `dynamics_hash`, so the sizing probe's and the mask
+dropped their own constants. `bench/mask_probe.py` derives each arm's config
+from `base.json` with `mask` set to the arm's value, loaded through
+`config.load`, so the strict arm runs with no edit to `base.json`, each arm's
+run logs the hash of its own mask, and `compare` accepts a run only under its own
+arm's hash - which proves the arms differ in the mask alone. The move changed `dynamics_hash`, so the sizing probe's and the mask
 measurement's `runs.jsonl` rows carry the hash from before it.
 
 Two consequences, both verifiable by reading `mirage/config.py`:
