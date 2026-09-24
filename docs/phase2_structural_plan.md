@@ -456,6 +456,45 @@ a divergence trip, whichever fires first.**
   either rule continues from its last epoch if the gap it recorded asks for more.
   Neither rule has to be right the first time; it has to be recorded.
 
+**The instrument also scores gate row 1's own measure - amended 2026-09-24,
+before item 4 runs, by addition.** Decision 4a's per-epoch loss rule stands as
+written and still decides when the run stops. What a per-epoch instrument cannot
+do is see or keep an optimum inside an epoch. In the mask measurement, held-out
+loss was lowest at step 10,000, 0.58 of one epoch, and last-frame accuracy peaked
+at step 1,000, 0.06 of one. Re-read against persistence on the same windows
+(`runs.jsonl` r59), neither block-causal seed was above persistence at any of its
+18 curve points, the best-accuracy and lowest-loss points included. So a
+checkpoint chosen by held-out loss is not the one gate row 1 rewards. Alongside
+the loss rule, the first run:
+
+1. **Scores gate row 1's measure during training**, not only held-out loss:
+   held-out accuracy of the generated next frame. Under block-causal that is the
+   last frame's accuracy from one forward pass, so each point costs one pass.
+2. **Logs persistence on exactly the same windows beside each point.** The
+   windows are fixed, so it is computed once. Without it a curve cannot say
+   whether a point is above the bar, and r54's curve could not.
+3. **Evaluates at sub-epoch intervals.** The mask measurement used every 1,000
+   steps, about 2.7 minutes of training at its 160 ms/step.
+4. **Keeps the best checkpoint by that measure**, separately from the per-epoch
+   resumable checkpoint, and scores it on the full population against a baseline
+   re-measured on that population. For every val window's last frame,
+   `bench/token_stability_probe.py --episodes all --first-target 15` reads
+   **86.69%** (r54, reproduced in r57). Never score it against 85.67%, which is
+   the probe's default 12-episode population (r46).
+5. **Reports the false-flip rate on static cells** - the share of cells whose
+   token and own 15x15 pixel field did not change that the model predicts as
+   changed - beside row 10's copy overlap. On r54's final block-causal seed 0
+   checkpoint it read 6.4%, and those cells lost 51,946 cells against the 35,420
+   its correct flips won back (r59).
+6. **Plans for the answer being "no".** At its best checkpoint the mask
+   measurement's model was 0.10 to 0.19 points below persistence on the curve's
+   windows (r59). Decision 4 already chooses a remedy only once the gap is
+   measured, and the gap has one measurement: validation minus train
+   cross-entropy of 0.26 at one epoch (r54).
+
+This moves no bar. Row 1's bar is still the persistence baseline on the model's
+own population.
+
 The operational shape, all of it taken from precedent:
 
 - **A per-epoch resumable checkpoint plus `--resume`, from the first run.** At
@@ -500,8 +539,10 @@ positions a window. Scaling it would imply a verdict nobody measured.
 carrying `dynamics_hash`; `--resume` continues it with no visible discontinuity
 in the loss curve; the val loss is in the log from epoch 1; the stopping rule
 stops where decision 4a says, and the run's row records which rule fired and at
-which epoch; and peak VRAM and the GPU clock state are recorded next to the step
-time.
+which epoch; gate row 1's measure and persistence on the same windows are in the
+log at every sub-epoch point, and the best checkpoint by that measure is kept and
+scored on the full population against the baseline re-measured there; and peak
+VRAM and the GPU clock state are recorded next to the step time.
 
 ### 5. The token-to-pixel path, which does not exist yet
 
@@ -586,7 +627,7 @@ dynamics requirement as `world_model_requirements.md` restated it on 2026-09-22.
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Object permanence** - the memory result. Tier S: the project ships without it, and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and recoverable occlusion (5.35% of frames) is the event rate it scores over |
 | 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar is **unmeasured** for this model, and item 4 takes it |
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **Determinism** and **bench reproducibility** - a rerun matching within 5%. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
-| 10 | Train-val loss gap; share of predictions the copy baseline also gets right | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it |
+| 10 | Train-val loss gap; share of predictions the copy baseline also gets right; false-flip rate on static cells | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it. The third, added 2026-09-24 with item 4's amendment, is where the mask measurement's model lost to copying (r59) |
 
 Rows 1 to 6 and 8 to 9 are the pass/fail candidates; 7 is S-tier and reported;
 10 is reported. Row 1's bar is the dynamics requirement's restated one, and it is
@@ -702,7 +743,10 @@ loss rising for two consecutive epochs, after which the run continues for two
 more epochs before stopping, because decision 4 wants the size of the gap and not
 just where it turns. Item 4 states it in full, beside the per-epoch resumable
 checkpoint and `--resume` by run id that make stopping a decision point rather
-than the end of the run.
+than the end of the run. **Amended 2026-09-24, by addition:** alongside this rule
+the run scores gate row 1's measure against persistence on the same windows at
+sub-epoch intervals and keeps the best checkpoint by it. The rule itself is
+unchanged; item 4 has the amendment.
 
 **5. Rollout decoding - DECIDED 2026-09-21: greedy.** The revisit trigger in item
 6 stays in place: a rollout that freezes or falls into a short loop, not one that
