@@ -59,8 +59,8 @@ class Block(nn.Module):
 
 
 class Dynamics(nn.Module):
-    """A stand-in used only for sizing. Not the real dynamics model:
-    `mirage/dynamics.py` does not exist yet, and this is not meant to become it."""
+    """A stand-in used only for sizing. Not the real dynamics model, which is
+    `mirage/dynamics.py`, and this is not meant to become it."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int,
                  vocab_out: int, seq: int, learned_pos: bool, tied: bool,
