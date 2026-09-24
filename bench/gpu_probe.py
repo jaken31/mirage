@@ -43,7 +43,7 @@ NBYTES = 1024 << 20
 
 FIELDS = ["pstate", "clocks.current.sm", "clocks.max.sm", "clocks.current.memory",
           "clocks.max.memory", "power.draw", "enforced.power.limit", "temperature.gpu",
-          "utilization.gpu", "display_active"]
+          "utilization.gpu"]
 
 
 def sample():
@@ -52,9 +52,9 @@ def sample():
     out = subprocess.run(
         ["nvidia-smi", f"--query-gpu={','.join(FIELDS)}", "--format=csv,noheader,nounits"],
         capture_output=True, text=True).stdout.strip()
-    p, sm, smx, mem, memx, pw, lim, tmp, util, disp = [x.strip() for x in out.split(",")]
+    p, sm, smx, mem, memx, pw, lim, tmp, util = [x.strip() for x in out.split(",")]
     return dict(t=t, pstate=p, sm=int(sm), sm_max=int(smx), mem=int(mem), mem_max=int(memx),
-                power=float(pw), limit=float(lim), temp=float(tmp), util=util, display=disp)
+                power=float(pw), limit=float(lim), temp=float(tmp), util=util)
 
 
 def nvidia_monitors():
@@ -155,8 +155,7 @@ def main():
           f"{s0['power']:.1f} W of {s0['limit']:.0f} W, {s0['temp']:.0f} C, {s0['util']}% util")
     mons = nvidia_monitors()
     print(f"display: NVIDIA-driven monitors "
-          f"{'unknown (no /sys/class/drm)' if mons is None else ', '.join(mons) or 'none connected'}"
-          f"; nvidia-smi display_active {s0['display']}\n")
+          f"{'unknown (no /sys/class/drm)' if mons is None else ', '.join(mons) or 'none connected'}\n")
 
     # --- phase 1: compute ---------------------------------------------------
     a = torch.randn(K, K, device=dev, dtype=torch.float16)
