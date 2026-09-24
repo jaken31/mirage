@@ -109,6 +109,10 @@ next to the number:
 | Bandwidth (GB/s) | `clocks.current.memory` == `clocks.max.memory` | anything below max |
 
 `bench/gpu_probe.py` runs both phases and prints the gate beside each figure.
+It also requires the SM clock to hold within 5% from the first third of the load
+to the last, and judges compute on samples taken under load only, so the idle
+clock before the first matmul cannot fail it. `--self-check` tests that verdict
+logic without a GPU.
 
 **Sample the thermal counters, not the throttle flags.** The instantaneous flags
 read `Not Active` through a 45 W cap. The evidence lives in the counters:
