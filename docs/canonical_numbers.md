@@ -97,10 +97,17 @@ These are chosen, not measured. They move only when someone decides to move them
 |---|---|---|---|---|
 | `NUM-HW-READBACK` | **25.4 us** | `mjr_readPixels` RGB at 64x64, GLFW offscreen | r2 | current |
 | `NUM-HW-RENDERREAD` | **75.8 us** | Render plus readback, same conditions | r2 | current |
-| `NUM-HW-FP16` | **27.6 TFLOP/s** | fp16 matmul, after the chassis cooling fix | r4 | current |
+| `NUM-HW-FP16` | **27.6 TFLOP/s** | fp16 matmul, after the chassis cooling fix. **Windows** | r4 | current, **Windows only** |
 | `NUM-HW-BW` | **308.3 GB/s** | Measured streaming read, against 384 real peak | r4 | current |
-| `NUM-HW-POWER` | **99.86 W** | Enforced power limit after the cooling fix | r4 | current |
+| `NUM-HW-POWER` | **99.86 W** | Enforced power limit after the cooling fix. **Windows** | r4 | current, **Windows only** |
+| `NUM-HW-FP16-LINUX` | **31.6 TFLOP/s** | fp16 matmul on Linux (Omarchy), power-bound at the 100 W limit, NVIDIA-driven display asleep. Within 1.0% of r54's 31.3; a run with that display awake read 26.5 | r58 | current, **Linux only** |
+| `NUM-HW-POWER-LINUX` | **85 W idle / 100 W under load** | Enforced power limit on Linux, on AC: it rises to 100 W once load starts. Not one fixed value, so judge a run against the limit logged beside it | r58 | current, **Linux only** |
 | `NUM-HW-VRAM` | **8 GB** | RTX 5060 **Laptop**, sm_120, capability (12,0) | CLAUDE.md | current |
+
+> **Platform labels added 2026-09-24.** The hardware entries were measured on
+> Windows and carried no platform, while Linux reads a different fp16 figure and a
+> power limit that moves with load. `NUM-HW-FP16` and `NUM-HW-POWER` are now
+> labelled Windows, and each has a Linux sibling. Neither supersedes the other.
 
 ## Dataset - the shipped 64x64 set
 
@@ -118,6 +125,18 @@ These are chosen, not measured. They move only when someone decides to move them
 | `NUM-DATA-F5RATIO` | **2.15** | Data-policy flatness ratio at the shipped physics | r20 | current |
 | `NUM-DATA-GENFPS` | **4,980 fps** | Full regeneration, 60.2 s for the set | r29 | current |
 | `NUM-DATA-Q4CEIL` | **83.1%** | Ground truth's own action-agreement score, i.e. **the absolute action-following bar sits above its own ceiling** | r20 | current |
+
+## Dynamics - the persistence baseline
+
+Added 2026-09-24. The baseline gate row 1 must beat - copying the previous frame's
+token at the same cell. **It belongs to a population and a tokenizer checkpoint,
+not to the requirement**, so each entry names both. Quote the one whose population
+matches the model's; on any other, re-measure with `bench/token_stability_probe.py`.
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-DYN-PERSIST-R1` | **85.67%** | Persistence on R1 (`20260829-005439-r1`) over the token-stability probe's default population: 12 val episodes, every transition, 460,032 cell-transitions | r46, r57 | current, **this population and checkpoint only** |
+| `NUM-DYN-PERSIST-R1-ALL` | **86.69%** | Persistence on R1 (`20260829-005439-r1`) over every val window's last frame: 27 episodes, target frames 15-599, 1,010,880 cells. `--episodes all --first-target 15`. The population the mask measurement and item 4 score on | r54, r57 | current, **this population and checkpoint only** |
 
 ## Dataset - the 96x96 fork
 
