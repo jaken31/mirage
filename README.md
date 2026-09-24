@@ -71,7 +71,7 @@ nothing.
 ## Checks
 
 Every module owns a `_self_check()` and stays runnable alone -
-`python -m mirage.data`, `python -m mirage.validator`, and so on. To run all five:
+`python -m mirage.data`, `python -m mirage.validator`, and so on. To run all six:
 
 ```bash
 python check.py
@@ -79,9 +79,10 @@ python check.py
 
 It exits nonzero if any fails. It runs the cheapest first, so a break in
 `config` shows up in seconds rather than after `data` has swept 300,000 frames.
-`config`, `logging` and `fsq` need no dataset at all; `validator` and `data` fall
-back to the committed 40-frame fixture in `mirage/fixtures/` when `data/shards`
-is empty. This is a runner, not a test framework, and it does not reverse the
+`config`, `logging` and `fsq` need no dataset at all; `validator`, `data` and
+`dynamics` fall back to the committed 40-frame fixture in `mirage/fixtures/` when
+`data/shards` is empty, and `dynamics` also checks R1's token cache when there is
+one. This is a runner, not a test framework, and it does not reverse the
 per-module choice recorded in `docs/phase0_debt_checklist.md`.
 
 It also validates `docs/canonical_numbers.md`, the register holding the current
