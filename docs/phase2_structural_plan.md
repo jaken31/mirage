@@ -80,7 +80,7 @@ ground-truth ones.
 | File | Owns | Explicitly does not own |
 |---|---|---|
 | `mirage/dynamics.py` | the sequence layout, the token/action window sampler, the model, the train loop | pixels, the tokenizer, and *writing* the token cache - that is `fsq_eval.write_token_cache`, and Phase 2 only reads it |
-| `mirage/dynamics_eval.py` | rollout and the gate table - everything that runs against a finished checkpoint. **Only if the 500-line trigger fires**, the same trigger that split `fsq_eval.py` out of `fsq.py` | training anything |
+| `mirage/dynamics_eval.py` | rollout and the gate table - everything that runs against a finished checkpoint. **The 500-line trigger fired at item 3**, the same trigger that split `fsq_eval.py` out of `fsq.py`, so item 6 starts here | training anything |
 | `mirage/configs/base.json`, `dynamics` section | the shape knobs that must sit inside `dynamics_hash` | the training knobs, which travel in the checkpoint's `knobs` dict as Phase 1's do |
 | `mirage/config.py` | the `dynamics` key set and its validators | anything model-shaped. It gains keys in item 2 and nothing else |
 | `mirage/fsq.py` | the inverse of `FSQ.codes_to_indices`, which does not exist yet (item 5) | the rollout. The token-to-pixel path belongs beside the pixel-to-token path, not in a second copy |
@@ -407,6 +407,20 @@ Three choices that are not stylistic:
   the assert is the per-block form under "Before item 1", not the strictly-causal
   one written below.
 
+**Landed 2026-09-24**, in `mirage/dynamics.py`: `Dynamics`, built by `build(cfg)`
+from the `dynamics` section. `build` refuses any value the file does not
+implement, including `strict_causal`, which `config.py` admits only for the mask
+measurement's strict arm. It is the mask measurement's block-causal model, and
+the self-check asserts so: the same parameters from the same seed and
+bit-identical logits. Under block-causal, "action[t]'s position and the first 63
+positions of frame t" becomes **the 64 frame-token positions of each block**,
+because block `t`'s cell `i` predicts frame `t+1`'s cell `i`. The action slot
+closing each block is the one position left unscored, so the loss is still 64
+frame targets a frame step and no action target, and frame 0 is context only.
+`frame_loss` reads logits only there, with no clamp. SDPA's speed against
+materialized attention, and RoPE's own cost, stay unmeasured for the first run.
+Item 3 moved `dynamics.py` past 500 lines; decision 6 says what that changes.
+
 **Working when:** `python -m mirage.dynamics` self-checks with **no dataset and no
 checkpoint**, the way `mirage.config`, `mirage.logging` and `mirage.fsq` already
 do. It prints the parameter count, the first run's row records it, and the count
@@ -614,7 +628,7 @@ decoder, since both paths then feed the same convolutions the same codes.
 
 ### 6. Rollout, and the gate
 
-`dynamics_eval.py`, if the 500-line trigger fires.
+`dynamics_eval.py`, since the 500-line trigger fired at item 3.
 
 **Rollout shape.** A seed clip of `ctx` frames from a **val** episode, then one
 action per step taken from that episode's own action column, decoded greedily.
@@ -681,11 +695,12 @@ column is where it first gets a number.
 
 ---
 
-## Decisions: eight taken, one on its trigger
+## Decisions: eight taken, one settled by its trigger
 
 Each one changes an item above, so each is named rather than quietly resolved.
 Decision 1 was taken 2026-09-18, decision 9 on 2026-09-23 by measurement, and
-decision 7 on 2026-09-23.
+decision 7 on 2026-09-23. Decision 6 was never taken: its trigger fired at item
+3, on 2026-09-24.
 The other five were taken 2026-09-21, after a walkthrough of this plan's draft,
 and each is written down with its rationale.
 
@@ -797,9 +812,12 @@ rule itself is unchanged; item 4 has the amendment.
 merely drifts. Greedy keeps gate row 9 an exact-reproduction row rather than a
 statistical one.
 
-**6. Whether `dynamics_eval.py` splits out - governed by its trigger, not taken
-now.** The same 500-line trigger that split `fsq_eval.py` out of `fsq.py`,
-applied when it fires and not before.
+**6. Whether `dynamics_eval.py` splits out - governed by its trigger, which fired
+at item 3 (2026-09-24).** The same 500-line trigger that split `fsq_eval.py` out
+of `fsq.py`, applied when it fires and not before. The model took `dynamics.py`
+past 500 lines. That split is by when the code runs, and nothing in
+`dynamics.py` yet runs against a finished checkpoint, so nothing moved: rollout
+and the gate table, item 6, start in `dynamics_eval.py`.
 
 **7. Exposure bias - DECIDED 2026-09-23: name a trigger, build no mitigation
 now.** Teacher forcing trains on ground-truth context, and the rollout feeds the
@@ -879,7 +897,7 @@ on.
 | The coherence horizon's terminator | The frame validator fires on **0.00%** of 300-step substitutions against **100%** on the noise control - coherence-horizon blind probe | the continuity check replaces it, and the probe stays as its regression test |
 | Run-to-run noise | 0.00167 dB, and it is the **tokenizer's** 1-epoch figure - register | **unmeasured for a dynamics rung.** Do not call a margin "inside the noise" here; no seed has been repeated on this model |
 | Peak training VRAM | **no measurement of the bar** for this model - the sizing probe recorded none. The mask measurement recorded 2.227 GB block-causal and 2.333 GB strict at batch 16 (r54), and states it is not item 4's measurement of the bar | item 4 takes it, at the batch actually used. Batch 16 is the probes' choice, not an optimum |
-| SDPA against materialized attention, and RoPE's rotation | **unmeasured as an A/B.** The chosen model through SDPA with RoPE applied is timed at 159.6-160.1 ms/step (r54), against the sizing probe's 221.6 through `nn.MultiheadAttention` with no rotation - two changes at once, on different platforms, so neither's own share is known | item 3 measures both rather than assuming a sign |
+| SDPA against materialized attention, and RoPE's rotation | **unmeasured as an A/B.** The chosen model through SDPA with RoPE applied is timed at 159.6-160.1 ms/step (r54), against the sizing probe's 221.6 through `nn.MultiheadAttention` with no rotation - two changes at once, on different platforms, so neither's own share is known | the first run measures both rather than assuming a sign; item 3 built the model and took no GPU measurement |
 | The epoch-time bar's 300,000-frame equivalent | **unmeasured** | decision 8 fixes how that bar is scored, not what it reads. Not derived from the probe's windowed epoch |
 | Rollout throughput, and any performance row | **unmeasured**, deliberately. The five interactive performance rows (sustained frame rate, p99 frame time, input-to-display latency, the p99/p50 jitter ratio, and the eager-to-engine speedup) belong to Phase 3's baseline and Phase 4's ladder | Phase 2 produces a checkpoint, not a frame rate. The 30-minute epoch bar is the only performance row this phase touches, and item 4 says how it is scored |
 
