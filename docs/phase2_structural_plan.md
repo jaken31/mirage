@@ -134,11 +134,18 @@ checkpoint is larger than its whole deficit to block-causal. So **gate row 1's
 measure, taken as teacher-forced accuracy, would have picked the wrong arm**.
 Under block-causal the two readings are one number. Neither arm beat persistence
 at the measurement's one-epoch endpoint, which is past both arms' held-out
-minimum. That is item 4's overfitting risk showing up on schedule, not a verdict
-on the dynamics requirement. **The recorded trigger to reopen the mask:** a
-generated-frame comparison at each arm's held-out optimum, on the same
-population, with strictly-causal ahead by more than the seed spread. The mask
-measurement did not measure that.
+minimum. **Overfitting is not the whole story (2026-09-24, `runs.jsonl` r59).**
+Under block-causal the held-out curve's last-frame accuracy is the generated
+score, and re-read against persistence on the curve's own 512 windows, neither
+block-causal seed was above it at any of 18 checkpoints - its best-accuracy point
+(step 1,000) and its lowest-loss point (step 10,000) included. It is still not a
+verdict on the dynamics requirement: the probe is a one-epoch model, not Phase
+2's, and item 4's instrument is amended to measure this directly. **The recorded
+trigger to reopen the mask:** a generated-frame comparison at each arm's held-out
+optimum, on the same population, with strictly-causal ahead by more than the seed
+spread. The record holds half of it: block-causal's generated score at its
+optimum is on its curve (r59), strictly-causal's is not, because strict's curve
+accuracy is teacher-forced.
 
 **The items below were written for strictly-causal attention**, which is what the
 sizing probe timed: `bench/dyn_size_probe.py` builds its mask as `torch.triu`
@@ -401,25 +408,40 @@ same token rows item 1 asserted.
 fp32 because the tokenizer is under a million parameters, and because changing
 the arithmetic under a 0.087 dB comparison would make later rungs incomparable.
 Here the sizing probe measures **221.6 ms/step in bf16 against 622.4 in fp32 at
-batch 16, 2.81x**, for **1.06 h/epoch against 2.99 h**. Nothing in Phase 2 rests
-on a sub-tenth-dB comparison, and the architecture doc's own condition for bf16 -
+batch 16, 2.81x**, for **1.06 h/epoch against 2.99 h** (the chosen model's own
+bf16 step, timed since, is below). Nothing in Phase 2 rests on a sub-tenth-dB
+comparison, and the architecture doc's own condition for bf16 -
 "the 15M-parameter dynamics model at context 1024, where it is necessary" - is the
 model being built. Read that 1024 as the round number it is: the probe priced 975
 positions, item 1 derives 1,040 for the sampler's window, and 1024 has never been
 a measurement of anything here.
 
-**Quote the sizing probe's throughput as a lower bound, and say so every time.**
-`bench/gpu_probe.py` ran alongside and returned **compute FAIL**: the SMs held
-2385 MHz of a 3090 MHz maximum, and fp16 matmul read 20.6 TFLOP/s against the
-27.6 TFLOP/s this machine records when cool. A clocked-up run is faster by up to
-about a third. **Re-measure before any schedule leans on it**, and gate the
-re-measurement on **SM clock plus power draw**, never on `pstate == P0`. The
-pstate follows the memory clock domain and reads P4 during correct compute-bound
-work. The enforced power limit to judge against is 99.86 W.
+**The sizing probe's throughput is a lower bound, and schedules now use the
+chosen model's own timing.** `bench/gpu_probe.py` ran alongside the sizing probe
+and returned **compute FAIL**: the SMs held 2385 MHz of a 3090 MHz maximum, and
+fp16 matmul read 20.6 TFLOP/s against the 27.6 TFLOP/s this machine records when
+cool on Windows (31.6 on Linux, r58). That run's own row records an **85 W**
+enforced power limit (r49), not the 99.86 W measured after the cooling fix.
+**The re-measurement this paragraph asked for exists (updated 2026-09-24).** The
+mask measurement timed the chosen block-causal model itself - SDPA with RoPE
+applied, 975 positions, batch 16, bf16 - at **159.6-160.1 ms/step**, with the
+SMs at a median 2606-2617 MHz drawing 98.8-98.9 W of a 100 W limit, and one
+epoch took 2,813-2,822 s including 18 curve evaluations, about **0.78 h/epoch**
+(r54, on Linux). Gate any further re-measurement on **SM clock plus power
+draw**, never on `pstate == P0`. The pstate follows the memory clock domain and
+reads P4 during correct compute-bound work. **`bench/gpu_probe.py`'s compute
+verdict is not that gate as it stands**: its clock-decay statistic counts a
+sample taken before the load starts, so it fails a GPU that holds its clock
+under load (-5.7% as the probe computes it, +1.1% over load samples only,
+`runs.jsonl` r58). The enforced limit also moves with the platform: on Linux it
+reads 85 W at idle and 100 W under load (r58).
 
-**The risk to manage is overfitting, and it is measured rather than feared.** Per
-the sizing probe, the cache carries **19.5 M tokens** against a Chinchilla-optimal
-**291.9 M** for this parameter count: **15.0x under**. One epoch draws **276,705
+**The risk to manage is overfitting, and it is measured rather than feared.** The
+cache carries **19.2 M** frame tokens (`manifest.json`). The sizing probe counts
+**19.5 M**, 300,000 frames x 65, because it adds one action token per frame, and
+actions come from the meta records, not the cache. Against a Chinchilla-optimal
+**291.9 M** for this parameter count that is **15.0x under** counting actions and
+15.2x on frame tokens alone. One epoch draws **276,705
 train windows totalling 269.8 M tokens**, which exceeds the dataset **13.8x from
 window overlap alone**. That is repetition, not new information. **So the first
 run's job is to find the train/val gap, not to close it.** Log held-out loss
@@ -440,13 +462,12 @@ and heavier regularisation do not.
 **The first run's stopping rule - decision 4a, taken 2026-09-21: an epoch cap or
 a divergence trip, whichever fires first.**
 
-- **The cap is 10 epochs.** At the probe's 1.06 h/epoch, that is one overnight
-  window. The probe calls that figure pessimistic: its throughput is a lower
-  bound, which makes its time an upper bound - but only at 975 positions a
-  window. Derived, not measured: 10.6 h of training steps at 975 positions a
-  window, before the per-epoch held-out pass, which the probe did not time. At
-  the 1,040 positions item 1 recommends, the epoch time is unmeasured, and the
-  probe's figure does not bound it.
+- **The cap is 10 epochs.** At the chosen model's measured 0.78 h/epoch (r54),
+  which includes its 18 curve evaluations, that is one overnight window.
+  Derived, not measured: about 7.8 h plus the per-epoch held-out passes.
+  Under block-causal a 16-frame window is 975 positions, the length r54 timed.
+  The sizing probe's 1.06 h/epoch, from a lower-bound throughput, was the
+  figure this cap was first set against.
 - **The trip is held-out loss rising for two consecutive epochs.** When it fires,
   the run continues for two more epochs and then stops, because decision 4 wants
   the **size** of the gap, not just where it turns. Whichever rule fires first
@@ -455,6 +476,45 @@ a divergence trip, whichever fires first.**
   resumable checkpoint and `--resume` by run id (below) mean a run stopped by
   either rule continues from its last epoch if the gap it recorded asks for more.
   Neither rule has to be right the first time; it has to be recorded.
+
+**The instrument also scores gate row 1's own measure - amended 2026-09-24,
+before item 4 runs, by addition.** Decision 4a's per-epoch loss rule stands as
+written and still decides when the run stops. What a per-epoch instrument cannot
+do is see or keep an optimum inside an epoch. In the mask measurement, held-out
+loss was lowest at step 10,000, 0.58 of one epoch, and last-frame accuracy peaked
+at step 1,000, 0.06 of one. Re-read against persistence on the same windows
+(`runs.jsonl` r59), neither block-causal seed was above persistence at any of its
+18 curve points, the best-accuracy and lowest-loss points included. So a
+checkpoint chosen by held-out loss is not the one gate row 1 rewards. Alongside
+the loss rule, the first run:
+
+1. **Scores gate row 1's measure during training**, not only held-out loss:
+   held-out accuracy of the generated next frame. Under block-causal that is the
+   last frame's accuracy from one forward pass, so each point costs one pass.
+2. **Logs persistence on exactly the same windows beside each point.** The
+   windows are fixed, so it is computed once. Without it a curve cannot say
+   whether a point is above the bar, and r54's curve could not.
+3. **Evaluates at sub-epoch intervals.** The mask measurement used every 1,000
+   steps, about 2.7 minutes of training at its 160 ms/step.
+4. **Keeps the best checkpoint by that measure**, separately from the per-epoch
+   resumable checkpoint, and scores it on the full population against a baseline
+   re-measured on that population. For every val window's last frame,
+   `bench/token_stability_probe.py --episodes all --first-target 15` reads
+   **86.69%** (r54, reproduced in r57). Never score it against 85.67%, which is
+   the probe's default 12-episode population (r46).
+5. **Reports the false-flip rate on static cells** - the share of cells whose
+   token and own 15x15 pixel field did not change that the model predicts as
+   changed - beside row 10's copy overlap. On r54's final block-causal seed 0
+   checkpoint it read 6.4%, and those cells lost 51,946 cells against the 35,420
+   its correct flips won back (r59).
+6. **Plans for the answer being "no".** At its best checkpoint the mask
+   measurement's model was 0.10 to 0.19 points below persistence on the curve's
+   windows (r59). Decision 4 already chooses a remedy only once the gap is
+   measured, and the gap has one measurement: validation minus train
+   cross-entropy of 0.26 at one epoch (r54).
+
+This moves no bar. Row 1's bar is still the persistence baseline on the model's
+own population.
 
 The operational shape, all of it taken from precedent:
 
@@ -477,9 +537,11 @@ The operational shape, all of it taken from precedent:
   That matters more here than in Phase 1, because what hangs before step 0 is an
   overnight run.
 - **The training VRAM bar ("peak training VRAM <= 7.5 GB", on an 8 GB card)
-  is unmeasured for this model.** The sizing probe recorded no VRAM figure, and
-  its batch of 16 was the probe's choice rather than a measured optimum. Measure
-  both on the first run, at the batch actually used.
+  has no measurement for this model yet.** The sizing probe recorded no VRAM
+  figure. The mask measurement recorded a peak of 2.227 GB for block-causal and
+  2.333 GB for strict at batch 16 (r54), and states it is not item 4's
+  measurement of that bar. Batch 16 was the probes' choice rather than a measured
+  optimum. Measure both on the first run, at the batch actually used.
 
 **The epoch-time bar is scored against a 300,000-frame equivalent -
 decision 8, taken 2026-09-21.** The bar - "full 300k-frame epoch <= 30 min", tier
@@ -500,8 +562,10 @@ positions a window. Scaling it would imply a verdict nobody measured.
 carrying `dynamics_hash`; `--resume` continues it with no visible discontinuity
 in the loss curve; the val loss is in the log from epoch 1; the stopping rule
 stops where decision 4a says, and the run's row records which rule fired and at
-which epoch; and peak VRAM and the GPU clock state are recorded next to the step
-time.
+which epoch; gate row 1's measure and persistence on the same windows are in the
+log at every sub-epoch point, and the best checkpoint by that measure is kept and
+scored on the full population against the baseline re-measured there; and peak
+VRAM and the GPU clock state are recorded next to the step time.
 
 ### 5. The token-to-pixel path, which does not exist yet
 
@@ -584,18 +648,20 @@ dynamics requirement as `world_model_requirements.md` restated it on 2026-09-22.
 | 5 | Action-following agreement, and the simulator's own agreement on the same subset | **>= 90% of the ground-truth term, both numbers reported** | **Action-following** - agreement is `sign(theta_t+1 - theta_t)` against the commanded sign, on an **action-balanced** subset drawn from the val split. An absolute bar there fails a model that is exactly right, which is why the bar is relative. `bench/hold_probe.py` measures the ground-truth term - **re-measure it, see the gotcha** |
 | 6 | Link-length drift over a 200-step rollout, per link, and the simulator's own drift | **<= 1.1x the ground-truth term, per link, both numbers reported** | **Link-length drift** - the statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. Ground truth reads 23.0% on link0 and 44.2% on link1, so a perfect model fails any absolute bar. `bench/link_drift_probe.py` measures the ground-truth term. **Do not re-attempt the deprojection** - it was measured and refuted |
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Object permanence** - the memory result. Tier S: the project ships without it, and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and recoverable occlusion (5.35% of frames) is the event rate it scores over |
-| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar is **unmeasured** for this model, and item 4 takes it |
+| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar has **no measurement** for this model yet, and item 4 takes it; the mask measurement's 2.227 GB peak at batch 16 (r54) says it is not that measurement |
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **Determinism** and **bench reproducibility** - a rerun matching within 5%. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
-| 10 | Train-val loss gap; share of predictions the copy baseline also gets right | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it |
+| 10 | Train-val loss gap; share of predictions the copy baseline also gets right; false-flip rate on static cells | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it. The third, added 2026-09-24 with item 4's amendment, is where the mask measurement's model lost to copying (r59) |
 
 Rows 1 to 6 and 8 to 9 are the pass/fail candidates; 7 is S-tier and reported;
 10 is reported. Row 1's bar is the dynamics requirement's restated one, and it is
 **much harder than the requirement originally promised**. The token-stability
 probe records the zero-parameter copy baseline as far above 3x the marginal
 top-1, so a model that predicts every cell unchanged passed the old wording and
-fails this one. **That comparison is asserted, not measured** -
-`bench/token_stability_probe.py` does not compute the marginal top-1 - so row 1's
-marginal-frequency column is where it first gets a number.
+fails this one. **That comparison was asserted, not measured, until the mask
+measurement computed the marginal top-1 on its own population**: code 474 at
+7.00% against persistence's 86.69%, 12.4x (r54). `bench/token_stability_probe.py`
+still does not compute it, so on any other population row 1's marginal-frequency
+column is where it first gets a number.
 
 ---
 
@@ -615,7 +681,8 @@ recorded, for Phase 2 and deliberately without acting on it, that **copying the
 previous frame's token at the same cell scores 85.67%** on the R1 checkpoint
 Phase 2 inherits, over 460,032 held-out cell-transitions from 12 val episodes,
 **at zero parameters**. It records that as far above 3x the marginal top-1, which
-is asserted rather than measured. That baseline is now the bar, and gate row 1 is
+it asserted rather than measured; the mask measurement has since measured it at
+12.4x on its own population (r54). That baseline is now the bar, and gate row 1 is
 written against it.
 
 **The rationale, recorded because the bar moved on it: an acceptance test a
@@ -631,8 +698,10 @@ predicts every cell as unchanged scores the baseline itself, and now fails.
 - **Take the figure from the probe's `runs.jsonl` row, not from memory.** The
   sizing probe's row exists for exactly this reason, and says so: it records
   sizing "computed in an earlier session and never written down", so that a plan
-  is written against numbers instead of recollections. No register entry is
-  created for the figure; that is a separate, deliberate act.
+  is written against numbers instead of recollections. **Registered 2026-09-24**,
+  by a separate, deliberate act: `canonical_numbers.md` now carries 85.67% for
+  this population and 86.69% for every val window's last frame, each with its
+  population and checkpoint.
 - **The comparison is like-for-like or it is nothing.** The requirement
   re-measures the baseline with `bench/token_stability_probe.py` on the same
   held-out population the model is scored on, so 85.67% is the bar only when that
@@ -696,13 +765,16 @@ heavier regularisation do not.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first.
-The cap is 10 epochs, one overnight window at the sizing probe's 1.06 h/epoch at
-975 positions a window (the time at 1,040 is unmeasured). The trip is held-out
-loss rising for two consecutive epochs, after which the run continues for two
-more epochs before stopping, because decision 4 wants the size of the gap and not
-just where it turns. Item 4 states it in full, beside the per-epoch resumable
-checkpoint and `--resume` by run id that make stopping a decision point rather
-than the end of the run.
+The cap is 10 epochs, one overnight window at the chosen model's measured
+0.78 h/epoch (r54; the sizing probe's lower-bound figure was 1.06 h). The trip is
+held-out loss rising for two consecutive epochs, after which the run continues
+for two more epochs before stopping, because decision 4 wants the size of the
+gap and not just where it turns. Item 4 states it in full, beside the per-epoch
+resumable checkpoint and `--resume` by run id that make stopping a decision
+point rather than the end of the run. **Amended 2026-09-24, by addition:**
+alongside this rule the run scores gate row 1's measure against persistence on
+the same windows at sub-epoch intervals and keeps the best checkpoint by it. The
+rule itself is unchanged; item 4 has the amendment.
 
 **5. Rollout decoding - DECIDED 2026-09-21: greedy.** The revisit trigger in item
 6 stays in place: a rollout that freezes or falls into a short loop, not one that
@@ -776,8 +848,9 @@ on.
 | Model shape | `d_model` 384, 8 layers, 6 heads, MLP 4x - sizing probe | item 3 does not choose these; they were specified and are now priced |
 | Sequence | 15 frames x (64 + 1) = **975** positions, vocab **521** in / **512** out - sizing probe | the 65 positions per frame step that decision 2 lays out. **975 is `ctx x 65`, and the sampler's window is `ctx + 1` frames** (item 1), so read it as the probe's pricing, not as the training sequence |
 | Parameters | **14,396,544** RoPE + tied, **14,593,152** RoPE + untied, **14,770,944** learned + tied, **14,967,552** learned + untied; spread **571,008** - sizing probe | **the irreversible layout choice is not a capacity choice**, and the parameter bar passes at all four. Decisions 2 and 3 take **RoPE + untied** |
-| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - sizing probe | bf16 for item 4, and decision 4a's cap. **A lower bound on throughput, so an upper bound on time, at 975 positions a window only**, and not a bound at item 1's 1,040: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against the cool machine's 27.6. Timed on the RoPE + untied parameter layout with no rotation, through `nn.MultiheadAttention`, at 975 positions a window |
-| Data against capacity | **19.5 M** cache tokens against a Chinchilla-optimal **291.9 M**, **15.0x under**; one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - sizing probe | **the phase's risk is overfitting, not throughput**. Decision 4: the first run measures the gap before a remedy is chosen. The epoch's token figures are priced at 975 positions a window (item 1) |
+| Step and epoch cost | bf16 **221.6 ms/step** at batch 16, **1.06 h/epoch**; fp32 **622.4 ms** and **2.99 h** - sizing probe | bf16 for item 4. **A lower bound on throughput, so an upper bound on time, at 975 positions a window only**: `gpu_probe` returned compute FAIL, 2385 of 3090 MHz and 20.6 TFLOP/s against the cool machine's 27.6, under an 85 W enforced limit (r49). Timed on the RoPE + untied parameter layout with no rotation, through `nn.MultiheadAttention`, at 975 positions a window. **Superseded for schedules by the row below** |
+| The chosen model's step and epoch cost | block-causal bf16 **159.6-160.1 ms/step** at batch 16, 975 positions, through SDPA with RoPE applied, SMs at a median 2606-2617 MHz and 98.8-98.9 W of 100 W; one epoch **2,813-2,822 s, about 0.78 h**, including 18 curve evaluations - mask measurement (r54, Linux) | decision 4a's cap and any schedule. Gated on SM clock plus power draw. `gpu_probe`'s own compute FAIL in that row comes from its decay statistic counting a pre-load sample, not from the GPU (r58) |
+| Data against capacity | **19.5 M** tokens, 300,000 frames x 65 counting one action token per frame (the cache itself holds **19.2 M** frame tokens, `manifest.json`), against a Chinchilla-optimal **291.9 M**, **15.0x under** (15.2x on frame tokens alone); one epoch draws **276,705** windows totalling **269.8 M** tokens, **13.8x** the dataset from overlap - sizing probe | **the phase's risk is overfitting, not throughput**. Decision 4: the first run measures the gap before a remedy is chosen. The epoch's token figures are priced at 975 positions a window (item 1) |
 | Token cache size | **38.4 MB** - sizing probe | the whole cache fits in VRAM many times over; nothing about the data path needs engineering |
 | The inherited checkpoint | `20260829-005439-r1`, 31.095 dB held-out PSNR at 74.1% token entropy - register | the tokenizer is fixed, and so are the 512 codes and the 64-token grid |
 | The zero-parameter baseline | **85.67%** token persistence on R1, over **460,032** transitions from 12 val episodes, **396,013** of them quiet-field - token-stability probe | **the dynamics requirement's restated bar on that probe's population**, and gate row 1. On any other population, re-measure with `bench/token_stability_probe.py` |
@@ -789,8 +862,8 @@ on.
 | Link-length drift's ground-truth term | **23.0%** on link0 and **44.2%** on link1 - link-drift probe, quoted in its requirement row | a perfect model fails any absolute bar; `bench/link_drift_probe.py` produces the term |
 | The coherence horizon's terminator | The frame validator fires on **0.00%** of 300-step substitutions against **100%** on the noise control - coherence-horizon blind probe | the continuity check replaces it, and the probe stays as its regression test |
 | Run-to-run noise | 0.00167 dB, and it is the **tokenizer's** 1-epoch figure - register | **unmeasured for a dynamics rung.** Do not call a margin "inside the noise" here; no seed has been repeated on this model |
-| Peak training VRAM | **unmeasured** for this model - the sizing probe recorded none | item 4 takes it, at the batch actually used. Batch 16 is the probe's choice, not an optimum |
-| SDPA against materialized attention, and RoPE's rotation | **unmeasured** - the sizing probe timed `nn.MultiheadAttention` and applied no rotation | item 3 measures both rather than assuming a sign |
+| Peak training VRAM | **no measurement of the bar** for this model - the sizing probe recorded none. The mask measurement recorded 2.227 GB block-causal and 2.333 GB strict at batch 16 (r54), and states it is not item 4's measurement of the bar | item 4 takes it, at the batch actually used. Batch 16 is the probes' choice, not an optimum |
+| SDPA against materialized attention, and RoPE's rotation | **unmeasured as an A/B.** The chosen model through SDPA with RoPE applied is timed at 159.6-160.1 ms/step (r54), against the sizing probe's 221.6 through `nn.MultiheadAttention` with no rotation - two changes at once, on different platforms, so neither's own share is known | item 3 measures both rather than assuming a sign |
 | The epoch-time bar's 300,000-frame equivalent | **unmeasured** | decision 8 fixes how that bar is scored, not what it reads. Not derived from the probe's windowed epoch |
 | Rollout throughput, and any performance row | **unmeasured**, deliberately. The five interactive performance rows (sustained frame rate, p99 frame time, input-to-display latency, the p99/p50 jitter ratio, and the eager-to-engine speedup) belong to Phase 3's baseline and Phase 4's ladder | Phase 2 produces a checkpoint, not a frame rate. The 30-minute epoch bar is the only performance row this phase touches, and item 4 says how it is scored |
 
@@ -805,16 +878,18 @@ number. Gate compute numbers on **SM clock plus power draw**, and bandwidth on
 No part of `mirage/dynamics.py` is written here, no run was launched, and no
 measurement was taken. There is no dataset and no checkpoint on the machine this
 was written on, so every number above is quoted from the record rather than
-earned here. **No register entry is created**: registering a number is a
-separate, deliberate act, and until then the `runs.jsonl` rows for the
-token-stability probe, the sizing probe and the mask measurement are the
-sources. **No bar is moved here.** The dynamics model's acceptance test was
-raised, not lowered, and `world_model_requirements.md` restated it on 2026-09-22;
-gate row 1 is written against that. Moving a bar *down* because a run missed it
-is the failure this project's rules exist to prevent, and nothing here does
-that - the one run since, the mask measurement, selected a mask and moved no bar.
-**The decisions above are recorded here, not taken here**: they were taken
-2026-09-18, 2026-09-21 and 2026-09-23, the last by the mask measurement. The one
-new call this plan makes - `ctx + 1` frames a window, in item 1 - is written as a
+earned here. **No register entry was created by this plan**: registering a
+number is a separate, deliberate act. That act was taken 2026-09-24 for the
+persistence baseline, now in `canonical_numbers.md` for both populations; for
+everything else, the `runs.jsonl` rows for the token-stability probe, the sizing
+probe and the mask measurement are the sources. **No bar is moved here.** The
+dynamics model's acceptance test was raised, not lowered, and
+`world_model_requirements.md` restated it on 2026-09-22; gate row 1 is written
+against that. Moving a bar *down* because a run missed it is the failure this
+project's rules exist to prevent, and nothing here does that - the one run
+since, the mask measurement, selected a mask and moved no bar. **The decisions
+above are recorded here, not taken here**: they were taken 2026-09-18,
+2026-09-21 and 2026-09-23, the last by the mask measurement. The one new call
+this plan makes - `ctx + 1` frames a window, in item 1 - is written as a
 recommendation with its alternative. Phases 3 and 4 stay undrafted, which is
 "profile before changing anything" applied to planning.
