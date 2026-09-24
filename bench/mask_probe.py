@@ -104,6 +104,7 @@ TOKENIZER_RUN = "20260829-005439-r1"   # R1, the tokenizer the dynamics model bu
 R49_ROPE_UNTIED = 14_593_152           # runs.jsonl param count, RoPE + untied variant
 ROPE_BASE = 10_000.0
 ARMS = ("strict", "block")
+ARM_MASK = {"strict": "strict_causal", "block": "block_causal"}
 
 # The shared schedule. Tokenizer training's values (`fsq.train`) wherever
 # they apply, since that is the only precedent. Weight decay stays at a
@@ -209,7 +210,7 @@ class Dynamics(nn.Module):
     """The sized RoPE + untied-output variant: vocab 521 in, 512 out."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int, vocab_out: int,
-                 max_len: int, mlp_ratio: int = dyn_size_probe.MLP_RATIO) -> None:
+                 max_len: int, mlp_ratio: int) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab_in, d)
         self.blocks = nn.ModuleList([Block(d, heads, mlp_ratio) for _ in range(layers)])
@@ -242,8 +243,8 @@ class Dynamics(nn.Module):
 def build_model(cfg: config.Config, max_len: int) -> Dynamics:
     codes = cfg.tokenizer["codebook_size"]
     return Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
-                    dyn_size_probe.N_HEADS, codes + dyn_size_probe.N_ACTIONS, codes,
-                    max_len)
+                    cfg.dynamics["n_heads"], codes + dyn_size_probe.N_ACTIONS, codes,
+                    max_len, cfg.dynamics["mlp_ratio"])
 
 
 # -------------------------------------------------------- scoring a window batch
@@ -435,6 +436,9 @@ def curve_point(model: Dynamics, lay: Layout, mask: torch.Tensor, d: Data,
 
 def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
           steps: int | None = None) -> str:
+    if cfg.dynamics["mask"] != ARM_MASK[arm]:
+        raise SystemExit(f"--arm {arm} needs dynamics.mask {ARM_MASK[arm]!r}, "
+                         f"the config names {cfg.dynamics['mask']!r}")
     _keep_awake()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = Data(cfg)
@@ -475,7 +479,7 @@ def train(arm: str, seed: int, cfg: config.Config, resume: str | None = None,
     knobs = dict(arm=arm, seed=seed, tokenizer_run=TOKENIZER_RUN, frames=d.ctx + 1,
                  seq_len=len(lay.src), targets=len(lay.tgt), params=params,
                  d_model=cfg.dynamics["d_model"], n_layers=cfg.dynamics["n_layers"],
-                 n_heads=dyn_size_probe.N_HEADS, mlp_ratio=dyn_size_probe.MLP_RATIO,
+                 n_heads=cfg.dynamics["n_heads"], mlp_ratio=cfg.dynamics["mlp_ratio"],
                  rope_base=ROPE_BASE, head="untied", precision="bf16 autocast",
                  steps=total, batch=BATCH, lr=LR, lr_floor=LR_FLOOR, warmup=WARMUP,
                  weight_decay=WEIGHT_DECAY, clip=CLIP, eval_every=EVAL_EVERY,
@@ -742,15 +746,16 @@ def _self_check() -> None:
     cfg = config.load(CONFIG)
     full = build_model(cfg, 1039)
     priced = dyn_size_probe.Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
-                                     dyn_size_probe.N_HEADS, codes + dyn_size_probe.N_ACTIONS,
-                                     codes, 975, learned_pos=False, tied=False)
+                                     cfg.dynamics["n_heads"], codes + dyn_size_probe.N_ACTIONS,
+                                     codes, 975, learned_pos=False, tied=False,
+                                     mlp_ratio=cfg.dynamics["mlp_ratio"])
     n_full = sum(p.numel() for p in full.parameters())
     assert n_full == sum(p.numel() for p in priced.parameters()) == R49_ROPE_UNTIED, n_full
     print(f"model: {n_full:,} parameters, r49's rope_untied exactly")
     del full, priced
 
     # RoPE: attention depends on the distance between two positions, not where they are.
-    m = Dynamics(64, 2, 2, codes + 9, codes, 1039).double().eval()
+    m = Dynamics(64, 2, 2, codes + 9, codes, 1039, 4).double().eval()
     q, k = torch.randn(1, 1, 1, 32, dtype=torch.float64), torch.randn(1, 1, 1, 32, dtype=torch.float64)
     def dot(i: int, j: int) -> float:
         return float((_rope(q, m.cos[i], m.sin[i]) * _rope(k, m.cos[j], m.sin[j])).sum())
