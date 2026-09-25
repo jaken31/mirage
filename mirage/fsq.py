@@ -10,8 +10,9 @@ not there.
 
 Contents, in the order of `docs/phase1_structural_plan.md` section 5:
 
-- `FSQ` - the quantizer, and `codes_to_indices`.
-- `Tokenizer` - encoder, optional 8x8 self-attention, decoder.
+- `FSQ` - the quantizer, `codes_to_indices` and its inverse `indices_to_codes`.
+- `Tokenizer` - encoder, optional 8x8 self-attention, decoder; `encode` pixels
+  to ids and `decode` ids back to pixels.
 - `train` - MSE loss, AdamW, cosine schedule, held-out PSNR.
 - `RUNGS` - the experiment ladder. Each "rung" is one training run that
   differs from the others by one or two flags: R0 (no quantization), R1
@@ -209,15 +210,61 @@ class FSQ(nn.Module):
         make existing R0 checkpoints fail a strict load.
         """
         v = (1, -1, 1, 1)
-        lv = torch.tensor(self.levels, device=q.device).view(v)
+        lv, basis = self._place_values(q.device)
         digits = (q * self.scale.view(v) + self.scale.view(v)).round().long()
         if int(digits.min()) < 0 or bool((digits >= lv).any()):
             raise ValueError(
                 f"digit out of range [{int(digits.min())}, {int(digits.max())}] for "
                 f"levels {self.levels} - these are not this quantizer's outputs"
             )
-        basis = torch.cat([lv.new_ones(1), lv.flatten()[:-1]]).cumprod(0).view(v)
         return (digits * basis).sum(1)
+
+    def indices_to_codes(self, ids: torch.Tensor) -> torch.Tensor:
+        """(B, H, W) ids in 0..codebook_size-1 -> (B, C, H, W) codes, as `forward` makes them.
+
+        `codes_to_indices` run backwards. Channel c's digit is
+        `ids // basis[c] % levels[c]`: dividing by the place value drops the
+        lower channels, and the remainder drops the higher ones. Then
+        `(digit - scale) / scale` undoes the `q * scale + scale` un-scaling.
+
+        **Exact, not approximate.** `forward`'s output is bit-for-bit
+        `round(bound(z)) / scale` (the straight-through sum adds no rounding
+        error), and this computes the same integer divided by the same `scale`,
+        so the decoder sees identical input from either direction. `_self_check`
+        asserts that over every code and over the whole `tanh` range.
+
+        The digit bound is per channel by construction: `% levels[c]` cannot
+        leave `0..levels[c]-1`, so a mixed table like [8,6,5] gets three
+        ranges. What `%` cannot catch is the top channel wrapping, so the id
+        range is checked instead: id 512 under [8,8,8] would otherwise decode
+        as id 0 and look like a valid token.
+
+        Integer ids only. A float id would be truncated to a neighbouring code
+        without complaint.
+        """
+        if ids.is_floating_point() or ids.is_complex():
+            raise TypeError(f"token ids must be an integer tensor, got {ids.dtype}")
+        ids = ids.long()
+        if int(ids.min()) < 0 or int(ids.max()) >= self.codebook_size:
+            raise ValueError(
+                f"token id out of range [{int(ids.min())}, {int(ids.max())}] for "
+                f"{self.codebook_size} codes (levels {self.levels})"
+            )
+        v = (1, -1, 1, 1)
+        lv, basis = self._place_values(ids.device)
+        digits = ids.unsqueeze(1).div(basis, rounding_mode="floor") % lv
+        return (digits - self.scale.view(v)) / self.scale.view(v)
+
+    def _place_values(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """(levels, place values), both shaped (1, C, 1, 1), shared by both directions.
+
+        Rebuilt on every call rather than registered, for the reason in
+        `codes_to_indices`: a buffer would change `state_dict`.
+        """
+        v = (1, -1, 1, 1)
+        lv = torch.tensor(self.levels, device=device)
+        basis = torch.cat([lv.new_ones(1), lv[:-1]]).cumprod(0)
+        return lv.view(v), basis.view(v)
 
 
 # -------------------------------------------------------- encoder and decoder
@@ -431,6 +478,24 @@ class Tokenizer(nn.Module):
                 "this model has a continuous bottleneck (R0) and has no token ids"
             )
         return self.fsq.codes_to_indices(self.fsq(self.encoder(x)))
+
+    @torch.no_grad()
+    def decode(self, ids: torch.Tensor) -> torch.Tensor:
+        """(B, h, w) token ids -> (B, 3, H, W), the float output `forward` gives.
+
+        The only token-to-pixel path in the tree: Phase 2's rollout decodes
+        through this rather than a copy of it. Float and unclamped, like
+        `forward`, so the caller converts to uint8 exactly as for a
+        reconstruction: `(y * PEAK).round().clamp(0, PEAK)`.
+
+        Refuses R0 for the same reason `encode` does: it has no token ids, so
+        any ids handed to it were made by some other model.
+        """
+        if not self.quantize:
+            raise ValueError(
+                "this model has a continuous bottleneck (R0) and has no token ids"
+            )
+        return self.decoder(self.fsq.indices_to_codes(ids))
 
 
 # ------------------------------------------------------ loss, loop, and PSNR
@@ -740,7 +805,8 @@ def _self_check() -> None:
     The key check is the gradient: 0.858 / 1.001 / 0.668 are recorded
     measurements, and reproducing all three at once pins down `eps`, `offset`,
     `shift` and the scaling together. It also checks that `codes_to_indices`
-    is one-to-one and that `encode` behaves.
+    is one-to-one, that `indices_to_codes` inverts it exactly, and that
+    `encode` and `decode` behave.
     """
     torch.manual_seed(0)
     z = torch.linspace(-25, 25, 20001)
@@ -762,6 +828,30 @@ def _self_check() -> None:
         ids = q.codes_to_indices(tuples.T.reshape(1, len(levels), -1, 1)).flatten()
         assert torch.equal(ids.sort().values, torch.arange(math.prod(levels))), \
             f"levels {levels}: codes_to_indices is not a bijection onto 0..{math.prod(levels) - 1}"
+        # And back. `indices_to_codes` must return each code combination exactly,
+        # not to within a tolerance, and every id must survive the round trip.
+        # Together these make the two directions inverse bijections, so the
+        # per-channel digit ranges of a mixed table like [8,6,5] are covered too.
+        n_codes = math.prod(levels)
+        assert torch.equal(q.indices_to_codes(ids.view(1, -1, 1)),
+                           tuples.T.reshape(1, len(levels), -1, 1)), \
+            f"levels {levels}: indices_to_codes does not invert codes_to_indices"
+        every = torch.arange(n_codes).view(1, -1, 1)
+        back = q.codes_to_indices(q.indices_to_codes(every))
+        mismatched = int((back != every).sum())
+        assert mismatched == 0, f"levels {levels}: {mismatched} ids fail the round trip"
+        # The decoder must see from ids exactly what `forward` fed it, over the
+        # whole tanh range, or decode(encode(x)) is not forward(x).
+        assert torch.equal(q.indices_to_codes(q.codes_to_indices(codes)), codes), \
+            f"levels {levels}: ids decode to codes that differ from forward's"
+        for bad in (-1, n_codes):
+            try:
+                q.indices_to_codes(torch.tensor([[[bad]]]))
+                raise AssertionError(f"levels {levels}: indices_to_codes accepted id {bad}")
+            except ValueError:
+                pass
+        print(f"FSQ {list(levels)}: all {n_codes} ids round-trip through indices_to_codes "
+              f"and back, {mismatched} mismatches; ids -1 and {n_codes} refused")
 
         z0 = torch.zeros(1, len(levels), 1, 1, requires_grad=True)
         q(z0).sum().backward()
@@ -783,6 +873,13 @@ def _self_check() -> None:
         "prod(levels) disagrees with tokenizer.codebook_size"
     print(f"[8,8,8] gives {math.prod((8, 8, 8))} codes == tokenizer.codebook_size "
           f"{cfg.tokenizer['codebook_size']}")
+
+    # A new buffer would add a `state_dict` entry, and every existing
+    # checkpoint would then fail the strict load in `fsq_eval.load_run`.
+    keys = sorted(FSQ((8, 8, 8)).state_dict())
+    assert keys == ["half_l", "offset", "scale", "shift"], \
+        f"FSQ state_dict is {keys} - a new entry breaks strict loads of existing checkpoints"
+    print(f"FSQ state_dict holds only {keys}, so existing checkpoints still load strictly")
 
     h, w = cfg.shapes.image_size
     grid = tuple(cfg.shapes.token_grid)
@@ -843,6 +940,25 @@ def _self_check() -> None:
         pass
     print(f"encode: ids {tuple(ids.shape)} in [{int(ids.min())}, {int(ids.max())}], "
           f"deterministic, and refuses a continuous bottleneck")
+
+    # `decode` is the other half of the token-to-pixel path. On the same batch
+    # it must reproduce `forward` bit for bit, since both feed the decoder the
+    # same codes; `fsq_eval`'s self-check repeats this on R1's cached rows.
+    with torch.no_grad():
+        gap = float((tok.decode(ids) - tok(x)).abs().max())
+    assert gap == 0.0, f"decode(encode(x)) differs from forward(x) by {gap:.3e}"
+    try:
+        tok.decode(ids.float())
+        raise AssertionError("decode accepted float ids, which it would truncate")
+    except TypeError:
+        pass
+    try:
+        Tokenizer((8, 8, 8), quantize=False).decode(ids)
+        raise AssertionError("decode accepted a continuous bottleneck")
+    except ValueError:
+        pass
+    print("decode: decode(encode(x)) == forward(x) exactly, and refuses float ids "
+          "and a continuous bottleneck")
 
     # The point of the `r1c` rung, asserted rather than assumed. Backpropagate
     # from one latent cell and count input pixels with a nonzero gradient. Three
@@ -911,7 +1027,7 @@ def _self_check() -> None:
         for name, fn in saved.items():
             setattr(data, name, fn)
     print("train refuses an empty train split and a batch larger than it")
-    print("fsq self-check ok (5a, 5b, encode, and the train guard; no data touched)")
+    print("fsq self-check ok (5a, 5b, encode, decode, and the train guard; no data touched)")
 
 
 def main() -> None:
