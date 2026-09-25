@@ -24,10 +24,8 @@ Scored beside gate row 1's measure:
   found the mask measurement's model losing to copying there.
 
     python -m mirage.dynamics_eval            # self-check
-    python -m mirage.dynamics_eval RUN_ID     # re-score a run's best.pt and model.pt
 """
 
-import argparse
 import math
 from pathlib import Path
 
@@ -190,18 +188,5 @@ def _self_check() -> None:
     print("dynamics_eval self-check ok")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="score a finished dynamics run")
-    ap.add_argument("run_id", nargs="?", help="re-score runs/RUN_ID's best.pt and model.pt")
-    ap.add_argument("--config", default=str(ROOT / "mirage" / "configs" / "base.json"))
-    args = ap.parse_args()
-    if args.run_id is None:
-        _self_check()
-        return
-    cfg = config.load(args.config)
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    score_run(ROOT / "runs" / args.run_id, cfg, dynamics.load_splits(cfg), dev)
-
-
 if __name__ == "__main__":
-    main()
+    _self_check()
