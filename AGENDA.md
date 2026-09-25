@@ -411,11 +411,6 @@ above persistence, and the best checkpoint (step 1,000) is 0.19 points below it
 on the full population, 86.50% against 86.69%. Peak training VRAM is 2.20 GB at
 batch 16. The plan's item 4 and the `runs.jsonl` row have the rest.
 
-**Next:** item 5 (the token-to-pixel inverse, in flight), then item 6. **The
-first real run** - `python -m mirage.dynamics --train`, 10-epoch cap, under
-`systemd-inhibit --what=idle:sleep` - is an overnight window and waits for a
-go. Decision 4 chooses a remedy only after it measures the gap.
-
 **Item 5 landed 2026-09-25**: the token-to-pixel path, `FSQ.indices_to_codes`
 and `Tokenizer.decode`, in `mirage/fsq.py`, self-checked by `python -m mirage.fsq`
 (every id, both ways, exact) and `python -m mirage.fsq_eval` (R1's cached rows
@@ -423,6 +418,11 @@ against `reconstruct`). **It found that `reconstruct` does not encode the way
 the cache was written**: the input's memory layout flips 0.33% of tokens under
 TF32 at the same batch. The plan's item 5 has the numbers and what it means for
 item 6's calibration.
+
+**Next:** item 6, rollout and the gate. **The first real run** -
+`python -m mirage.dynamics --train`, 10-epoch cap, under
+`systemd-inhibit --what=idle:sleep` - is an overnight window and waits for a
+go. Decision 4 chooses a remedy only after it measures the gap.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
