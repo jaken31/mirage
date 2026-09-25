@@ -34,7 +34,8 @@
         "mlp_ratio": 4,
         "pos_encoding": "rope",
         "output_head": "untied",
-        "mask": "block_causal"
+        "mask": "block_causal",
+        "rope_base": 10000.0
     },
     "engine": {}
 }
