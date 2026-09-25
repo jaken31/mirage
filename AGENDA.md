@@ -422,14 +422,16 @@ item 6's calibration.
 **Item 6 landed 2026-09-25**: the greedy rollout and the gate table, in
 `mirage/dynamics_eval.py`, run as `python -m mirage.dynamics --eval RUN_ID`,
 which exits 1 when a pass/fail row misses. On item 4's one-epoch run it prints
-every row and fails row 1 alone, as expected. **Two rows are reported, not
+every row and failed row 1 alone, as expected; under the frozen-share clause
+added to row 6 since, it fails row 6 too. **Two rows are reported, not
 pass/fail (decided 2026-09-25)**, because their instruments cannot work on
 decoded 64x64 frames: the coherence horizon's continuity check, calibrated so no
 ground truth fires, catches only 53.7% of the 300-step substitutions its
 requirement says it must catch every time, and the pixel-measured
 action-following sign is at chance on the ground truth itself. Restating either
 requirement is the captain's call. Also found: that run's best checkpoint only
-copies, so its rollouts freeze, and a frozen rollout passes the link-drift row.
+copies, so its rollouts freeze, and a frozen rollout reads no link drift; the
+link-drift row now also fails above 10% frozen frames.
 The plan's item 6 and the `runs.jsonl` row have the numbers.
 
 **Next:** **the first real run** - `python -m mirage.dynamics --train`,

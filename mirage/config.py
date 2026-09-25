@@ -13,7 +13,8 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
     "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
                             "offpalette_tau", "offpalette_frac_max",
                             "continuity_link_angle_max", "continuity_link_major_max",
-                            "continuity_link_minor_max", "continuity_block_centre_max"]),
+                            "continuity_link_minor_max", "continuity_block_centre_max",
+                            "rollout_frozen_share_max"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     # Every knob that shapes the model, so two checkpoints that differ in one
     # never log the same `dynamics_hash`. Training knobs stay out: they travel in
@@ -83,7 +84,10 @@ NON_NEGATIVE_FLOAT_LIST_KEYS: dict[str, frozenset[str]] = {
 FRACTION_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_digit_noise_prob"]),
     "data": frozenset(["val_fraction"]),
-    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min"]),
+    # `rollout_frozen_share_max` is gate row 6's second clause: the share of a
+    # rollout's generated frames that may repeat the frame before them.
+    "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
+                            "rollout_frozen_share_max"]),
 }
 
 # Physical thresholds, in metres or metres per radian. Positive with no upper
@@ -358,6 +362,7 @@ def _self_check() -> None:
         ("validator", "continuity_block_centre_max", [1.0, -1.0, 1.0], "list of non-negative"),
         ("validator", "continuity_link_minor_max", [True, 1.0], "list of non-negative"),
         ("validator", "continuity_link_angle_max", _DROP, "missing keys"),
+        ("validator", "rollout_frozen_share_max", 1.0, "[0, 1)"),
         ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),
