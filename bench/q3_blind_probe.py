@@ -29,6 +29,18 @@ second decode path.
    differ between the ground truth at `t` and at `t + lag`. A near-zero rate
    on near-identical frames would prove nothing.
 
+**It is also the regression test for the check that replaced the validator**
+(Phase 2 item 6): the frame-to-frame continuity check on `link_angle`,
+`link_extent` and each block's bbox centre, with the bounds in the `validator`
+config section. The requirement asks it to fire on 100% of the substitutions and
+0% of clean frames. That half scores the val split's **cached** token rows
+decoded through `Tokenizer.decode`, not `reconstruct`'s output, because the two
+encoder input layouts disagree on 0.33% of R1's tokens and a rollout produces
+cache-like tokens (Phase 2 item 5). **It reads 53.7%, not 100%**
+(`runs.jsonl`, item 6's row): the per-step noise of those features on decoded
+frames is larger than most 300-step jumps, so gate row 4 is reported, not
+pass/fail, until the coherence-horizon requirement is restated.
+
     python bench/q3_blind_probe.py 20260829-005439-r1 [--lag 300]
 """
 import argparse
@@ -39,7 +51,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from mirage import config, data, fsq_eval, validator  # noqa: E402
+from mirage import config, data, dynamics, dynamics_eval, fsq_eval, validator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LAG = 300         # "300 steps later": half an episode at steps_per_episode 600
@@ -113,6 +125,17 @@ def probe(run_id: str, cfg: config.Config, lag: int = LAG,
     }
 
 
+def continuity(cfg: config.Config, lag: int = LAG, device: str | None = None) -> dict:
+    """The continuity check's fire rates on substituted and clean decoded cached rows."""
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    splits = dynamics.load_splits(cfg)
+    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
+    eps = dynamics_eval.val_episodes(splits, len(palette.blocks))
+    truth = dynamics_eval.truth_features(cfg, splits, eps, palette, dev)
+    return dynamics_eval.substitution_test(
+        truth, dynamics_eval.continuity_bounds(cfg, palette), lag, STRIDE)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("run_id")
@@ -131,6 +154,11 @@ def main() -> None:
     print(f"\n  the substituted frames differ from the truth on "
           f"{d['pixels_differing_share']:.1%} of pixels, "
           f"{d['psnr_db_substituted_vs_truth']:.2f} dB")
+
+    c = continuity(cfg, lag=a.lag)
+    print(f"\ncontinuity check (validator.continuity_*), decoded cached rows, {c['pairs']:,} pairs:")
+    print(f"  fires on the frame {c['lag']} steps later   {c['fire_substituted']:8.2%}   <- needs 100%")
+    print(f"  fires on the correct frame             {c['fire_clean']:8.2%}   <- needs 0%")
 
 
 if __name__ == "__main__":
