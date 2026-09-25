@@ -105,7 +105,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "mirage" / "configs" / "base.json"
 TOKENIZER_RUN = "20260829-005439-r1"   # R1, the tokenizer the dynamics model builds on
 R49_ROPE_UNTIED = 14_593_152           # runs.jsonl param count, RoPE + untied variant
-ROPE_BASE = 10_000.0
 ARMS = ("strict", "block")
 ARM_MASK = {"strict": "strict_causal", "block": "block_causal"}
 
@@ -224,7 +223,7 @@ class Dynamics(nn.Module):
     """The sized RoPE + untied-output variant: vocab 521 in, 512 out."""
 
     def __init__(self, d: int, layers: int, heads: int, vocab_in: int, vocab_out: int,
-                 max_len: int, mlp_ratio: int) -> None:
+                 max_len: int, mlp_ratio: int, rope_base: float) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab_in, d)
         self.blocks = nn.ModuleList([Block(d, heads, mlp_ratio) for _ in range(layers)])
@@ -232,7 +231,7 @@ class Dynamics(nn.Module):
         self.head = nn.Linear(d, vocab_out, bias=False)
         half = d // heads // 2
         f64 = dict(dtype=torch.float64)
-        ang = torch.arange(max_len, **f64)[:, None] * ROPE_BASE ** (-torch.arange(half, **f64) / half)
+        ang = torch.arange(max_len, **f64)[:, None] * rope_base ** (-torch.arange(half, **f64) / half)
         # Not saved in state_dict: it is derived from the shape.
         self.register_buffer("cos", ang.cos().float(), persistent=False)
         self.register_buffer("sin", ang.sin().float(), persistent=False)
@@ -255,10 +254,13 @@ class Dynamics(nn.Module):
 
 
 def build_model(cfg: config.Config, max_len: int) -> Dynamics:
+    if cfg.dynamics["rope_base"] != 10_000.0:
+        raise ValueError(f"dynamics.rope_base is {cfg.dynamics['rope_base']!r}; mask_probe "
+                         f"implements only 10000.0")
     codes = cfg.tokenizer["codebook_size"]
     return Dynamics(cfg.dynamics["d_model"], cfg.dynamics["n_layers"],
                     cfg.dynamics["n_heads"], codes + dyn_size_probe.N_ACTIONS, codes,
-                    max_len, cfg.dynamics["mlp_ratio"])
+                    max_len, cfg.dynamics["mlp_ratio"], cfg.dynamics["rope_base"])
 
 
 # -------------------------------------------------------- scoring a window batch
@@ -493,7 +495,7 @@ def train(arm: str, seed: int, resume: str | None = None,
                  seq_len=len(lay.src), targets=len(lay.tgt), params=params,
                  d_model=cfg.dynamics["d_model"], n_layers=cfg.dynamics["n_layers"],
                  n_heads=cfg.dynamics["n_heads"], mlp_ratio=cfg.dynamics["mlp_ratio"],
-                 rope_base=ROPE_BASE, head="untied", precision="bf16 autocast",
+                 rope_base=cfg.dynamics["rope_base"], head="untied", precision="bf16 autocast",
                  steps=total, batch=BATCH, lr=LR, lr_floor=LR_FLOOR, warmup=WARMUP,
                  weight_decay=WEIGHT_DECAY, clip=CLIP, eval_every=EVAL_EVERY,
                  eval_windows=EVAL_WINDOWS, train_windows=len(d.train),
@@ -772,7 +774,7 @@ def _self_check() -> None:
     del full, priced
 
     # RoPE: attention depends on the distance between two positions, not where they are.
-    m = Dynamics(64, 2, 2, codes + 9, codes, 1039, 4).double().eval()
+    m = Dynamics(64, 2, 2, codes + 9, codes, 1039, 4, cfg.dynamics["rope_base"]).double().eval()
     q, k = torch.randn(1, 1, 1, 32, dtype=torch.float64), torch.randn(1, 1, 1, 32, dtype=torch.float64)
     def dot(i: int, j: int) -> float:
         return float((_rope(q, m.cos[i], m.sin[i]) * _rope(k, m.cos[j], m.sin[j])).sum())
