@@ -625,7 +625,8 @@ class GpuMonitor:
     rather than beside them. The loop sets `phase`; `take` summarises only the
     samples taken while it said "train", so held-out passes do not dilute the
     clock state recorded beside the step time. Every sample also lists the other
-    compute processes on the GPU, so a run that shared the card says so.
+    compute processes on the GPU, so a run that shared the card says so, and for
+    how many of its training samples (`samples_shared`).
     """
 
     QUERY = "clocks.sm,clocks.max.sm,power.draw,enforced.power.limit,temperature.gpu"
@@ -662,13 +663,13 @@ class GpuMonitor:
                           "power_w": float(power), "power_cap_w": float(cap), "temp_c": float(temp)}
             except (OSError, ValueError, IndexError, subprocess.SubprocessError):
                 sample, apps = None, []
+            others = [a for a in apps if a[0].isdigit() and int(a[0]) != me]
             with self._lock:
                 if sample is not None:
-                    self._samples.append(sample)
-                for pid, name, mib in apps:
-                    if pid.isdigit() and int(pid) != me:
-                        seen = self._others.setdefault(int(pid), {"name": name, "max_mib": 0})
-                        seen["max_mib"] = max(seen["max_mib"], int(mib) if mib.isdigit() else 0)
+                    self._samples.append({**sample, "shared": bool(others)})
+                for pid, *name, mib in others:   # a process name may itself hold commas
+                    seen = self._others.setdefault(int(pid), {"name": ",".join(name), "max_mib": 0})
+                    seen["max_mib"] = max(seen["max_mib"], int(mib) if mib.isdigit() else 0)
             if self._stop.wait(self.every_s):
                 return
 
@@ -686,7 +687,8 @@ class GpuMonitor:
                 "sm_mhz_max": int(sm.max()), "sm_max_mhz": got[-1]["sm_max_mhz"],
                 "power_w_median": float(np.median(pw)), "power_w_min": float(pw.min()),
                 "power_cap_w_median": float(np.median([s["power_cap_w"] for s in got])),
-                "temp_c_max": max(s["temp_c"] for s in got), "other_processes": others}
+                "temp_c_max": max(s["temp_c"] for s in got),
+                "samples_shared": sum(s["shared"] for s in got), "other_processes": others}
 
 
 def _environment(dev: torch.device) -> dict:
