@@ -604,6 +604,41 @@ log at every sub-epoch point, and the best checkpoint by that measure is kept an
 scored on the full population against the baseline re-measured there; and peak
 VRAM and the GPU clock state are recorded next to the step time.
 
+**Landed 2026-09-25**, in `mirage/dynamics.py` (`train`, `stop_decision`, the
+sub-epoch scorer) and a new `mirage/dynamics_eval.py`, which scores the best
+checkpoint on the full population - decision 6's split, since that step runs
+against a finished checkpoint. `_keep_awake` is imported from `mirage.fsq`, as
+`bench/mask_probe.py` already did. The sub-epoch windows are the mask
+measurement's 512 curve windows (subset seed 0), the population r59 re-read
+persistence on, chosen by the captain 2026-09-25. Its `runs.jsonl` row, "item
+4's training loop", has the numbers; in brief:
+
+- **The one-epoch run** (`--epochs 1` at seed 0: the mask measurement's
+  initial weights, data order and schedule) retraced r54's block-causal seed 0
+  curve - the same 86.28% at step 1,000, held-out loss lowest at step 10,000 -
+  and **no point of 18 was above persistence**, whose 86.47% on those windows
+  is r59's figure exactly. The best checkpoint, step 1,000, scored on the full
+  population, is **0.19 points below persistence** (86.50% against the probe's
+  re-measured 86.69%), with 0.31% false flips on static cells; the final one
+  is 2.19 points below, copying 89.4% of cells and flipping 6.2% of static
+  ones. The epoch's gap is 0.27 in cross-entropy. That is item 4's point 6
+  arriving: the answer on one epoch is "no".
+- **Peak training VRAM** is 2.20 GB allocated (2.36 GB reserved) at batch 16,
+  the batch used - the training VRAM bar's first measurement for this model.
+  Step time 158.5 ms, with the SMs at a median 2,610 MHz drawing 98.4 W of a
+  100 W limit. **Other compute processes shared the GPU** during that run
+  (four, unidentified, up to 760 MiB each), so that timing is not clean.
+- **`--resume`** continues a run killed mid-epoch from its last epoch with no
+  visible discontinuity against an uninterrupted twin, and `_self_check`
+  proves it bit-identical on CPU. The stopping rule is `stop_decision`, checked
+  case by case and tripped through the loop itself across a resume.
+
+Still unmeasured, and not item 4's working-when: SDPA against materialized
+attention and RoPE's own cost, and decision 8's 300,000-frame epoch
+equivalent. **Continuing a run past a stop** is refused by `--resume`: the
+plan calls stopping a decision point, and going on past it changes the rule or
+the schedule, which is a new decision rather than a resume.
+
 ### 5. The token-to-pixel path, which does not exist yet
 
 Phase 2's output is token ids. Every quality requirement below is measured on
@@ -720,7 +755,7 @@ dynamics requirement as `world_model_requirements.md` restated it on 2026-09-22.
 | 5 | Action-following agreement, and the simulator's own agreement on the same subset | **>= 90% of the ground-truth term, both numbers reported** | **Action-following** - agreement is `sign(theta_t+1 - theta_t)` against the commanded sign, on an **action-balanced** subset drawn from the val split. An absolute bar there fails a model that is exactly right, which is why the bar is relative. `bench/hold_probe.py` measures the ground-truth term - **re-measure it, see the gotcha** |
 | 6 | Link-length drift over a 200-step rollout, per link, and the simulator's own drift | **<= 1.1x the ground-truth term, per link, both numbers reported** | **Link-length drift** - the statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. Ground truth reads 23.0% on link0 and 44.2% on link1, so a perfect model fails any absolute bar. `bench/link_drift_probe.py` measures the ground-truth term. **Do not re-attempt the deprojection** - it was measured and refuted |
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Object permanence** - the memory result. Tier S: the project ships without it, and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and recoverable occlusion (5.35% of frames) is the event rate it scores over |
-| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar has **no measurement** for this model yet, and item 4 takes it; the mask measurement's 2.227 GB peak at batch 16 (r54) says it is not that measurement |
+| 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar's first measurement is item 4's one-epoch run: 2.20 GB allocated at batch 16 |
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **Determinism** and **bench reproducibility** - a rerun matching within 5%. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
 | 10 | Train-val loss gap; share of predictions the copy baseline also gets right; false-flip rate on static cells | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it. The third, added 2026-09-24 with item 4's amendment, is where the mask measurement's model lost to copying (r59) |
 
@@ -939,7 +974,7 @@ on.
 | Link-length drift's ground-truth term | **23.0%** on link0 and **44.2%** on link1 - link-drift probe, quoted in its requirement row | a perfect model fails any absolute bar; `bench/link_drift_probe.py` produces the term |
 | The coherence horizon's terminator | The frame validator fires on **0.00%** of 300-step substitutions against **100%** on the noise control - coherence-horizon blind probe | the continuity check replaces it, and the probe stays as its regression test |
 | Run-to-run noise | 0.00167 dB, and it is the **tokenizer's** 1-epoch figure - register | **unmeasured for a dynamics rung.** Do not call a margin "inside the noise" here; no seed has been repeated on this model |
-| Peak training VRAM | **no measurement of the bar** for this model - the sizing probe recorded none. The mask measurement recorded 2.227 GB block-causal and 2.333 GB strict at batch 16 (r54), and states it is not item 4's measurement of the bar | item 4 takes it, at the batch actually used. Batch 16 is the probes' choice, not an optimum |
+| Peak training VRAM | **2.20 GB allocated, 2.36 GB reserved, at batch 16** - item 4's one-epoch run, the first measurement of the bar for this model. The mask measurement's 2.227 GB block-causal and 2.333 GB strict at batch 16 (r54) were not that measurement | the training VRAM bar (<= 7.5 GB) at the batch used. Batch 16 is still the probes' choice, not an optimum |
 | SDPA against materialized attention, and RoPE's rotation | **unmeasured as an A/B.** The chosen model through SDPA with RoPE applied is timed at 159.6-160.1 ms/step (r54), against the sizing probe's 221.6 through `nn.MultiheadAttention` with no rotation - two changes at once, on different platforms, so neither's own share is known | the first run measures both rather than assuming a sign; item 3 built the model and took no GPU measurement |
 | The epoch-time bar's 300,000-frame equivalent | **unmeasured** | decision 8 fixes how that bar is scored, not what it reads. Not derived from the probe's windowed epoch |
 | Rollout throughput, and any performance row | **unmeasured**, deliberately. The five interactive performance rows (sustained frame rate, p99 frame time, input-to-display latency, the p99/p50 jitter ratio, and the eager-to-engine speedup) belong to Phase 3's baseline and Phase 4's ladder | Phase 2 produces a checkpoint, not a frame rate. The 30-minute epoch bar is the only performance row this phase touches, and item 4 says how it is scored |
