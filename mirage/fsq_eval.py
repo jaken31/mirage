@@ -7,6 +7,7 @@ this file works on a run that already exists.
 - `write_token_cache` - one uint16 `.npy` of token ids per shard, plus a manifest.
 - `load_run` - loads a checkpoint back into an eval-mode `Tokenizer`.
 - `evaluate` - the eight-row pass/fail "gate table" for a run.
+- `_self_check` - `Tokenizer.decode` on R1's cached rows against `reconstruct`.
 
 Run through `fsq.py`'s command line rather than its own, because the docs use
 `python -m mirage.fsq --eval` and a second entry point would be one more thing
@@ -14,6 +15,11 @@ to keep in sync:
 
     python -m mirage.fsq --tokens RUN_ID
     python -m mirage.fsq --eval RUN_ID
+
+Its own entry point runs only the self-check, which decodes R1's cached token
+rows through `Tokenizer.decode` and compares them with `reconstruct`:
+
+    python -m mirage.fsq_eval
 """
 
 import hashlib
@@ -469,3 +475,117 @@ def evaluate(run_id: str, cfg: config.Config, device: str | None = None) -> dict
            "gap_db": result["gap_db"], "entropy_split": es, "failed_rows": failed}
     print("\nall pass/fail rows pass" if not failed else f"\nFAILED rows: {failed}")
     return out
+
+
+# ------------------------------------------------------------------ self-check
+
+@torch.no_grad()
+def _self_check() -> None:
+    """`Tokenizer.decode` on R1's cached token rows, against `reconstruct`.
+
+    `fsq._self_check` proves the ids round-trip without data. This proves the
+    token-to-pixel path on the checkpoint Phase 2 inherits: one full batch of a
+    held-out episode, read from the token cache and decoded at the batch the
+    cache was written at (the manifest's `batch`, the confound gate row 5 once
+    failed on), compared with `reconstruct` on the same frames at that batch.
+
+    **The two do not encode the same way, and this check shows it rather than
+    hiding it.** `write_token_cache` feeds the encoder a channels-last view
+    (`permute` without `contiguous`), while `reconstruct`'s `_batch` makes it
+    contiguous. Under cuDNN's default TF32 convolutions the two layouts pick
+    different kernels, and about 0.33% of tokens land on a different code. So
+    three things are asserted, each exact:
+
+    1. the cache-layout re-encode reproduces the cached rows, which pins every
+       difference below on the layout;
+    2. decoding the ids `reconstruct` itself produced reproduces its uint8
+       frames on every frame, so the decode path has no error of its own;
+    3. decoding the cached rows reproduces `reconstruct`'s uint8 frame on every
+       frame whose cached row equals `reconstruct`'s ids.
+
+    Reads one episode, not a split, and one batch on the GPU, so it stays short.
+    Skipped, not failed, without R1's checkpoint and cache or without the
+    generated set, the way `mirage.dynamics` skips R1's cache.
+    """
+    # Imported here: `dynamics` owns the name of the run Phase 2 inherits.
+    from mirage.dynamics import TOKENIZER_RUN
+
+    cfg, shard_dir, fixture = data.self_check_config()
+    run_dir = ROOT / "runs" / TOKENIZER_RUN
+    man_path = run_dir / "tokens" / "manifest.json"
+    if fixture or not (run_dir / "model.pt").exists() or not man_path.exists():
+        why = "the fixture has no token cache" if fixture else f"no R1 checkpoint and cache in {run_dir}"
+        print(f"R1 decode: skipped - {why}")
+        print("fsq_eval self-check ok (nothing to check)")
+        return
+
+    if not torch.cuda.is_available():
+        # The cache was encoded on CUDA, whose TF32 convolutions round
+        # differently from the CPU's, so check 1 would fail on the device alone.
+        print("R1 decode: skipped - no CUDA device, and the cache was encoded on one")
+        print("fsq_eval self-check ok (nothing to check)")
+        return
+    dev = torch.device("cuda")
+    # `load_run` loads with `load_state_dict`'s default `strict=True`, so this
+    # line is the strict-load check: an extra or missing buffer raises here.
+    model, _ = load_run(TOKENIZER_RUN, cfg, dev)
+    n_keys = len(model.state_dict())
+    print(f"R1 {TOKENIZER_RUN}: strict load_state_dict ok, {n_keys} entries on {dev}")
+
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    batch = man["batch"]
+    shards = data.load_shards(shard_dir, cfg.data_hash)
+    episodes = data.split_episodes(data.episode_index(shards), "val", cfg.data["val_fraction"])
+    # The first batch the cache encoded entirely inside one val episode, so the
+    # decode batch and the cache's encode batch hold the same frames.
+    ep, start = next((e, a) for e in episodes
+                     for a in [-(-e.start // batch) * batch]
+                     if a + batch <= e.start + e.length)
+    sh = shards[ep.shard]
+    cached = np.load(run_dir / "tokens" / f"shard_{sh.index:03d}.npy")[start:start + batch]
+
+    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
+    idx, lut_np = data.preload(shards, [ep], "val", cfg.data["val_fraction"], palette.rgb)
+    lut = torch.from_numpy(lut_np).to(dev).float()
+    rows = np.arange(start - ep.start, start - ep.start + batch)
+    recon = reconstruct(model, idx, lut, rows, batch=batch)
+
+    def to_u8(ids: np.ndarray) -> np.ndarray:
+        # `reconstruct`'s uint8 conversion, applied to `decode` instead of `forward`.
+        y = model.decode(torch.from_numpy(ids.astype(np.int64)).to(dev))
+        return (y * PEAK).round().clamp(0, PEAK).byte().permute(0, 2, 3, 1).cpu().numpy()
+
+    # 1. write_token_cache's input path, on the same frames and batch.
+    px = np.ascontiguousarray(sh.pixels[start:start + batch, ::-1])
+    x_cache = torch.from_numpy(px).to(dev).permute(0, 3, 1, 2).float() / PEAK
+    redo = model.encode(x_cache).cpu().numpy()
+    flips_redo = int((redo != cached).sum())
+    assert flips_redo == 0, f"re-encoding the cache's input path flips {flips_redo} tokens"
+
+    # 2. reconstruct's own ids, through decode.
+    own = model.encode(_batch(idx, lut, rows) / PEAK).cpu().numpy()
+    gap_own = int(np.abs(to_u8(own).astype(np.int16) - recon).max())
+    assert gap_own == 0, f"decode of reconstruct's ids differs from it by {gap_own}"
+
+    # 3. the cached rows, through decode.
+    decoded = to_u8(cached)
+    same = (own == cached).reshape(batch, -1).all(1)
+    gap_same = int(np.abs(decoded[same].astype(np.int16) - recon[same]).max()) if same.any() else 0
+    assert same.any(), "no frame's cached row matches reconstruct's ids - nothing compared"
+    assert gap_same == 0, f"decoded cache rows differ from reconstruct by {gap_same} on matching frames"
+    flips = int((own != cached).sum())
+    gap_all = int(np.abs(decoded.astype(np.int16) - recon).max())
+
+    frames = f"shard {sh.index} frames {start}..{start + batch - 1}"
+    print(f"R1 decode, val episode {ep.episode_id}, {frames}, batch {batch} (the manifest's):")
+    print(f"  cache-layout re-encode vs cached rows: {flips_redo} of {cached.size:,} tokens differ")
+    print(f"  decode(reconstruct's ids) vs reconstruct: max abs diff {gap_own} over all {batch} frames")
+    print(f"  decode(cached row) vs reconstruct: max abs diff {gap_same} on the {int(same.sum())} "
+          f"frames whose cached row equals reconstruct's ids")
+    print(f"  the other {int((~same).sum())} frames differ by up to {gap_all} on {flips} tokens "
+          f"({flips / cached.size:.2%}) that reconstruct's contiguous input encodes differently")
+    print("fsq_eval self-check ok")
+
+
+if __name__ == "__main__":
+    _self_check()
