@@ -740,8 +740,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     phase's headline warning sign.
 
     **Gate row 1's measure is scored every `eval_every` steps** and at each
-    epoch's end, on `eval_windows` fixed val windows,
-    with persistence on exactly those windows beside every point. The best
+    epoch's end, on `eval_windows` fixed val windows (the mask measurement's
+    512), with persistence on exactly those windows beside every point. The best
     point's weights are kept as `best.pt`, apart from the per-epoch resumable
     `model.pt`, and when the run stops `mirage.dynamics_eval` scores both on the
     full population against persistence re-measured there by

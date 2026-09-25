@@ -137,6 +137,13 @@ matches the model's; on any other, re-measure with `bench/token_stability_probe.
 |---|---|---|---|---|
 | `NUM-DYN-PERSIST-R1` | **85.67%** | Persistence on R1 (`20260829-005439-r1`) over the token-stability probe's default population: 12 val episodes, every transition, 460,032 cell-transitions | r46, r57 | current, **this population and checkpoint only** |
 | `NUM-DYN-PERSIST-R1-ALL` | **86.69%** | Persistence on R1 (`20260829-005439-r1`) over every val window's last frame: 27 episodes, target frames 15-599, 1,010,880 cells. `--episodes all --first-target 15`. The population the mask measurement and item 4 score on | r54, r57 | current, **this population and checkpoint only** |
+| `NUM-DYN-PERSIST-R1-512` | **86.47%** | Persistence on R1 over the 512 val windows `bench/mask_probe.py`'s curve scores (`EVAL_SUBSET_SEED` 0), last frame, 32,768 cells. The population item 4's sub-epoch points score on; r60 reproduced it exactly | r59, r60 | current, **this population and checkpoint only** |
+
+## Dynamics - training cost
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-DYN-VRAM-TRAIN` | **2.20 GB allocated / 2.36 GB reserved** | Peak training VRAM of the 14,593,152-parameter model at batch 16, bf16 - the first measurement of the training VRAM bar (<= 7.5 GB) for this model, item 4's one-epoch run. Batch 16 is the probes' choice, not an optimum | r60 | current, **batch 16 only** |
 
 ## Dataset - the 96x96 fork
 
