@@ -289,13 +289,12 @@ class TokenWindowSampler:
 
 # ---------------------------------------------------------------------- model
 
-# RoPE's base wavelength, the value the mask measurement trained with.
-ROPE_BASE = 10_000.0
-
 # The `dynamics` choices this file implements. `config.py` may admit more - it
 # admits `strict_causal` so the mask measurement's strict arm stays runnable -
 # and `build` refuses those rather than training a model the config misnames.
-IMPLEMENTED = {"pos_encoding": "rope", "output_head": "untied", "mask": "block_causal"}
+# `rope_base` is the value the mask measurement trained with.
+IMPLEMENTED = {"pos_encoding": "rope", "output_head": "untied", "mask": "block_causal",
+               "rope_base": 10_000.0}
 
 
 def rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -354,7 +353,7 @@ class Dynamics(nn.Module):
     """
 
     def __init__(self, d_model: int, n_layers: int, n_heads: int, mlp_ratio: int,
-                 codes: int, max_len: int) -> None:
+                 codes: int, max_len: int, rope_base: float) -> None:
         super().__init__()
         if d_model % n_heads or (d_model // n_heads) % 2:
             raise ValueError(f"d_model {d_model} over {n_heads} heads is not an even head width, "
@@ -365,7 +364,7 @@ class Dynamics(nn.Module):
         self.head = nn.Linear(d_model, codes, bias=False)
         half = d_model // n_heads // 2
         f64 = dict(dtype=torch.float64)
-        ang = torch.arange(max_len, **f64)[:, None] * ROPE_BASE ** (-torch.arange(half, **f64) / half)
+        ang = torch.arange(max_len, **f64)[:, None] * rope_base ** (-torch.arange(half, **f64) / half)
         self.register_buffer("cos", ang.cos().float(), persistent=False)
         self.register_buffer("sin", ang.sin().float(), persistent=False)
         # GPT-2's initialisation, as the mask measurement trained with.
@@ -401,7 +400,7 @@ def build(cfg: config.Config) -> Dynamics:
                              f"only {want!r}")
     max_len = len(layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid)).src)
     return Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"], dyn["mlp_ratio"],
-                    cfg.tokenizer["codebook_size"], max_len)
+                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"])
 
 
 def attention_mask(lay: Layout) -> torch.Tensor:
@@ -676,16 +675,16 @@ def _self_check() -> None:
     # It builds from cfg.dynamics and refuses what it does not implement,
     # including the strict mask config.py admits for the mask measurement.
     for key, other in (("mask", "strict_causal"), ("pos_encoding", "learned"),
-                       ("output_head", "tied")):
+                       ("output_head", "tied"), ("rope_base", 500.0)):
         cfg_x = dataclasses.replace(base, dynamics={**base.dynamics, key: other})
         assert _refused(build, cfg_x), f"built a model with dynamics.{key} = {other!r}"
-    assert _refused(Dynamics, 384, 1, 5, 4, codes, 975), "built 384 channels over 5 heads"
-    assert _refused(Dynamics, 18, 1, 6, 4, codes, 975), "built an odd RoPE head width"
+    assert _refused(Dynamics, 384, 1, 5, 4, codes, 975, 1e4), "built 384 channels over 5 heads"
+    assert _refused(Dynamics, 18, 1, 6, 4, codes, 975, 1e4), "built an odd RoPE head width"
     x, y = (torch.from_numpy(a) for a in assemble(lay, tok[:1], act[:1], codes))
     read = torch.from_numpy(lay.read)
     assert _refused(model, torch.cat((x, x), 1), mask, read), "ran past the RoPE tables"
-    print("build: refuses a strict mask, learned positions, a tied head, and head widths "
-          "RoPE cannot pair")
+    print("build: refuses a strict mask, learned positions, a tied head, another RoPE base, "
+          "and head widths RoPE cannot pair")
 
     # RoPE is applied, and attention depends on distance, not absolute position.
     cos, sin = model.cos.double(), model.sin.double()
