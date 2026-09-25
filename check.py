@@ -27,7 +27,8 @@ from pathlib import Path
 # `mirage/fixtures/` when `data/shards` is empty. `fsq_eval` reads one val
 # episode and decodes one batch of R1's token cache, and `dynamics` reads the
 # whole cache; both skip that part when there is none. `dynamics_eval` needs
-# both for its population check and skips it without them.
+# both for its population check and skips it without them, and decodes the val
+# split on CUDA to check the continuity bounds, skipping that without a GPU.
 MODULES = ("config", "logging", "fsq", "validator", "data", "fsq_eval", "dynamics", "dynamics_eval")
 
 ROOT = Path(__file__).resolve().parent

@@ -70,11 +70,13 @@ accuracy, one forward pass under block-causal - on the mask measurement's 512
 fixed val windows, with persistence on the same windows beside it, and keeps
 the best point's weights apart from the per-epoch resumable checkpoint. When
 the run stops, `mirage.dynamics_eval` scores that best checkpoint on the full
-population. `--resume` takes a run id.
+population. `--resume` takes a run id. `--eval` runs item 6's gate table,
+which lives in `mirage/dynamics_eval.py` with the rollout.
 
     python -m mirage.dynamics                     # self-check: the generated set if present, else the fixture
     python -m mirage.dynamics --train             # the first run: 10-epoch cap, decision 4a
     python -m mirage.dynamics --train --resume RUN_ID
+    python -m mirage.dynamics --eval RUN_ID       # the gate table (item 6); exits 1 on a miss
 """
 
 import argparse
@@ -976,7 +978,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="the dynamics model: self-check, or train it")
+    ap = argparse.ArgumentParser(description="the dynamics model: self-check, train it, or gate it")
     ap.add_argument("--train", action="store_true", help="train (decision 4a's stopping rule)")
     ap.add_argument("--config", default=str(ROOT / "mirage" / "configs" / "base.json"))
     ap.add_argument("--epochs", type=int, default=EPOCH_CAP,
@@ -988,7 +990,19 @@ def main() -> None:
                     help="continue that run from its last per-epoch checkpoint; every "
                          "knob must match")
     ap.add_argument("--wandb", metavar="PROJECT", help="mirror the jsonl to this W&B project")
+    ap.add_argument("--eval", metavar="RUN_ID",
+                    help="the gate table for that run (mirage.dynamics_eval); exits 1 if a "
+                         "pass/fail row misses")
+    ap.add_argument("--checkpoint", choices=("best", "final"), default="best",
+                    help="with --eval: best.pt, kept by gate row 1's measure (default), or the "
+                         "last per-epoch model.pt")
     args = ap.parse_args()
+    if args.eval is not None:
+        # Imported here: `dynamics_eval` imports this file. Nonzero exit when a
+        # pass/fail row misses, as `python -m mirage.fsq --eval` does.
+        from mirage import dynamics_eval
+        out = dynamics_eval.evaluate(args.eval, config.load(args.config), args.checkpoint)
+        raise SystemExit(1 if out["failed_rows"] else 0)
     if not args.train:
         _self_check()
         return
