@@ -623,13 +623,20 @@ ranges and a single bound lets an out-of-range digit through. And **register no
 new buffer**, because a new entry in `state_dict` makes existing checkpoints fail
 a strict load for no gain.
 
-**Working when:** enumerating all `prod(levels)` ids and round-tripping them
-through both directions is exact (the forward direction's `_self_check` already
-enumerates them, so extend it); and decoding a held-out frame's cached token row
-reproduces `fsq_eval.reconstruct`'s `uint8` frame for that frame, **at the same
-batch size**. Compare at the same batch because that is the confound gate row 5
-was taught to avoid: it once re-encoded at 256 against a cache written at 128, and
-failed a determinism row on the batch difference rather than on nondeterminism.
+**Working when**, restated 2026-09-25 to what was actually proven: enumerating
+all `prod(levels)` ids and round-tripping them through both directions is exact
+(the forward direction's `_self_check` already enumerates them, and now does
+this too); decoding the ids `fsq_eval.reconstruct` itself produced reproduces its
+`uint8` frames exactly, **at the same batch size**; and decoding a held-out
+frame's **cached** token row differs from `reconstruct`'s frame only where the
+two encodings of that frame differ - by the input-layout confound below, whose
+size is measured.
+
+~~Decoding a held-out frame's cached token row reproduces
+`fsq_eval.reconstruct`'s `uint8` frame for that frame, at the same batch size.~~
+The batch is pinned because that is the confound gate row 5 was taught to avoid:
+it once re-encoded at 256 against a cache written at 128, and failed a
+determinism row on the batch difference rather than on nondeterminism.
 ~~With the batch pinned, any mismatch means the digit recovery is wrong, not the
 decoder, since both paths then feed the same convolutions the same codes.~~
 **Refuted 2026-09-25: the batch is not the only confound.** Pinned at the
@@ -643,6 +650,11 @@ the cache's own input path re-encodes the cache with **0** flips and the
 contiguous one flips 18,523 tokens (0.33%); with TF32 off, both flip about
 16,900. The digit recovery is exact either way.
 
+**Decided 2026-09-25: both encoder paths stay as they are.** Aligning
+`reconstruct` to the cache would move the recorded gate numbers, and rewriting
+the cache would move every shard's sha256 under the cache Phase 2 inherits. The
+confound is handled where it bites instead: see the gotcha row.
+
 **Landed 2026-09-25**: `FSQ.indices_to_codes` beside `codes_to_indices`, sharing
 one place-value helper and registering no buffer, and `Tokenizer.decode(ids)`,
 which returns `forward`'s float output, so the caller converts to uint8 exactly
@@ -653,11 +665,8 @@ that ids decode to exactly the codes `forward` gave over the whole `tanh` range.
 held-out batch of its cache at the manifest's batch: the cache's input path
 reproduces the cached rows exactly, decoding `reconstruct`'s own ids reproduces
 its uint8 frames on all 128 frames, and decoding the cached rows reproduces them
-on the 111 frames whose rows agree. **What this leaves for item 6:** anything
-calibrated on `reconstruct` output - the coherence horizon's continuity check,
-gate row 6 - sits on tokens that differ from the cache in 0.33% of cells, while
-a rollout is decoded from cache-like tokens. Calibrating on
-`decode(cached rows)` instead avoids the mismatch without touching either path.
+on the 111 frames whose rows agree. **What this leaves for item 6:** it scores
+`decode(cached rows)`, never `reconstruct` output - see the gotcha row.
 
 ### 6. Rollout, and the gate
 
@@ -893,7 +902,7 @@ separately dated amendment.
 | A second decode implementation in `dynamics.py` | Two token-to-pixel paths that will eventually disagree | The disagreement is a wrong picture, which nothing crashes on. Item 5 exists so there is one path |
 | Training on token rows as if they were upside down | Well-formed tokens for mirrored frames | **Already handled** - `write_token_cache` flips the rows on the way in, exactly as `preload` does, and says so. Do not add a second flip: the blob is bottom-up, and the flip lives in one place |
 | Hardcoding the re-encode batch | A determinism check that tests "re-encode at a different batch size" instead of determinism | Gate row 5's own history: the check originally re-encoded at 256 against a cache written at 128 and failed R2 on a false alarm. Read `batch` from the manifest |
-| Re-encoding through a different input layout than the cache | The same kind of false alarm as the batch one, from the memory layout: a contiguous input flips 0.33% of R1's tokens against the cache's channels-last one, at the same batch, under TF32 | Item 5's measurement. Re-encode the way `write_token_cache` does (`permute` without `contiguous`), or compare against `decode` of the cached rows; `fsq_eval.reconstruct` is not that path |
+| Calibrating or scoring item 6 on `fsq_eval.reconstruct` output | The coherence horizon's continuity check, and any other pixel-level calibration, is tuned on tokens that differ from the cache in 0.33% of cells, while every rollout is decoded from cache-like tokens: the same two-population trap as renders against reconstructions, one level down | Item 5's measurement: `reconstruct` feeds the encoder a contiguous tensor, `write_token_cache` a channels-last view, and under TF32 that flips 0.33% of R1's tokens at the same batch, moving a frame by up to 67 uint8 levels. **Item 6 and any pixel calibration score `Tokenizer.decode(cached rows)`** - the population the model trains on and a rollout produces. Decided 2026-09-25: neither encoder path changes. A re-encode check must also copy `write_token_cache`'s input path (`permute` without `contiguous`) |
 | Mixing token caches from two runs | The model trains on a mixture of two tokenizers | The manifest's `tokenizer_hash` and `run_id` disagree with the checkpoint's. The cache directory is named by run id for this reason |
 | The `nn.Upsample` native-layer fault | It is a fault in the **tokenizer's decoder**, so the dynamics train loop cannot hit it - but the **rollout decode path can** | `AttributeError: 'str' object has no attribute 'align_corners'` inside `Upsample.forward`. It fired at epochs 22 and 36 of one 60-epoch tokenizer rung (r1c), so roughly every 14 epochs of running that decoder. Not this project's bug; budget restarts for any long eval that decodes |
 | Modern Standby mid-run | Every timing the run reports is void, while the run itself survives | A single epoch reading many times its neighbours. `fsq._keep_awake` is the per-process request that prevents it, and it does nothing off Windows |
