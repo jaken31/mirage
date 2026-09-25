@@ -18,7 +18,7 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
     # the checkpoint's `knobs` dict. So does anything derived from upstream (the
     # vocabulary, tokens per frame, `data.ctx`), which an upstream hash already names.
     "dynamics": frozenset(["d_model", "n_layers", "n_heads", "mlp_ratio",
-                           "pos_encoding", "output_head", "mask"]),
+                           "pos_encoding", "output_head", "mask", "rope_base"]),
     "engine": frozenset(),
 }
 
@@ -84,6 +84,7 @@ POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_done_dist", "jacobian_deadband"]),
     # A distance in RGB space, so its maximum is sqrt(3) * 255 = 441.7, not 1.
     "validator": frozenset(["offpalette_tau"]),
+    "dynamics": frozenset(["rope_base"]),
 }
 
 
@@ -304,6 +305,7 @@ def _self_check() -> None:
     assert dyn.dynamics_hash != cfg.dynamics_hash
     assert dyn.engine_hash != cfg.engine_hash
     assert variant("dynamics", "mask", "strict_causal").dynamics_hash != cfg.dynamics_hash
+    assert variant("dynamics", "rope_base", 500.0).dynamics_hash != cfg.dynamics_hash
 
     # A sim change must change every hash, on both branches.
     sim = variant("sim", "episodes", 2000)
