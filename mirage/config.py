@@ -11,7 +11,10 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
                       "reach_done_dist"]),
     "data": frozenset(["shard_dir", "ctx", "val_fraction"]),
     "validator": frozenset(["contact_rate_min", "recoverable_occlusion_rate_min",
-                            "offpalette_tau", "offpalette_frac_max"]),
+                            "offpalette_tau", "offpalette_frac_max",
+                            "continuity_link_angle_max", "continuity_link_major_max",
+                            "continuity_link_minor_max", "continuity_block_centre_max",
+                            "rollout_frozen_ratio_max"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     # Every knob that shapes the model, so two checkpoints that differ in one
     # never log the same `dynamics_hash`. Training knobs stay out: they travel in
@@ -66,6 +69,17 @@ NON_NEGATIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "validator": frozenset(["offpalette_frac_max"]),
 }
 
+# The coherence horizon's continuity bounds (gate row 4 of Phase 2): the
+# largest per-step change each object's feature may make, one value per link or
+# block in the palette's name order - radians for an angle, pixels otherwise.
+# Lists, because the object count comes from the scene XML, which this file
+# does not read; `mirage.dynamics_eval.continuity_bounds` checks the lengths
+# against the palette. Zero is allowed for the same reason as above.
+NON_NEGATIVE_FLOAT_LIST_KEYS: dict[str, frozenset[str]] = {
+    "validator": frozenset(["continuity_link_angle_max", "continuity_link_major_max",
+                            "continuity_link_minor_max", "continuity_block_centre_max"]),
+}
+
 # Rates and splits, all of which must lie in [0, 1).
 FRACTION_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_digit_noise_prob"]),
@@ -82,8 +96,11 @@ FRACTION_KEYS: dict[str, frozenset[str]] = {
 # positive number and the rule stays simple.
 POSITIVE_FLOAT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["reach_done_dist", "jacobian_deadband"]),
-    # A distance in RGB space, so its maximum is sqrt(3) * 255 = 441.7, not 1.
-    "validator": frozenset(["offpalette_tau"]),
+    # `offpalette_tau` is a distance in RGB space, so its maximum is
+    # sqrt(3) * 255 = 441.7, not 1. `rollout_frozen_ratio_max` is gate row 6's
+    # second clause: the share of a rollout's generated frames that repeat the
+    # frame before them, as a multiple of the truth's share on the same frames.
+    "validator": frozenset(["offpalette_tau", "rollout_frozen_ratio_max"]),
     "dynamics": frozenset(["rope_base"]),
 }
 
@@ -134,6 +151,14 @@ def _check_values(raw: dict[str, Any]) -> None:
             value = raw[section][key]
             if type(value) not in (int, float) or value < 0.0:
                 raise ValueError(f"{section}.{key} must be a non-negative float, got {value!r}")
+
+    for section, keys in NON_NEGATIVE_FLOAT_LIST_KEYS.items():
+        for key in sorted(keys):
+            value = raw[section][key]
+            if (type(value) is not list or not value
+                    or any(type(v) not in (int, float) or v < 0.0 for v in value)):
+                raise ValueError(f"{section}.{key} must be a non-empty list of non-negative "
+                                 f"floats, got {value!r}")
 
     for section, keys in POSITIVE_FLOAT_KEYS.items():
         for key in sorted(keys):
@@ -307,6 +332,13 @@ def _self_check() -> None:
     assert variant("dynamics", "mask", "strict_causal").dynamics_hash != cfg.dynamics_hash
     assert variant("dynamics", "rope_base", 500.0).dynamics_hash != cfg.dynamics_hash
 
+    # A continuity bound is a validator threshold: it moves validator_hash and
+    # nothing else, so recalibrating it orphans no dataset or checkpoint.
+    cont = variant("validator", "continuity_block_centre_max", [1.0, 2.0, 3.0])
+    assert cont.validator_hash != cfg.validator_hash
+    assert (cont.data_hash, cont.tokenizer_hash, cont.dynamics_hash) == \
+        (cfg.data_hash, cfg.tokenizer_hash, cfg.dynamics_hash)
+
     # A sim change must change every hash, on both branches.
     sim = variant("sim", "episodes", 2000)
     assert sim.data_hash != cfg.data_hash
@@ -325,6 +357,12 @@ def _self_check() -> None:
         ("validator", "offpalette_tau", 0.0, "positive float"),
         ("validator", "offpalette_frac_max", -1.0, "non-negative float"),
         ("validator", "offpalette_frac_max", True, "non-negative float"),
+        ("validator", "continuity_link_angle_max", 0.5, "list of non-negative"),
+        ("validator", "continuity_link_major_max", [], "list of non-negative"),
+        ("validator", "continuity_block_centre_max", [1.0, -1.0, 1.0], "list of non-negative"),
+        ("validator", "continuity_link_minor_max", [True, 1.0], "list of non-negative"),
+        ("validator", "continuity_link_angle_max", _DROP, "missing keys"),
+        ("validator", "rollout_frozen_ratio_max", 0.0, "positive float"),
         ("sim", "reach_done_dist", 0.0, "positive float"),
         ("sim", "seed", _DROP, "missing keys"),
         ("sim", "extra", 1, "unknown keys"),

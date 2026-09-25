@@ -145,6 +145,17 @@ matches the model's; on any other, re-measure with `bench/token_stability_probe.
 |---|---|---|---|---|
 | `NUM-DYN-VRAM-TRAIN` | **2.20 GB allocated / 2.36 GB reserved** | Peak training VRAM of the 14,593,152-parameter model at batch 16, bf16 - the first measurement of the training VRAM bar (<= 7.5 GB) for this model, item 4's one-epoch run. Batch 16 is the probes' choice, not an optimum | r60 | current, **batch 16 only** |
 
+## Dynamics - the gate's pixel instruments
+
+Added 2026-09-25 with Phase 2 item 6. Both are measured on the val split's cached
+token rows decoded through R1, the population a rollout produces, so both move if
+the tokenizer checkpoint, the decode path or the `validator` continuity bounds do.
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-DYN-Q3-CONT` | **53.7%** | Share of `bench/q3_blind_probe.py`'s 810 300-step substitutions the continuity check fires on, with its bounds at the largest per-step change over the 16,173 decoded val transitions (0.0% of clean ones fire). The requirement asks 100%, so gate row 4 is reported | r61 | current, **these bounds only** |
+| `NUM-DYN-Q4-PIXEL` | **47.1% / 89.7%** | Action agreement on the same 9,480 action-balanced val frames: the pixel link angle's per-step sign on decoded ground truth, and the simulator's joint angles. The first is chance, so gate row 5 is reported | r61 | current |
+
 ## Dataset - the 96x96 fork
 
 | ID | Value | What it is | Source | Status |

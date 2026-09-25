@@ -419,10 +419,26 @@ the cache was written**: the input's memory layout flips 0.33% of tokens under
 TF32 at the same batch. The plan's item 5 has the numbers and what it means for
 item 6's calibration.
 
-**Next:** item 6, rollout and the gate. **The first real run** -
-`python -m mirage.dynamics --train`, 10-epoch cap, under
-`systemd-inhibit --what=idle:sleep` - is an overnight window and waits for a
-go. Decision 4 chooses a remedy only after it measures the gap.
+**Item 6 landed 2026-09-25**: the greedy rollout and the gate table, in
+`mirage/dynamics_eval.py`, run as `python -m mirage.dynamics --eval RUN_ID`,
+which exits 1 when a pass/fail row misses. On item 4's one-epoch run it prints
+every row and failed row 1 alone, as expected; under the frozen-share clause
+added to row 6 since, it fails row 6 too. **Two rows are reported, not
+pass/fail (decided 2026-09-25)**, because their instruments cannot work on
+decoded 64x64 frames: the coherence horizon's continuity check, calibrated so no
+ground truth fires, catches only 53.7% of the 300-step substitutions its
+requirement says it must catch every time, and the pixel-measured
+action-following sign is at chance on the ground truth itself. Restating either
+requirement is the captain's call. Also found: that run's best checkpoint only
+copies, so its rollouts freeze, and a frozen rollout reads no link drift; the
+link-drift row now also fails when more frames freeze than 1.1x the truth's
+share on the same frames.
+The plan's item 6 and the `runs.jsonl` row have the numbers.
+
+**Next:** **the first real run** - `python -m mirage.dynamics --train`,
+10-epoch cap, under `systemd-inhibit --what=idle:sleep` - is an overnight
+window and waits for a go, then the gate on it. Decision 4 chooses a remedy
+only after it measures the gap.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

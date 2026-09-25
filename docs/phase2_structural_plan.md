@@ -82,7 +82,7 @@ ground-truth ones.
 | `mirage/dynamics.py` | the sequence layout, the token/action window sampler, the model, the train loop | pixels, the tokenizer, and *writing* the token cache - that is `fsq_eval.write_token_cache`, and Phase 2 only reads it |
 | `mirage/dynamics_eval.py` | rollout and the gate table - everything that runs against a finished checkpoint. **The 500-line trigger fired at item 3**, the same trigger that split `fsq_eval.py` out of `fsq.py`, so item 6 starts here | training anything |
 | `mirage/configs/base.json`, `dynamics` section | the shape knobs that must sit inside `dynamics_hash` | the training knobs, which travel in the checkpoint's `knobs` dict as Phase 1's do |
-| `mirage/config.py` | the `dynamics` key set and its validators | anything model-shaped. It gains keys in item 2 and nothing else |
+| `mirage/config.py` | the `dynamics` key set and its validators, and the `validator` section's continuity bounds for gate row 4 | anything model-shaped. It gained keys in item 2, and the four `continuity_*` keys in item 6 (decided 2026-09-25), which move `validator_hash` and nothing else |
 | `mirage/fsq.py` | the inverse of `FSQ.codes_to_indices`, `FSQ.indices_to_codes`, and `Tokenizer.decode` over it (item 5, landed 2026-09-25) | the rollout. The token-to-pixel path belongs beside the pixel-to-token path, not in a second copy |
 | `mirage/data.py` | the window index arithmetic, shared with `WindowSampler` by the decision in item 1 | anything token-shaped. It reads the shard format and knows nothing about codes |
 | `mirage/validator.py` | the per-frame measurements the coherence horizon's continuity check is built from | the verdict itself. Phase 0's rule stands: the validator emits measurements, and the verdict is a threshold expression in config |
@@ -751,9 +751,9 @@ dynamics requirement as `world_model_requirements.md` restated it on 2026-09-22.
 | 1 | Held-out next-token accuracy against the **persistence baseline** - copying the previous frame's token at the same cell - on the same held-out population as the model, with the marginal-frequency baseline reported alongside | **above the persistence baseline, re-measured with `bench/token_stability_probe.py` on the model's population.** On R1, over that probe's 12 val episodes, it reads **85.67%**; that figure is the bar only on that population. Take it from the probe's `runs.jsonl` row, not from memory | **The dynamics requirement** - "dynamics model consumes interleaved frame and action tokens, predicts next token", accepted when held-out accuracy beats the persistence baseline scored like-for-like on the same population, with the marginal-frequency baseline reported alongside. **Restated 2026-09-22** from "beats marginal-frequency baseline by 3x". Its description was amended 2026-09-23 on the mask measurement - see "Before item 1". Under block-causal the teacher-forced and generated accuracies are one number |
 | 2 | One full next frame from `ctx` frames plus one action, fixed step count | **exact**, no fallback path | **The full-frame requirement** - as quoted above. All 64 positions decoded every step |
 | 3 | Rollout at `ctx` 4, 8 and 15 from one checkpoint | **runs** | **Configurable context** (S) - "configurable context length at load time". Item 2's gotcha is why this is an argument and not a config edit |
-| 4 | Frames until the frame-to-frame continuity check fires | **>= 200** | **The coherence horizon.** The check bounds per-step change in `link_angle`, `link_extent` and each block's `bbox` centroid, calibrated so that **zero windows of ground-truth frames fire**. That is the same acceptance shape as the frame validator ("frame validator reports block count, arm pose plausibility, palette adherence", accepted at zero false positives on ground-truth frames). Calibrate on **reconstructions, not renders**; `bench/q3_blind_probe.py` is the regression test and must fire on 100% of 300-step substitutions and 0% of clean reconstructions |
-| 5 | Action-following agreement, and the simulator's own agreement on the same subset | **>= 90% of the ground-truth term, both numbers reported** | **Action-following** - agreement is `sign(theta_t+1 - theta_t)` against the commanded sign, on an **action-balanced** subset drawn from the val split. An absolute bar there fails a model that is exactly right, which is why the bar is relative. `bench/hold_probe.py` measures the ground-truth term - **re-measure it, see the gotcha** |
-| 6 | Link-length drift over a 200-step rollout, per link, and the simulator's own drift | **<= 1.1x the ground-truth term, per link, both numbers reported** | **Link-length drift** - the statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. Ground truth reads 23.0% on link0 and 44.2% on link1, so a perfect model fails any absolute bar. `bench/link_drift_probe.py` measures the ground-truth term. **Do not re-attempt the deprojection** - it was measured and refuted |
+| 4 | Frames until the frame-to-frame continuity check fires | **>= 200** - **reported, not pass/fail, from 2026-09-25** until the coherence-horizon requirement is restated; see "Landed" below | **The coherence horizon.** The check bounds per-step change in `link_angle`, `link_extent` and each block's `bbox` centroid, calibrated so that **zero windows of ground-truth frames fire**. That is the same acceptance shape as the frame validator ("frame validator reports block count, arm pose plausibility, palette adherence", accepted at zero false positives on ground-truth frames). Calibrate on **reconstructions, not renders**; `bench/q3_blind_probe.py` is the regression test and must fire on 100% of 300-step substitutions and 0% of clean reconstructions |
+| 5 | Action-following agreement, and the simulator's own agreement on the same subset | **>= 90% of the ground-truth term, both numbers reported** - **reported, not pass/fail, this phase** (2026-09-25); see "Landed" below | **Action-following** - agreement is `sign(theta_t+1 - theta_t)` against the commanded sign, on an **action-balanced** subset drawn from the val split. An absolute bar there fails a model that is exactly right, which is why the bar is relative. `bench/hold_probe.py` measures the ground-truth term - **re-measure it, see the gotcha** |
+| 6 | Link-length drift over a 200-step rollout, per link, and the simulator's own drift; the share of generated frames that repeat the frame before them | **<= 1.1x the ground-truth term, per link, both numbers reported**, and **a frozen share <= 1.1x the ground truth's on the same frames**, both reported (`validator.rollout_frozen_ratio_max`, added 2026-09-25). A frame is frozen when all 64 tokens equal the frame before; the truth does that whenever the arm and blocks hold still, so an absolute bar would fail a perfect model | **Link-length drift** - the statistic is the pixel-measured major extent's `(max - min) / median` over non-overlapping 200-frame windows. Ground truth reads 23.0% on link0 and 44.2% on link1, so a perfect model fails any absolute bar. `bench/link_drift_probe.py` measures the ground-truth term. **Do not re-attempt the deprojection** - it was measured and refuted |
 | 7 | Block reappears in the correct position after full occlusion | **>= 80% of events** (S) | **Object permanence** - the memory result. Tier S: the project ships without it, and the negative result gets reported either way. `mirage.data.seen_later` owns the recoverable-occlusion split, and recoverable occlusion (5.35% of frames) is the event rate it scores over |
 | 8 | Parameter count, and peak training VRAM | **<= 20M bf16**, **<= 7.5 GB** | **The parameter and training VRAM bars.** The sizing probe settles the parameter bar: 14,593,152 for the chosen variant, 14.4-15.0 M across all four. The VRAM bar's first measurement is item 4's one-epoch run: 2.20 GB allocated at batch 16 |
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **Determinism** and **bench reproducibility** - a rerun matching within 5%. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
@@ -769,6 +769,74 @@ measurement computed the marginal top-1 on its own population**: code 474 at
 7.00% against persistence's 86.69%, 12.4x (r54). `bench/token_stability_probe.py`
 still does not compute it, so on any other population row 1's marginal-frequency
 column is where it first gets a number.
+
+**Landed 2026-09-25**, in `mirage/dynamics_eval.py` (`rollout`, `evaluate`),
+run as `python -m mirage.dynamics --eval RUN_ID`, with `--checkpoint best` (the
+default, item 4's `best.pt`) or `final` (the last `model.pt`). Its `runs.jsonl`
+row, "item 6's gate" (r61), has the numbers. What was built, and what differs
+from the table above:
+
+- **The rollouts.** One per val episode, 27 in all, seeded with frames `0 ..
+  ctx - 1` and run to the episode's end: 585 steps at `ctx` 15, 592 at 8, 596 at
+  4. Every pixel row decodes tokens through `Tokenizer.decode`, the ground truth
+  included, per item 5's gotcha. The self-check proves the rollout's shape on a
+  tiny model with stand-ins whose answer names their input: frame `ctx + k`
+  reads `action[ctx + k]`, and each step's output is the next step's input.
+- **Row 2** compares the rollout's first frame with `score_windows`' one pass
+  over the same 27 windows at the same batch, and they are identical.
+- **Row 4 is reported, not pass/fail (decided 2026-09-25), because its check
+  cannot meet its own acceptance test.** The bounds are four new `validator`
+  keys, `continuity_link_angle_max`, `continuity_link_major_max`,
+  `continuity_link_minor_max` and `continuity_block_centre_max`, one value per
+  link or block, set by `python -m mirage.dynamics_eval --calibrate-continuity`
+  to the largest per-step change over all 16,173 transitions of the val split's
+  decoded cached rows, so no ground-truth window fires. With those bounds,
+  `bench/q3_blind_probe.py`'s 300-step substitutions fire on **53.7%**, not the
+  100% the coherence-horizon requirement asks. Nothing tried reaches 100%, even
+  allowing false alarms: gating on pixel counts, medians over 3 to 9 frames, a
+  joint statistic, or bounds at the 99th percentile (90%). The arm moves about
+  0.007 rad a frame, while on decoded frames the pixel link angle jumps up to
+  0.39 rad on link0 and a full pi/2 on link1 when it is partly hidden, and a
+  block's bbox centre jumps up to 30 px. So link1's angle bound is the largest
+  change there is and never fires. Restating the requirement is the captain's
+  call; until then the row prints the horizon beside the regression result.
+- **Row 5 is reported this phase (decided 2026-09-25), because its instrument
+  is at chance.** It scores one-step predictions from true context on an
+  action-balanced subset of row 1's population (the neutral action left out,
+  9,480 frames), and the truth on the same frames, both through the pixel link
+  angle. On the truth that angle's per-step sign agrees with the command 47.1%
+  of the time, where the simulator's own joint angles agree 89.7%. `bench/hold_probe.py`
+  re-measured its term at the shipped hold at 90.7%, on its own random-policy
+  episodes, which is not the same subset. Over a whole held action link0's sign
+  does work (91.3% at 14 frames) and link1's still does not.
+- **Row 7** scores every reappearance at the reappearance frame itself, with
+  no shift forward and no event dropped. Correct position is the block's bbox
+  centre within 4 px of the decoded truth's at that frame, and the 2 px share
+  is reported beside it. A block coming back shows a pixel or two that the
+  decoder often drops; an event whose decoded truth does not show the block at
+  that frame counts as a miss, and the row prints how many events were in that
+  case. 21 events fall inside the rollouts.
+- **Row 8** reads peak training VRAM as the run's largest reserved figure, with
+  allocated beside it. **Row 10**'s gap is the run's last epoch.
+
+**On item 4's one-epoch run** (`20260925-100507-dyn`) the gate prints every row
+and exits 1, on row 1 alone when it ran, as expected: `best.pt` is 0.19 points
+under persistence. Rows 2, 3, 8 and 9 pass, and row 6 did too, before the
+frozen-share clause below; with that clause both checkpoints fail row 6 as well. **Its rollouts freeze**: every
+generated frame repeats the one before it, since that checkpoint copies 99.6%
+of cells, and with `--checkpoint final` 92.0% still do. That is decision 5's
+revisit trigger on an undertrained checkpoint, not yet a verdict on greedy
+decoding, and it shows two rows a frozen rollout games:
+row 4 reads the whole 585 frames and row 6 reads no drift at all. So row 6
+also fails when its share of frozen generated frames is more than 1.1x the
+ground truth's on the same episodes and steps (decided 2026-09-25; the bar is
+`validator.rollout_frozen_ratio_max`), which that run's rollouts now fail. The
+gate prints both shares on row 6 and under the table. The
+link-drift requirement's risk row already warned the bar might not tell a bad
+model from the simulator.
+
+`dynamics_eval.py` is now past 500 lines. Decision 6's split is by when code
+runs, and everything in it runs against a finished checkpoint, so nothing moves.
 
 ---
 
@@ -932,8 +1000,9 @@ separately dated amendment.
 | Putting the context length in `data.ctx` for the configurable-context requirement | `data_hash` moves, `load_shards` refuses the 300,000 frames, and `load_run` refuses the R1 checkpoint | Loudly, on the next run - which is the good case. The bad case is a session spent editing the register instead of passing an argument |
 | A shape knob outside the `dynamics` section | `dynamics_hash` does not name the model that produced the number, so bench reproducibility has a hole | **You do not.** Two runs with different head counts log the same hash. `n_heads` was in this state until item 2 put it in the `dynamics` section, which both bench probes now read |
 | Calibrating the coherence horizon's continuity check on **renders** | The check is tuned on the wrong population and fires on ordinary decoder output | The same two-population trap that cost Phase 1's build-order item 6 its obvious recipe: rendered pixels sit at most 0.75 RGB units from the palette, reconstructed ones up to 154.9. Calibrate on reconstructions |
-| Reusing the frame validator (the per-frame plausibility check accepted at zero false positives on ground truth) as the rollout terminator | The horizon measures decoder artifacts and nothing about dynamics | **Measured and refuted** (`bench/q3_blind_probe.py`): the validator fires on **0.00%** of frames substituted from 300 steps away, against 100% on its noise control. The validator itself is unchanged and still does its own job. The probe is the regression test that catches a replacement going blind the same way |
+| Reusing the frame validator (the per-frame plausibility check accepted at zero false positives on ground truth) as the rollout terminator | The horizon measures decoder artifacts and nothing about dynamics | **Measured and refuted** (`bench/q3_blind_probe.py`): the validator fires on **0.00%** of frames substituted from 300 steps away, against 100% on its noise control. The validator itself is unchanged and still does its own job. The probe is the regression test that catches a replacement going blind the same way. **The replacement, the continuity check, reads 53.7% on it, not 100%** (item 6, 2026-09-25), so gate row 4 is reported until the requirement is restated |
 | **Quoting the register's action-agreement ceiling (`NUM-DATA-Q4CEIL`) as action-following's ground-truth term** | The action-following gate row is scored against the superseded physics | That entry reads **83.1%**, measured before the `gear 6 / damping 1.5` change, while the `runs.jsonl` row it cites (the re-run at that change) measures **91.5% after it**, with a relative bar of 82.3%. `docs/phase0_debt_checklist.md` records the same before/after pair. The action-following requirement says to re-measure the ground-truth term on the same subset anyway, so **re-measure with `bench/hold_probe.py` and report both numbers**. Do not copy either stored value, and do not silently edit the register from a Phase 2 plan |
+| **A frozen rollout scored as a coherent one** | Row 4 reads the full horizon and row 6 reads zero drift, which passes, for a model that only copies | Item 6's first gate run: `best.pt` of item 4's one-epoch run copies 99.6% of cells, and every generated frame repeats the one before it. Row 6 fails when its frozen share is above 1.1x the truth's on the same frames (`validator.rollout_frozen_ratio_max`); row 4 still does not look, so read the frozen share under the table before it |
 | A second decode implementation in `dynamics.py` | Two token-to-pixel paths that will eventually disagree | The disagreement is a wrong picture, which nothing crashes on. Item 5 exists so there is one path |
 | Training on token rows as if they were upside down | Well-formed tokens for mirrored frames | **Already handled** - `write_token_cache` flips the rows on the way in, exactly as `preload` does, and says so. Do not add a second flip: the blob is bottom-up, and the flip lives in one place |
 | Hardcoding the re-encode batch | A determinism check that tests "re-encode at a different batch size" instead of determinism | Gate row 5's own history: the check originally re-encoded at 256 against a cache written at 128 and failed R2 on a false alarm. Read `batch` from the manifest |
