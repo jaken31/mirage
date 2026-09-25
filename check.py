@@ -5,7 +5,7 @@
 Deliberately not a test framework: "no test framework, per-module self-checks"
 is a recorded design choice (`docs/phase0_debt_checklist.md`), and this does
 not reverse it. Each module keeps its own `_self_check()` and still runs alone,
-e.g. `python -m mirage.data`. This just runs all six so nobody has to remember
+e.g. `python -m mirage.data`. This just runs all seven so nobody has to remember
 the list. It also checks the numbers register (`docs/canonical_numbers.md`).
 
 ponytail: runs each check as a subprocess instead of importing it, so one
@@ -24,9 +24,10 @@ from pathlib import Path
 # Fast, data-free checks first, so a failure shows up in seconds, not minutes.
 # `config`, `logging` and `fsq` touch no dataset; `validator`, `data` and
 # `dynamics` read the full dataset, or the committed 40-frame fixture in
-# `mirage/fixtures/` when `data/shards` is empty. `dynamics` also reads R1's
-# token cache when there is one.
-MODULES = ("config", "logging", "fsq", "validator", "data", "dynamics")
+# `mirage/fixtures/` when `data/shards` is empty. `fsq_eval` reads one val
+# episode and decodes one batch of R1's token cache, and `dynamics` reads the
+# whole cache; both skip that part when there is none.
+MODULES = ("config", "logging", "fsq", "validator", "data", "fsq_eval", "dynamics")
 
 ROOT = Path(__file__).resolve().parent
 
