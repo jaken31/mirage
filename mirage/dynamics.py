@@ -1,8 +1,8 @@
 """The dynamics model: the next frame's tokens, from earlier frames and actions.
 
-Phase 2, built in the order of `docs/phase2_structural_plan.md`. So far this file
-holds item 1, the sequence layout and the token/action window sampler, and item
-3, the model. Its training loop is item 4. The model never sees a pixel: it reads
+Phase 2, built in the order of `docs/phase2_structural_plan.md`. This file holds
+item 1, the sequence layout and the token/action window sampler; item 3, the
+model; and item 4, the training loop with its instrument. The model never sees a pixel: it reads
 a tokenizer run's token cache, which `fsq_eval.write_token_cache` writes, and
 nothing here re-encodes a frame.
 
@@ -62,15 +62,34 @@ before a checkpoint exists, so nothing moves out. Rollout and the gate table
 (item 6) are what run against a finished checkpoint, and they start in
 `mirage/dynamics_eval.py`.
 
-    python -m mirage.dynamics    # self-check: the generated set if present, else the fixture
+**The training loop (item 4)** trains in bf16 and stops by decision 4a
+(`stop_decision`): a 10-epoch cap, or two epochs after held-out loss has risen
+two epochs running. Held-out loss and the train/val gap are logged every epoch.
+Every 1,000 steps it scores gate row 1's measure - the generated next frame's
+accuracy, one forward pass under block-causal - on the mask measurement's 512
+fixed val windows, with persistence on the same windows beside it, and keeps
+the best point's weights apart from the per-epoch resumable checkpoint. When
+the run stops, `mirage.dynamics_eval` scores that best checkpoint on the full
+population. `--resume` takes a run id.
+
+    python -m mirage.dynamics                     # self-check: the generated set if present, else the fixture
+    python -m mirage.dynamics --train             # the first run: 10-epoch cap, decision 4a
+    python -m mirage.dynamics --train --resume RUN_ID
 """
 
+import argparse
+import contextlib
 import dataclasses
 import hashlib
 import importlib.util
 import json
 import math
+import os
+import platform
+import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple, Sequence
 
@@ -80,6 +99,8 @@ import torch.nn.functional as F
 from torch import nn
 
 from mirage import config, data
+from mirage.fsq import _keep_awake
+from mirage.logging import Run
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -460,6 +481,526 @@ def check_block_causal(model: Dynamics, lay: Layout, mask: torch.Tensor, x: torc
                              f"which should attend to it")
 
 
+# ------------------------------------------------------------------- training
+
+# Decision 4a, the first run's stopping rule: a 10-epoch cap, or a trip when
+# held-out loss rises two epochs running, after which the run trains two more
+# epochs and stops - whichever comes first. `stop_decision` is the whole rule.
+EPOCH_CAP = 10
+TRIP_RISES = 2
+TRIP_EXTRA = 2
+
+# The mask measurement's schedule (`bench/mask_probe.py`, r54), so a run at its
+# budget trains exactly the model it measured. Starting points, not
+# measurements; they travel in each checkpoint's `knobs`, never in a hash.
+BATCH = 16
+LR, LR_FLOOR, WARMUP = 3e-4, 3e-5, 0.05
+WEIGHT_DECAY = 1e-4
+CLIP = 1.0
+
+# Gate row 1's measure is scored every `EVAL_EVERY` steps on `EVAL_WINDOWS` val
+# windows drawn with `EVAL_SEED`, which are the mask measurement's 512 curve
+# windows (r59 re-read persistence on them). Fixed for the whole run, so
+# persistence on them is computed once and every point is comparable.
+EVAL_EVERY = 1000
+EVAL_WINDOWS = 512
+EVAL_SEED = 0
+EVAL_BATCH = 64   # the mask measurement's eval batch; a batch shape can pick other bf16 kernels
+
+
+def stop_decision(val_ce: Sequence[float], cap: int) -> dict | None:
+    """Decision 4a over the held-out losses so far: None to keep training, else why it stops.
+
+    `val_ce[e - 1]` is the held-out loss after epoch `e`. The trip fires at the
+    first epoch `e` whose loss rose for `TRIP_RISES` epochs running -
+    `val_ce[e-3] < val_ce[e-2] < val_ce[e-1]`, so epoch 3 at the earliest, and
+    an equal loss is not a rise. The run then trains `TRIP_EXTRA` more epochs,
+    because decision 4 wants the size of the gap and not just where it turns,
+    and the cap bounds those epochs too. A trip whose extra epochs end exactly at
+    the cap is recorded as the trip: the trip's stop is reached, and the cap
+    alone would have stopped there anyway.
+
+    Returns `{"rule": "trip" | "cap", "epoch": last epoch trained, "trip_epoch": e or None}`.
+    """
+    trip = next((e for e in range(TRIP_RISES + 1, len(val_ce) + 1)
+                 if all(val_ce[k] > val_ce[k - 1] for k in range(e - TRIP_RISES, e))), None)
+    if trip is not None and trip + TRIP_EXTRA <= cap:
+        if len(val_ce) >= trip + TRIP_EXTRA:
+            return {"rule": "trip", "epoch": trip + TRIP_EXTRA, "trip_epoch": trip}
+        return None
+    if len(val_ce) >= cap:
+        return {"rule": "cap", "epoch": cap, "trip_epoch": trip}
+    return None
+
+
+class TokenSplits(NamedTuple):
+    """The windows a run trains and scores on. `shards` is None for synthetic windows."""
+    train: TokenWindowSampler
+    val: TokenWindowSampler
+    shards: Sequence[data.Shard] | None
+
+
+def load_splits(cfg: config.Config, run_id: str = TOKENIZER_RUN) -> TokenSplits:
+    """R1's token cache, refused unless it matches the config, as train and val windows."""
+    shards = data.load_shards(ROOT / cfg.data["shard_dir"], cfg.data_hash)
+    index = data.episode_index(shards)
+    tokens = load_token_cache(cfg, shards, run_id)
+    ctx, hold, vf = cfg.data["ctx"], cfg.sim["action_hold_steps"], cfg.data["val_fraction"]
+    return TokenSplits(TokenWindowSampler(shards, index, tokens, ctx, hold, "train", vf),
+                       TokenWindowSampler(shards, index, tokens, ctx, hold, "val", vf), shards)
+
+
+def _stack(windows: TokenWindowSampler, idx: Iterable[int]) -> tuple[np.ndarray, np.ndarray]:
+    """Window indices -> tokens `(B, ctx+1, cells)` and actions `(B, ctx+1)`."""
+    got = [windows[int(i)] for i in idx]
+    return np.stack([w.tokens for w in got]), np.stack([w.actions for w in got])
+
+
+def _autocast(dev: torch.device):
+    """bf16 on CUDA, which is what training runs in; plain fp32 on CPU."""
+    return torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda")
+
+
+@torch.no_grad()
+def score_windows(model: Dynamics, windows: TokenWindowSampler, idx: np.ndarray, lay: Layout,
+                  mask: torch.Tensor, dev: torch.device,
+                  batch: int = EVAL_BATCH) -> dict[str, np.ndarray]:
+    """Held-out loss and gate row 1's measure on windows `idx`, one forward pass each.
+
+    Per window: `ce`, the mean cross-entropy over all its frame targets - the
+    training loss, measured in eval mode. Per cell of each window's last frame:
+    `pred`, the model's greedy prediction; `target`, the true token; `prev`, the
+    token one frame earlier, which is what persistence predicts.
+
+    **`pred` is the generated next frame, not a teacher-forced one.** Under
+    block-causal the layout stops before the window's last frame, so no cell of
+    it is in the input at all (`_self_check` asserts that changing it leaves the
+    input unchanged), and one pass is the whole generation - the mask
+    measurement confirmed generated equals this pass exactly (r54).
+    """
+    was = model.training
+    model.eval()
+    codes, cells = model.head.out_features, lay.cells
+    read = torch.from_numpy(lay.read).to(dev)
+    out = {"ce": np.empty(len(idx)), **{k: np.empty((len(idx), cells), np.int64)
+                                        for k in ("pred", "target", "prev")}}
+    for j in range(0, len(idx), batch):
+        tok, act = _stack(windows, idx[j:j + batch])
+        x, y = (torch.from_numpy(a).to(dev) for a in assemble(lay, tok, act, codes))
+        with _autocast(dev):
+            logits = model(x, mask, read)
+        logits = logits.float()
+        part = slice(j, j + len(tok))
+        out["ce"][part] = F.cross_entropy(logits.transpose(1, 2), y,
+                                          reduction="none").mean(1).cpu().numpy()
+        out["pred"][part] = logits[:, -cells:].argmax(-1).cpu().numpy()
+        out["target"][part], out["prev"][part] = tok[:, -1], tok[:, -2]
+    model.train(was)
+    return out
+
+
+def last_frame_summary(pred: np.ndarray, target: np.ndarray, prev: np.ndarray) -> dict:
+    """Gate row 1's measure against persistence on the same cells, and the copy overlap.
+
+    `margin_points` is accuracy minus persistence in percentage points, the
+    number the bar is about. `copy_overlap` is row 10's share of predictions
+    that copy the previous frame: a model clearing the bar while copying almost
+    everywhere is winning on the cells persistence already gets right.
+    """
+    hit, same, changed = pred == target, prev == target, prev != target
+    return {"cells": int(target.size), "acc": float(hit.mean()), "persistence": float(same.mean()),
+            "margin_points": 100 * float(hit.mean() - same.mean()),
+            "margin_cells": int(hit.sum() - same.sum()),
+            "copy_overlap": float((pred == prev).mean()),
+            "acc_changed": float(hit[changed].mean()) if changed.any() else None}
+
+
+class GpuMonitor:
+    """Samples SM clock and power draw on a background thread, and other GPU processes.
+
+    Compute timings are gated on SM clock plus power draw, never on `pstate`,
+    which follows the memory clock and reads P4 during correct compute-bound
+    work (`AGENTS.md`). A thread rather than a sample at each log step, so the
+    training loop never waits on `nvidia-smi` and samples land inside the steps
+    rather than beside them. The loop sets `phase`; `take` summarises only the
+    samples taken while it said "train", so held-out passes do not dilute the
+    clock state recorded beside the step time. Every sample also lists the other
+    compute processes on the GPU, so a run that shared the card says so.
+    """
+
+    QUERY = "clocks.sm,clocks.max.sm,power.draw,enforced.power.limit,temperature.gpu"
+
+    def __init__(self, every_s: float = 2.0) -> None:
+        self.every_s, self.phase = every_s, "train"
+        self._samples: list[dict] = []
+        self._others: dict[int, dict] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def __enter__(self) -> "GpuMonitor":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=30)
+
+    def _smi(self, *args: str) -> list[list[str]]:
+        out = subprocess.run(["nvidia-smi", *args, "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return [[v.strip() for v in line.split(",")] for line in out.splitlines() if line.strip()]
+
+    def _loop(self) -> None:
+        me = os.getpid()
+        while True:
+            phase = self.phase
+            try:
+                sm, sm_max, power, cap, temp = self._smi(f"--query-gpu={self.QUERY}")[0]
+                apps = self._smi("--query-compute-apps=pid,process_name,used_memory")
+                sample = {"phase": phase, "sm_mhz": int(sm), "sm_max_mhz": int(sm_max),
+                          "power_w": float(power), "power_cap_w": float(cap), "temp_c": float(temp)}
+            except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+                sample, apps = None, []
+            with self._lock:
+                if sample is not None:
+                    self._samples.append(sample)
+                for pid, name, mib in apps:
+                    if pid.isdigit() and int(pid) != me:
+                        seen = self._others.setdefault(int(pid), {"name": name, "max_mib": 0})
+                        seen["max_mib"] = max(seen["max_mib"], int(mib) if mib.isdigit() else 0)
+            if self._stop.wait(self.every_s):
+                return
+
+    def take(self) -> dict | None:
+        """The training-phase clock state since the last call, and every other process seen."""
+        with self._lock:
+            got = [s for s in self._samples if s["phase"] == "train"]
+            self._samples.clear()
+            others = {str(k): dict(v) for k, v in self._others.items()}
+        if not got:
+            return None
+        sm, pw = np.array([s["sm_mhz"] for s in got]), np.array([s["power_w"] for s in got])
+        return {"samples": len(got), "every_s": self.every_s,
+                "sm_mhz_median": float(np.median(sm)), "sm_mhz_min": int(sm.min()),
+                "sm_mhz_max": int(sm.max()), "sm_max_mhz": got[-1]["sm_max_mhz"],
+                "power_w_median": float(np.median(pw)), "power_w_min": float(pw.min()),
+                "power_cap_w_median": float(np.median([s["power_cap_w"] for s in got])),
+                "temp_c_max": max(s["temp_c"] for s in got), "other_processes": others}
+
+
+def _environment(dev: torch.device) -> dict:
+    return {"platform": platform.platform(), "python": platform.python_version(),
+            "torch": str(torch.__version__), "cuda": torch.version.cuda,
+            "device": torch.cuda.get_device_name(dev) if dev.type == "cuda" else "cpu"}
+
+
+# Every knob that changes the computation a resumed run continues. `device`,
+# the environment and derived counts may differ, so resuming on another
+# machine stays possible (`fsq.train` draws the same line).
+RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
+                "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
+                "seq_len")
+
+
+def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
+             mask: torch.Tensor, dev: torch.device) -> dict:
+    """The end-of-epoch pass: held-out loss over every val window, and the train/val gap.
+
+    The train side is a fixed subset of as many train windows, scored the same
+    way in eval mode, so the gap compares two numbers measured alike rather
+    than a running training loss against a held-out pass (`fsq.train` does the
+    same). The val pass also yields gate row 1's measure on the full population
+    for free, so it is logged too.
+    """
+    val = score_windows(model, splits.val, np.arange(len(splits.val)), lay, mask, dev)
+    train_ce = float(score_windows(model, splits.train, gap_idx, lay, mask, dev)["ce"].mean())
+    val_ce = float(val["ce"].mean())
+    full = last_frame_summary(val["pred"], val["target"], val["prev"])
+    return {"val_ce": val_ce, "train_ce": train_ce, "gap_ce": val_ce - train_ce,
+            "val_acc_last_all": full["acc"], "persistence_all": full["persistence"],
+            "margin_points_all": full["margin_points"]}
+
+
+def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: float = LR,
+          lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
+          clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
+          eval_windows: int | None = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
+          steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
+          wandb_project: str | None = None, device: str | None = None,
+          runs_dir: Path | str = ROOT / "runs", splits: TokenSplits | None = None,
+          session_epochs: int | None = None, score: bool = True, name: str = "dyn") -> dict:
+    """Train the dynamics model: bf16, AdamW, warmup then cosine to `lr_floor` over `epochs`.
+
+    **The stopping rule is decision 4a** (`stop_decision`), with `epochs` as its
+    cap and as the schedule's length. Held-out loss over every val window is
+    logged after every epoch from the first, beside the train/val gap, the
+    phase's headline warning sign.
+
+    **Gate row 1's measure is scored every `eval_every` steps** and at each
+    epoch's end, on `eval_windows` fixed val windows (all of them if None),
+    with persistence on exactly those windows beside every point. The best
+    point's weights are kept as `best.pt`, apart from the per-epoch resumable
+    `model.pt`, and when the run stops `mirage.dynamics_eval` scores both on the
+    full population against persistence re-measured there by
+    `bench/token_stability_probe.py` (unless `score` is False).
+
+    **`resume` is a run id.** The run continues from that run's last per-epoch
+    checkpoint in a new run directory - `logging.Run` never reopens one -
+    carrying the history, the sub-epoch points and the best weights forward,
+    and naming the run it continues as `resumed_from`. Data order, weights,
+    optimiser and random states are restored, so a resumed run takes the steps
+    the uninterrupted one would have (bit-identical on CPU, `_self_check`).
+
+    `steps_per_epoch` shortens an epoch for smoke runs; `session_epochs` ends
+    this process after that many epochs, leaving the checkpoint to resume -
+    neither changes what a step computes. `splits` replaces R1's cache and
+    `name` the run id's suffix, for the self-check.
+
+    Keep the machine awake: `fsq._keep_awake` does it on Windows; on Linux,
+    launch under `systemd-inhibit --what=idle:sleep`.
+    """
+    _keep_awake()
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    cuda = dev.type == "cuda"
+    runs_dir = Path(runs_dir)
+    splits = splits or load_splits(cfg)
+    lay = layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid))
+    mask, read = attention_mask(lay).to(dev), torch.from_numpy(lay.read).to(dev)
+    codes = cfg.tokenizer["codebook_size"]
+
+    torch.manual_seed(seed)   # immediately before `build`: the mask measurement's initial weights
+    model = build(cfg).to(dev)
+    params = sum(p.numel() for p in model.parameters())
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    rng = np.random.default_rng(seed)
+
+    per_epoch = steps_per_epoch or len(splits.train) // batch
+    if not 0 < per_epoch * batch <= len(splits.train):
+        raise ValueError(f"{per_epoch} steps of batch {batch} do not fit "
+                         f"{len(splits.train)} train windows")
+    total = per_epoch * epochs
+    warm = max(1, int(warmup * total))
+
+    def lr_at(step: int) -> float:
+        if step < warm:
+            return lr * (step + 1) / warm
+        p = (step - warm) / max(1, total - warm)
+        return lr_floor + 0.5 * (lr - lr_floor) * (1 + math.cos(math.pi * p))
+
+    # The fixed windows, drawn the way the mask measurement drew its curve's,
+    # and a fixed train subset as large as the val split for the epoch gap.
+    ev = np.random.default_rng(eval_seed)
+    n_eval = len(splits.val) if eval_windows is None else eval_windows
+    val_sub = np.sort(ev.choice(len(splits.val), n_eval, replace=False))
+    train_sub = np.sort(ev.choice(len(splits.train), min(n_eval, len(splits.train)), replace=False))
+    gap_idx = np.sort(np.random.default_rng([eval_seed, 1]).choice(
+        len(splits.train), min(len(splits.val), len(splits.train)), replace=False))
+    tok_sub = _stack(splits.val, val_sub)[0]
+    persistence = float((tok_sub[:, -1] == tok_sub[:, -2]).mean())
+
+    hashes = {"data_hash": cfg.data_hash, "tokenizer_hash": cfg.tokenizer_hash,
+              "dynamics_hash": cfg.dynamics_hash}
+    knobs = dict(tokenizer_run=TOKENIZER_RUN, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
+                 warmup=warmup, weight_decay=weight_decay, clip=clip, seed=seed,
+                 eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
+                 steps_per_epoch=per_epoch, seq_len=len(lay.src), targets=len(lay.tgt),
+                 params=params, precision="bf16 autocast" if cuda else "fp32",
+                 train_windows=len(splits.train), val_windows=len(splits.val),
+                 action_changes=splits.train.action_changes + splits.val.action_changes,
+                 resumed_from=resume, **_environment(dev))
+
+    history: list[dict] = []    # one record per finished epoch
+    points: list[dict] = []     # one record per sub-epoch point
+    best: dict | None = None
+    best_state: dict | None = None
+    start = 0
+    if resume is not None:
+        ck = torch.load(runs_dir / resume / "model.pt", map_location="cpu", weights_only=True)
+        for k, v in hashes.items():
+            if ck[k] != v:
+                raise ValueError(f"resume {resume}: {k} is {ck[k]}, the config's is {v}")
+        for k in RESUME_KNOBS:
+            if ck["knobs"][k] != knobs[k]:
+                raise ValueError(f"resume {resume}: {k} is {ck['knobs'][k]!r}, "
+                                 f"this call asks for {knobs[k]!r}")
+        model.load_state_dict(ck["state_dict"])
+        opt.load_state_dict(ck["opt"])
+        rng.bit_generator.state = ck["np_rng"]
+        # `.cpu()` because `set_rng_state` takes a CPU ByteTensor - the bug that
+        # left `fsq --resume` broken on CUDA until it was first executed.
+        torch.set_rng_state(ck["torch_rng"].cpu())
+        if ck["cuda_rng"] is not None and cuda:
+            torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
+        history, points, best, best_state = ck["history"], ck["points"], ck["best"], ck["best_state"]
+        start = ck["epoch"]
+        done = stop_decision([h["val_ce"] for h in history], epochs)
+        if done is not None:
+            raise ValueError(f"resume {resume}: the run already stopped by the {done['rule']} "
+                             f"rule at epoch {done['epoch']}; training past a stop is a new "
+                             f"decision (decision 4a), not a resume")
+        print(f"resumed {resume} after epoch {start}/{epochs}")
+
+    print(f"dynamics: {params:,} parameters, {len(lay.src)} positions, {len(splits.train):,} train "
+          f"/ {len(splits.val):,} val windows, {per_epoch:,} steps/epoch x {epochs} at batch "
+          f"{batch} on {dev} ({knobs['precision']})")
+    print(f"  gate row 1 every {eval_every:,} steps on {n_eval:,} fixed val windows, "
+          f"persistence there {persistence:.4%}")
+
+    monitor = GpuMonitor() if cuda else None
+    with Run(name, hashes, config=knobs, root=runs_dir, wandb_project=wandb_project) as run, \
+            (monitor or contextlib.nullcontext()):
+        if best_state is not None:
+            torch.save({"state_dict": best_state, "knobs": knobs, **hashes, **best},
+                       run.dir / "best.pt")
+        wall = time.perf_counter()
+        step = start * per_epoch
+        stop = None
+        peak = {"alloc": 0, "reserved": 0}
+
+        def point(epoch: int) -> None:
+            """Score the fixed windows, log the point beside persistence, keep the best."""
+            nonlocal best, best_state
+            if cuda:
+                peak["alloc"] = max(peak["alloc"], torch.cuda.max_memory_allocated(dev))
+                peak["reserved"] = max(peak["reserved"], torch.cuda.max_memory_reserved(dev))
+                monitor.phase = "eval"
+            sv = score_windows(model, splits.val, val_sub, lay, mask, dev)
+            st = score_windows(model, splits.train, train_sub, lay, mask, dev)
+            s = last_frame_summary(sv["pred"], sv["target"], sv["prev"])
+            assert s["persistence"] == persistence, "the fixed windows moved"
+            rec = {"step": step, "epoch": epoch, "val_acc_last": s["acc"], "persistence": persistence,
+                   "margin_points": s["margin_points"], "margin_cells": s["margin_cells"],
+                   "copy_overlap": s["copy_overlap"], "val_acc_changed": s["acc_changed"],
+                   "val_ce_sub": float(sv["ce"].mean()), "train_ce_sub": float(st["ce"].mean())}
+            rec["best"] = best is None or rec["val_acc_last"] > best["val_acc_last"]
+            if rec["best"]:
+                best = {k: rec[k] for k in ("step", "epoch", "val_acc_last", "persistence",
+                                            "margin_points", "copy_overlap")}
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                torch.save({"state_dict": best_state, "knobs": knobs, **hashes, **best},
+                           run.dir / "best.pt")
+            points.append(rec)
+            run.log({"point": True, **rec, "wall_s": round(time.perf_counter() - wall, 1)})
+            print(f"  step {step:>7,}  acc(last) {s['acc']:.4%}  persistence {persistence:.4%}  "
+                  f"{s['margin_points']:+.2f} pts  copy {s['copy_overlap']:.2%}  val ce(sub) "
+                  f"{rec['val_ce_sub']:.4f}{'  best' if rec['best'] else ''}", flush=True)
+            if cuda:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(dev)
+                monitor.phase = "train"
+
+        for epoch in range(start + 1, epochs + 1):
+            if session_epochs is not None and epoch > start + session_epochs:
+                break
+            t_epoch, step_s = time.perf_counter(), []
+            if cuda:
+                torch.cuda.reset_peak_memory_stats(dev)
+                peak = {"alloc": 0, "reserved": 0}
+                monitor.take()   # drop samples from before this epoch
+            order = rng.permutation(len(splits.train))[:per_epoch * batch].reshape(per_epoch, batch)
+            for s in range(per_epoch):
+                timed = cuda and step % 50 == 0
+                if timed:
+                    torch.cuda.synchronize(dev)
+                t0 = time.perf_counter()
+                for g in opt.param_groups:
+                    g["lr"] = lr_at(step)
+                tok, act = _stack(splits.train, order[s])
+                x, y = (torch.from_numpy(a).to(dev) for a in assemble(lay, tok, act, codes))
+                with _autocast(dev):
+                    loss = frame_loss(model, x, y, mask, read)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                gnorm = float(nn.utils.clip_grad_norm_(model.parameters(), clip))
+                opt.step()
+                if timed:
+                    torch.cuda.synchronize(dev)
+                    step_s.append(time.perf_counter() - t0)
+                step += 1
+                if step % log_every == 0:
+                    run.log({"step": step, "epoch": epoch, "loss": float(loss.detach()),
+                             "lr": lr_at(step - 1), "grad_norm": gnorm,
+                             "wall_s": round(time.perf_counter() - wall, 1)})
+                if step % eval_every == 0 or s == per_epoch - 1:
+                    point(epoch)
+
+            train_s = time.perf_counter() - t_epoch
+            gpu = monitor.take() if cuda else None
+            if cuda:
+                monitor.phase = "eval"
+            rec = {"epoch": epoch, "step": step,
+                   **held_out(model, splits, gap_idx, lay, mask, dev),
+                   "ms_per_step_median": (round(1e3 * float(np.median(step_s)), 1)
+                                          if step_s else None),
+                   "timed_steps": len(step_s), "batch": batch, "gpu": gpu,
+                   "peak_vram_alloc_gb": round(peak["alloc"] / 2**30, 3) if cuda else None,
+                   "peak_vram_reserved_gb": round(peak["reserved"] / 2**30, 3) if cuda else None,
+                   "epoch_train_s": round(train_s, 1),
+                   "epoch_s": round(time.perf_counter() - t_epoch, 1)}
+            if cuda:
+                monitor.phase = "train"
+            history.append(rec)
+            stop = stop_decision([h["val_ce"] for h in history], epochs)
+            run.log({"epoch_end": True, **rec, "stop": stop,
+                     "wall_s": round(time.perf_counter() - wall, 1)})
+            print(f"epoch {epoch}/{epochs}  val ce {rec['val_ce']:.4f}  train ce "
+                  f"{rec['train_ce']:.4f}  gap {rec['gap_ce']:+.4f}  acc(last, all val) "
+                  f"{rec['val_acc_last_all']:.4%}  {rec['ms_per_step_median']} ms/step  "
+                  f"{rec['epoch_s']:.0f}s{f'  STOP: {stop}' if stop else ''}", flush=True)
+            # Every epoch, with everything a resume needs. The random states are
+            # restored rather than reseeded, so a resumed run draws the data
+            # order the uninterrupted one would have.
+            torch.save({"state_dict": model.state_dict(), "opt": opt.state_dict(), "epoch": epoch,
+                        "step": step, "knobs": knobs, **hashes,
+                        "np_rng": rng.bit_generator.state, "torch_rng": torch.get_rng_state(),
+                        "cuda_rng": torch.cuda.get_rng_state(dev) if cuda else None,
+                        "history": history, "points": points, "best": best,
+                        "best_state": best_state},
+                       run.dir / "model.pt")
+            if stop is not None:
+                break
+
+        out = {**knobs, **hashes, "run_id": run.run_id, "stop": stop,
+               "epochs_done": len(history), "history": history, "points": points, "best": best,
+               "train_s": round(time.perf_counter() - wall, 1)}
+        if stop is not None and score:
+            if cuda:
+                monitor.phase = "eval"
+            # Imported here: `dynamics_eval` imports this file.
+            from mirage import dynamics_eval
+            out["population"] = dynamics_eval.score_run(run.dir, cfg, splits, dev)
+        run.log({"final": True, **{k: v for k, v in out.items() if k not in ("history", "points")}})
+        (run.dir / "result.json").write_text(json.dumps(out, indent=1) + "\n",
+                                             encoding="utf-8", newline="\n")
+    return out
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="the dynamics model: self-check, or train it")
+    ap.add_argument("--train", action="store_true", help="train (decision 4a's stopping rule)")
+    ap.add_argument("--config", default=str(ROOT / "mirage" / "configs" / "base.json"))
+    ap.add_argument("--epochs", type=int, default=EPOCH_CAP,
+                    help=f"the epoch cap and the schedule's length (default {EPOCH_CAP})")
+    ap.add_argument("--batch", type=int, default=BATCH)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--eval-windows", default=str(EVAL_WINDOWS),
+                    help=f"fixed val windows gate row 1 is scored on every {EVAL_EVERY:,} "
+                         f"steps, or 'all' (default {EVAL_WINDOWS})")
+    ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
+    ap.add_argument("--resume", metavar="RUN_ID",
+                    help="continue that run from its last per-epoch checkpoint; every "
+                         "knob must match")
+    ap.add_argument("--wandb", metavar="PROJECT", help="mirror the jsonl to this W&B project")
+    args = ap.parse_args()
+    if not args.train:
+        _self_check()
+        return
+    train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
+          eval_windows=None if args.eval_windows == "all" else int(args.eval_windows),
+          steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
+
+
 # ----------------------------------------------------------------- self-check
 
 def _refused(build: Callable[..., object], *args: object) -> bool:
@@ -566,6 +1107,131 @@ def _check_windows(cfg: config.Config, shards: Sequence[data.Shard],
                 assert np.array_equal(named, rows) and (t.tokens[:, 2] == ep.shard).all(), i
         print(f"  {split}: all {len(tw):,} windows are WindowSampler's (episode, offset), "
               f"one episode each, tokens and actions from its records")
+
+
+class _Synthetic:
+    """Random token windows behind `TokenWindowSampler`'s interface, for the CPU training checks."""
+
+    def __init__(self, n: int, ctx: int, cells: int, codes: int, seed: int) -> None:
+        r = np.random.default_rng(seed)
+        self.tokens = r.integers(0, codes, (n, ctx + 1, cells)).astype(np.uint16)
+        self.actions = r.integers(0, N_ACTIONS, (n, ctx + 1)).astype(np.uint8)
+        self.action_changes = 0
+
+    def __len__(self) -> int:
+        return len(self.tokens)
+
+    def __getitem__(self, i: int) -> TokenWindow:
+        return TokenWindow(self.tokens[i], self.actions[i], 0, i)
+
+
+def _records(run_dir: Path) -> list[dict]:
+    return [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text("utf-8").splitlines()]
+
+
+def _check_training(base: config.Config) -> None:
+    """Item 4's working-when, as far as it can be shown on CPU without data.
+
+    The stopping rule against decision 4a case by case; then the real `train`
+    on a tiny model and synthetic windows: a run killed after epoch 1 and
+    resumed takes bit-identical steps to one never interrupted, and the rule
+    trips and stops where decision 4a says through the loop itself, across a
+    resume.
+    """
+    cases = [  # held-out losses, epoch cap -> decision
+        ([5, 4, 3, 2, 1, 0.9, 0.8, 0.7, 0.6, 0.5], 10, {"rule": "cap", "epoch": 10, "trip_epoch": None}),
+        ([5, 4, 3, 2], 10, None),
+        ([5, 6, 7], 10, None),                                    # trips at 3, trains 4 and 5
+        ([5, 6, 7, 6, 5], 10, {"rule": "trip", "epoch": 5, "trip_epoch": 3}),
+        ([5, 4, 3, 3.5, 3.6, 3.0], 10, None),
+        ([5, 4, 3, 3.5, 3.6, 3.0, 2.0], 10, {"rule": "trip", "epoch": 7, "trip_epoch": 5}),
+        ([5, 6, 5, 6, 5, 6, 5, 6, 5, 6], 10, {"rule": "cap", "epoch": 10, "trip_epoch": None}),
+        ([5, 5, 5, 5, 5, 5, 5, 5, 5, 5], 10, {"rule": "cap", "epoch": 10, "trip_epoch": None}),
+        ([9, 8, 7, 6, 5, 4, 3, 3.1, 3.2, 3.3], 10, {"rule": "cap", "epoch": 10, "trip_epoch": 9}),
+        ([9, 8, 7, 6, 5, 3.0, 3.1, 3.2, 3.0, 2.9], 10, {"rule": "trip", "epoch": 10, "trip_epoch": 8}),
+        ([2.0], 1, {"rule": "cap", "epoch": 1, "trip_epoch": None}),
+    ]
+    for losses, cap, want in cases:
+        got = stop_decision(losses, cap)
+        assert got == want, f"stop_decision({losses}, {cap}) = {got}, decision 4a says {want}"
+        # The decision is taken the first epoch it can be, never later.
+        assert all(stop_decision(losses[:k], cap) is None for k in range(len(losses))), losses
+    print(f"stopping rule: {len(cases)} cases - the cap at 10; a trip on two consecutive rises "
+          f"then two more epochs; no trip on one rise, a flat loss or a zigzag; a trip at 9 "
+          f"bounded by the cap; a trip at 8 stopping at 10 as the trip")
+
+    ctx, cells, codes = base.data["ctx"], math.prod(base.shapes.token_grid), 512
+    lay = layout(ctx, cells)
+    tok = np.random.default_rng(1).integers(0, codes, (2, ctx + 1, cells))
+    act = np.zeros((2, ctx + 1), np.int64)
+    other = tok.copy()
+    other[:, -1] = (other[:, -1] + 1) % codes
+    assert np.array_equal(assemble(lay, tok, act, codes)[0], assemble(lay, other, act, codes)[0]), \
+        "the last frame reached the input: one pass would not be a generated frame"
+    print("gate row 1: no cell of a window's last frame is in its input, so one pass generates it")
+
+    tiny = dataclasses.replace(base, dynamics={**base.dynamics, "d_model": 16, "n_layers": 1,
+                                               "n_heads": 2})
+    splits = TokenSplits(_Synthetic(24, ctx, cells, codes, 0), _Synthetic(8, ctx, cells, codes, 1),
+                         None)
+    common = dict(epochs=3, batch=2, steps_per_epoch=3, eval_every=2, eval_windows=4,
+                  log_every=1, device="cpu", splits=splits, score=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp)
+        whole = train(tiny, **common, runs_dir=runs, name="whole")
+        first = train(tiny, **common, runs_dir=runs, name="first", session_epochs=1)
+        rest = train(tiny, **common, runs_dir=runs, name="rest", resume=first["run_id"])
+        assert first["stop"] is None and first["epochs_done"] == 1
+        assert whole["stop"] == rest["stop"] and (whole["stop"]["rule"], whole["stop"]["epoch"]) == ("cap", 3)
+
+        def losses(r: dict) -> list:
+            return [(x["step"], x["loss"]) for x in _records(runs / r["run_id"]) if "loss" in x]
+        assert losses(whole) == losses(first) + losses(rest), "the resumed losses differ"
+        assert [x[0] for x in losses(rest)] == list(range(4, 10)), "the resume skipped or repeated steps"
+        def untimed(r: dict) -> list:
+            return [{k: v for k, v in h.items() if not k.endswith("_s")} for h in r["history"]]
+        assert untimed(whole) == untimed(rest), "the epoch records differ"
+        assert whole["points"] == rest["points"] and whole["best"] == rest["best"]
+        for f in ("model.pt", "best.pt"):
+            a, b = (torch.load(runs / r["run_id"] / f, weights_only=True) for r in (whole, rest))
+            assert all(torch.equal(a["state_dict"][k], b["state_dict"][k]) for k in a["state_dict"]), f
+        # Every record names its run and carries the hashes, dynamics_hash included.
+        for r in (whole, first, rest):
+            for x in _records(runs / r["run_id"]):
+                assert x["run_id"] == r["run_id"] and x["dynamics_hash"] == tiny.dynamics_hash, x
+        meta = json.loads((runs / rest["run_id"] / "meta.json").read_text("utf-8"))
+        assert meta["config"]["resumed_from"] == first["run_id"]
+        assert first["history"][0]["val_ce"] > 0 and "val_ce" in _records(runs / first["run_id"])[-2]
+        assert _refused(lambda: train(tiny, **{**common, "lr": 1e-3}, runs_dir=runs, name="x",
+                                      resume=first["run_id"])), "resumed with another learning rate"
+        assert _refused(lambda: train(tiny, **common, runs_dir=runs, name="y",
+                                      resume=rest["run_id"])), \
+            "resumed a run the stopping rule had already stopped"
+        print(f"train: ended after epoch 1 and resumed, {len(losses(whole))} steps bit-identical to "
+              f"an uninterrupted run - losses, epoch records, sub-epoch points, model.pt and "
+              f"best.pt; every record carries dynamics_hash; refuses another knob or a stopped run")
+
+        # The trip through the loop, across a resume: scripted held-out losses
+        # stand in for a model that starts to overfit at epoch 4.
+        script = iter([5.0, 4.0, 3.0, 3.5, 3.6, 3.0, 2.0, 1.0, 0.5, 0.4])
+        real = globals()["held_out"]
+
+        def scripted(*a: object, **k: object) -> dict:
+            return {**real(*a, **k), "val_ce": next(script)}
+        globals()["held_out"] = scripted
+        try:
+            trip = dict(common, epochs=10, steps_per_epoch=1, eval_every=100)
+            a = train(tiny, **trip, runs_dir=runs, name="trip-a", session_epochs=6)
+            b = train(tiny, **trip, runs_dir=runs, name="trip-b", resume=a["run_id"])
+        finally:
+            globals()["held_out"] = real
+        assert a["stop"] is None and a["epochs_done"] == 6
+        assert b["stop"] == {"rule": "trip", "epoch": 7, "trip_epoch": 5}, b["stop"]
+        assert b["epochs_done"] == 7 and [h["epoch"] for h in b["history"]] == list(range(1, 8))
+        final = _records(runs / b["run_id"])[-1]
+        assert final["final"] and final["stop"] == b["stop"]
+        print("train: held-out loss rising at epochs 4 and 5 trips at 5 and stops after epoch 7 "
+              "of 10, across a resume at 6; the final record says trip, epoch 7")
 
 
 def _self_check() -> None:
@@ -736,6 +1402,9 @@ def _self_check() -> None:
           f"no action slot and no action target; frame 0 is context only")
     del m64
 
+    # ---- training (item 4): no data needed
+    _check_training(base)
+
     # ---- the data: the generated set if present, else the committed fixture
     cfg, shard_dir, fixture = data.self_check_config()
     shards = data.load_shards(shard_dir, cfg.data_hash)
@@ -850,4 +1519,4 @@ def _self_check() -> None:
 
 
 if __name__ == "__main__":
-    _self_check()
+    main()
