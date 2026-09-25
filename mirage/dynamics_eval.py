@@ -630,20 +630,17 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     # Row 7: at each reappearance inside the rollout, is the block where the truth shows it?
     events = reappearances(eps.visible, ctx)
     near = {PERMANENCE_TOL_PX: 0, PERMANENCE_TOL_C_PX: 0}
-    scored = 0
+    truth_absent = 0
     for e, b, r in events:
-        # A block coming back shows a pixel or two, which the decoder often
-        # drops, so the reappearance is scored at the first frame from `r` on
-        # where the decoded truth shows it, before the block hides again.
-        hides = np.flatnonzero(eps.visible[e, b, r:] == 0)
-        span = truth.block_px[e, r:r + (hides[0] if len(hides) else length - r), b]
-        if not span.any():
-            continue   # the decoded truth never shows it: nothing to compare against
-        t = r + int(np.argmax(span > 0))
-        scored += 1
-        dist = np.linalg.norm(gen.block_centre[e, t, b] - truth.block_centre[e, t, b])
+        # Scored at frame `r` itself. A block coming back shows a pixel or two,
+        # which the decoder often drops; with nothing to compare against, the
+        # event is a miss, and how many were is printed beside the row.
+        if truth.block_px[e, r, b] == 0:
+            truth_absent += 1
+            continue
+        dist = np.linalg.norm(gen.block_centre[e, r, b] - truth.block_centre[e, r, b])
         for tol in near:
-            near[tol] += int(gen.block_px[e, t, b] > 0 and dist <= tol)
+            near[tol] += int(gen.block_px[e, r, b] > 0 and dist <= tol)
 
     vram = max(h["peak_vram_reserved_gb"] or 0.0 for h in history)
     vram_alloc = max(h["peak_vram_alloc_gb"] or 0.0 for h in history)
@@ -670,9 +667,9 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
          " / ".join(f"{g:.1%} vs {t:.1%}" for g, t in zip(drift_gen, drift_truth)),
          f"<= {DRIFT_RATIO_MAX}x truth", row6),
         (7, "Block reappears in place after full occlusion",
-         f"{near[PERMANENCE_TOL_PX] / max(scored, 1):.1%} within {PERMANENCE_TOL_PX:g} px, "
-         f"{near[PERMANENCE_TOL_C_PX] / max(scored, 1):.1%} within {PERMANENCE_TOL_C_PX:g} px, "
-         f"{scored} of {len(events)} events", ">= 80% (S)", None),
+         f"{near[PERMANENCE_TOL_PX] / max(len(events), 1):.1%} within {PERMANENCE_TOL_PX:g} px, "
+         f"{near[PERMANENCE_TOL_C_PX] / max(len(events), 1):.1%} within {PERMANENCE_TOL_C_PX:g} px "
+         f"of {len(events)} events, {truth_absent} unseen in the truth", ">= 80% (S)", None),
         (8, "Parameters; peak training VRAM (reserved)",
          f"{params:,}; {vram:.2f} GB ({vram_alloc:.2f} allocated)",
          f"<= 20M; <= {VRAM_BAR_GB} GB", params <= PARAM_BAR and vram <= VRAM_BAR_GB),
@@ -716,7 +713,7 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
             "horizon": hz.tolist(), "frozen_share": frozen, "truth_fires": int(truth_fire.sum()), "q3_regression": sub,
             "follow": follow,
             "drift_rollout": drift_gen.tolist(), "drift_truth": drift_truth.tolist(),
-            "permanence_events": scored,
+            "permanence_events": len(events), "permanence_truth_absent": truth_absent,
             "permanence_near": {str(k): v for k, v in near.items()},
             "params": params, "peak_vram_reserved_gb": vram, "peak_vram_alloc_gb": vram_alloc,
             "gap_ce": last["gap_ce"], "failed_rows": failed}

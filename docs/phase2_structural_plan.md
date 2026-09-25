@@ -809,11 +809,13 @@ from the table above:
   re-measured its term at the shipped hold at 90.7%, on its own random-policy
   episodes, which is not the same subset. Over a whole held action link0's sign
   does work (91.3% at 14 frames) and link1's still does not.
-- **Row 7** scores each reappearance at the first frame from the render's
-  reappearance on where the decoded truth shows the block, because a block
-  coming back shows a pixel or two that the decoder often drops. Correct
-  position is the block's bbox centre within 4 px of the decoded truth's, and
-  the 2 px share is reported beside it. 21 events fall inside the rollouts.
+- **Row 7** scores every reappearance at the reappearance frame itself, with
+  no shift forward and no event dropped. Correct position is the block's bbox
+  centre within 4 px of the decoded truth's at that frame, and the 2 px share
+  is reported beside it. A block coming back shows a pixel or two that the
+  decoder often drops; an event whose decoded truth does not show the block at
+  that frame counts as a miss, and the row prints how many events were in that
+  case. 21 events fall inside the rollouts.
 - **Row 8** reads peak training VRAM as the run's largest reserved figure, with
   allocated beside it. **Row 10**'s gap is the run's last epoch.
 
