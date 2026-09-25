@@ -82,7 +82,7 @@ ground-truth ones.
 | `mirage/dynamics.py` | the sequence layout, the token/action window sampler, the model, the train loop | pixels, the tokenizer, and *writing* the token cache - that is `fsq_eval.write_token_cache`, and Phase 2 only reads it |
 | `mirage/dynamics_eval.py` | rollout and the gate table - everything that runs against a finished checkpoint. **The 500-line trigger fired at item 3**, the same trigger that split `fsq_eval.py` out of `fsq.py`, so item 6 starts here | training anything |
 | `mirage/configs/base.json`, `dynamics` section | the shape knobs that must sit inside `dynamics_hash` | the training knobs, which travel in the checkpoint's `knobs` dict as Phase 1's do |
-| `mirage/config.py` | the `dynamics` key set and its validators, and the `validator` section's continuity bounds for gate row 4 | anything model-shaped. It gained keys in item 2, and the four `continuity_*` keys in item 6 (decided 2026-09-25), which move `validator_hash` and nothing else |
+| `mirage/config.py` | the `dynamics` key set and its validators, and the `validator` section's continuity bounds for gate row 4 | anything model-shaped. It gained keys in item 2, and the four `continuity_*` keys and `rollout_frozen_ratio_max` in item 6 (decided 2026-09-25), which move `validator_hash` and nothing else |
 | `mirage/fsq.py` | the inverse of `FSQ.codes_to_indices`, `FSQ.indices_to_codes`, and `Tokenizer.decode` over it (item 5, landed 2026-09-25) | the rollout. The token-to-pixel path belongs beside the pixel-to-token path, not in a second copy |
 | `mirage/data.py` | the window index arithmetic, shared with `WindowSampler` by the decision in item 1 | anything token-shaped. It reads the shard format and knows nothing about codes |
 | `mirage/validator.py` | the per-frame measurements the coherence horizon's continuity check is built from | the verdict itself. Phase 0's rule stands: the validator emits measurements, and the verdict is a threshold expression in config |
@@ -759,8 +759,9 @@ dynamics requirement as `world_model_requirements.md` restated it on 2026-09-22.
 | 9 | Rollout reproduced from the checkpoint plus the seed clip | **identical** | **Determinism** and **bench reproducibility** - a rerun matching within 5%. Greedy decoding, decision 5, makes this an exact-reproduction row rather than a statistical one; only item 6's revisit trigger would change its shape |
 | 10 | Train-val loss gap; share of predictions the copy baseline also gets right; false-flip rate on static cells | **reported** | not requirements - the warning signs for overfitting and for a trivial model. The first is item 4's headline instrument. The second keeps row 1 honest now that its bar *is* a baseline: a model that clears the bar while agreeing with the copy baseline almost everywhere is winning on the cells the baseline already gets right, and the overlap is what shows it. The third, added 2026-09-24 with item 4's amendment, is where the mask measurement's model lost to copying (r59) |
 
-Rows 1 to 6 and 8 to 9 are the pass/fail candidates; 7 is S-tier and reported;
-10 is reported. Row 1's bar is the dynamics requirement's restated one, and it is
+Rows 1 to 3, 6 and 8 to 9 are pass/fail; 4 and 5 were candidates too and are
+reported from 2026-09-25 (see "Landed" below); 7 is S-tier and reported; 10 is
+reported. Row 1's bar is the dynamics requirement's restated one, and it is
 **much harder than the requirement originally promised**. The token-stability
 probe records the zero-parameter copy baseline as far above 3x the marginal
 top-1, so a model that predicts every cell unchanged passed the old wording and
