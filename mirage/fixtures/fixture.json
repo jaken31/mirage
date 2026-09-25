@@ -21,7 +21,11 @@
         "contact_rate_min": 0.05,
         "recoverable_occlusion_rate_min": 0.03,
         "offpalette_tau": 32.0,
-        "offpalette_frac_max": 0.08544921875
+        "offpalette_frac_max": 0.08544921875,
+        "continuity_link_angle_max": [0.39209613231093177, 1.5707963267948966],
+        "continuity_link_major_max": [11.685996130416207, 9.614687022548113],
+        "continuity_link_minor_max": [26.59811406174135, 4.0795548213661625],
+        "continuity_block_centre_max": [18.681541692269406, 30.0, 21.50581316760657]
     },
     "tokenizer": {
         "codebook_size": 512,
