@@ -1,9 +1,9 @@
 """The dynamics model: the next frame's tokens, from earlier frames and actions.
 
 Phase 2, built in the order of `docs/phase2_structural_plan.md`. So far this file
-holds item 1, the sequence layout and the token/action window sampler. The model
-and its training loop are items 3 and 4. The model never sees a pixel: it reads a
-tokenizer run's token cache, which `fsq_eval.write_token_cache` writes, and
+holds item 1, the sequence layout and the token/action window sampler, and item
+3, the model. Its training loop is item 4. The model never sees a pixel: it reads
+a tokenizer run's token cache, which `fsq_eval.write_token_cache` writes, and
 nothing here re-encodes a frame.
 
 **Item 1 is irreversible, and silent when wrong.** Every checkpoint, rollout and
@@ -47,9 +47,25 @@ hold runs out, so every action change in the stream the windows read must sit at
 otherwise, and `_self_check` asserts that copies shifted one record either way
 fail the same check.
 
+**The model (item 3)** is `bench/mask_probe.py`'s block-causal model, the one
+that measurement trained and selected: pre-norm blocks, RoPE, attention through
+`F.scaled_dot_product_attention` with the block-causal mask, and an untied head,
+built from `cfg.dynamics`. Its parameter count is the sizing probe's
+`rope_untied`, 14,593,152, exactly. It is scored only where a target is a frame
+token - the 64 frame-token positions of each block, never the action slot - and
+`_self_check` asserts the causality claim per block rather than trusting the
+mask, including that deliberately wrong masks fail it.
+
+**The 500-line trigger fired with item 3**, the one that split `fsq_eval.py` out
+of `fsq.py`. That split is by when the code runs, and everything here runs
+before a checkpoint exists, so nothing moves out. Rollout and the gate table
+(item 6) are what run against a finished checkpoint, and they start in
+`mirage/dynamics_eval.py`.
+
     python -m mirage.dynamics    # self-check: the generated set if present, else the fixture
 """
 
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -59,6 +75,9 @@ from pathlib import Path
 from typing import Callable, Iterable, NamedTuple, Sequence
 
 import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import nn
 
 from mirage import config, data
 
@@ -72,6 +91,11 @@ TOKENIZER_RUN = "20260829-005439-r1"
 # 3 torque directions ^ 2 joints, numbered 0..8 (`sim/policy.h`). Action `a` is
 # token id `codebook_size + a`, after the frame codes.
 N_ACTIONS = 9
+
+# The sizing probe's count for RoPE with an untied head (`runs.jsonl` r49,
+# `rope_untied`), the variant decisions 2 and 3 took. The model here must
+# match it exactly while it keeps the probe's modules.
+SIZED_PARAMS = 14_593_152
 
 
 # ---------------------------------------------------------------- token cache
@@ -263,6 +287,180 @@ class TokenWindowSampler:
                            ep.episode_id, offset)
 
 
+# ---------------------------------------------------------------------- model
+
+# RoPE's base wavelength, the value the mask measurement trained with.
+ROPE_BASE = 10_000.0
+
+# The `dynamics` choices this file implements. `config.py` may admit more - it
+# admits `strict_causal` so the mask measurement's strict arm stays runnable -
+# and `build` refuses those rather than training a model the config misnames.
+IMPLEMENTED = {"pos_encoding": "rope", "output_head": "untied", "mask": "block_causal"}
+
+
+def rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Rotate each `(i, i + d/2)` channel pair of `x` by an angle proportional to position.
+
+    Computed at the angle tables' precision, then cast back: at position ~1,000
+    a bf16 angle table has lost the low bits that tell neighbouring positions
+    apart.
+    """
+    a, b = x.to(cos.dtype).chunk(2, dim=-1)
+    return torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1).to(x.dtype)
+
+
+class Block(nn.Module):
+    """Pre-norm transformer block: RoPE attention through SDPA, then a GELU MLP.
+
+    The attention is the sizing probe's `nn.MultiheadAttention` written out as
+    its two projections, biases included, so the parameter count is the one it
+    priced. Written out because RoPE has to rotate q and k between the
+    projection and the attention, and so that `F.scaled_dot_product_attention`
+    takes the mask instead of a materialized attention matrix.
+    """
+
+    def __init__(self, d: int, heads: int, mlp_ratio: int) -> None:
+        super().__init__()
+        self.heads = heads
+        self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)       # MHA's in_proj
+        self.out = nn.Linear(d, d)           # MHA's out_proj
+        self.mlp = nn.Sequential(nn.Linear(d, mlp_ratio * d), nn.GELU(),
+                                 nn.Linear(mlp_ratio * d, d))
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, cos: torch.Tensor,
+                sin: torch.Tensor) -> torch.Tensor:
+        b, n, d = x.shape
+        q, k, v = self.qkv(self.n1(x)).view(b, n, 3, self.heads, d // self.heads) \
+            .permute(2, 0, 3, 1, 4)
+        a = F.scaled_dot_product_attention(rope(q, cos, sin), rope(k, cos, sin), v,
+                                           attn_mask=mask)
+        x = x + self.out(a.transpose(1, 2).reshape(b, n, d))
+        return x + self.mlp(self.n2(x))
+
+
+class Dynamics(nn.Module):
+    """The dynamics model: token ids in, logits over the frame codes out.
+
+    Vocabulary `codes + N_ACTIONS` in (the frame codes, then the actions) and
+    `codes` out, through an untied head (decision 3), so no logit is ever an
+    action. RoPE (decision 2) has no parameters; its tables are sized for
+    `max_len` positions and kept out of `state_dict`, because they follow from
+    the shape.
+
+    `forward` takes the mask and the read positions rather than holding them,
+    so one checkpoint runs at any context up to `max_len` - the
+    configurable-context requirement is a rollout argument, not a config edit.
+    """
+
+    def __init__(self, d_model: int, n_layers: int, n_heads: int, mlp_ratio: int,
+                 codes: int, max_len: int) -> None:
+        super().__init__()
+        if d_model % n_heads or (d_model // n_heads) % 2:
+            raise ValueError(f"d_model {d_model} over {n_heads} heads is not an even head width, "
+                             f"which RoPE's channel pairs need")
+        self.embed = nn.Embedding(codes + N_ACTIONS, d_model)
+        self.blocks = nn.ModuleList([Block(d_model, n_heads, mlp_ratio) for _ in range(n_layers)])
+        self.norm = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, codes, bias=False)
+        half = d_model // n_heads // 2
+        f64 = dict(dtype=torch.float64)
+        ang = torch.arange(max_len, **f64)[:, None] * ROPE_BASE ** (-torch.arange(half, **f64) / half)
+        self.register_buffer("cos", ang.cos().float(), persistent=False)
+        self.register_buffer("sin", ang.sin().float(), persistent=False)
+        # GPT-2's initialisation, as the mask measurement trained with.
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Embedding)):
+                nn.init.normal_(m.weight, std=0.02)
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, tok: torch.Tensor, mask: torch.Tensor,
+                read: torch.Tensor) -> torch.Tensor:
+        """`(B, L)` ids, an `(L, L)` mask and `(R,)` positions -> `(B, R, codes)` logits there."""
+        n = tok.shape[1]
+        if n > len(self.cos):
+            raise ValueError(f"{n} positions, but the RoPE tables hold {len(self.cos)}")
+        cos, sin = self.cos[:n], self.sin[:n]
+        x = self.embed(tok)
+        for blk in self.blocks:
+            x = blk(x, mask, cos, sin)
+        return self.head(self.norm(x[:, read]))
+
+
+def build(cfg: config.Config) -> Dynamics:
+    """The model `cfg.dynamics` names, sized for a `ctx + 1`-frame window.
+
+    Refuses a `dynamics` value this file does not implement, so a checkpoint's
+    `dynamics_hash` always names the model that produced it.
+    """
+    dyn = cfg.dynamics
+    for key, want in IMPLEMENTED.items():
+        if dyn[key] != want:
+            raise ValueError(f"dynamics.{key} is {dyn[key]!r}; mirage.dynamics implements "
+                             f"only {want!r}")
+    max_len = len(layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid)).src)
+    return Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"], dyn["mlp_ratio"],
+                    cfg.tokenizer["codebook_size"], max_len)
+
+
+def attention_mask(lay: Layout) -> torch.Tensor:
+    """`(L, L)` bool, True where a query row may attend to a key column: block-causal.
+
+    Full attention inside a block, causal across blocks. A shorter context's
+    mask is the top-left corner of a longer one's, because blocks never move.
+    """
+    blk = torch.from_numpy(lay.block)
+    return blk[None, :] <= blk[:, None]
+
+
+def frame_loss(model: Dynamics, x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor,
+               read: torch.Tensor) -> torch.Tensor:
+    """Mean cross-entropy over a batch's frame targets, and at no other position.
+
+    `x`, `y` are `assemble`'s inputs `(B, L)` and targets `(B, R)`, `read` the
+    layout's `(R,)` read positions. The model computes logits only at `read`,
+    which are frame-token positions, and every target is a frame code, so an
+    action position is never scored and no action id is ever a target. That is
+    the whole loss mask, and why there is no clamp: the sizing probe's
+    cross-entropy over every position with `clamp(max=511)` would train action
+    ids 512-520 as code 511.
+    """
+    logits = model(x, mask, read)
+    return F.cross_entropy(logits.flatten(0, 1).float(), y.flatten())
+
+
+def check_block_causal(model: Dynamics, lay: Layout, mask: torch.Tensor, x: torch.Tensor,
+                       positions: Iterable[int]) -> None:
+    """Raise unless `model` under `mask` is block-causal over `lay`, altering each of `positions`.
+
+    Altering the token at position `p`, in block `b`, must leave every logit in
+    the blocks before `b` bit-identical, and must change the logits at every
+    position from `b`'s first on - all of block `b`, which attends to `p` in
+    full, and every later block. The first half is what stops the model reading
+    the answer; the second is what fails a mask that is merely too strict.
+    """
+    positions = list(positions)
+    if x.shape[0] != 1:
+        raise ValueError(f"one sequence to alter, not a batch of {x.shape[0]}")
+    # Row 0 is `x`, row 1 + j is `x` with positions[j] altered: one forward pass.
+    y = x.repeat(1 + len(positions), 1)
+    for j, p in enumerate(positions):
+        y[1 + j, p] = (y[1 + j, p] + 1) % model.embed.num_embeddings
+    with torch.no_grad():
+        out = model(y, mask, torch.arange(len(lay.src)))
+    for j, p in enumerate(positions):
+        moved = (out[1 + j] != out[0]).any(-1)
+        first = int(np.flatnonzero(lay.block == lay.block[p])[0])
+        if moved[:first].any():
+            raise ValueError(f"altering position {p} (block {lay.block[p]}) moved a logit in "
+                             f"an earlier block, at position {int(moved[:first].nonzero()[0])}")
+        if not moved[first:].all():
+            raise ValueError(f"altering position {p} (block {lay.block[p]}) left position "
+                             f"{first + int((~moved[first:]).nonzero()[0])} unchanged, "
+                             f"which should attend to it")
+
+
 # ----------------------------------------------------------------- self-check
 
 def _refused(build: Callable[..., object], *args: object) -> bool:
@@ -272,6 +470,40 @@ def _refused(build: Callable[..., object], *args: object) -> bool:
     except ValueError:
         return True
     return False
+
+
+def _bench_module(name: str):
+    """`bench/<name>.py`, imported by path: `bench/` is scripts, not a package."""
+    spec = importlib.util.spec_from_file_location(name, ROOT / "bench" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The sizing probe's names for the same parameters: it keeps attention as one
+# `nn.MultiheadAttention`, this file as that module's two projections.
+_SIZING_NAMES = {"attn.in_proj_weight": "qkv.weight", "attn.in_proj_bias": "qkv.bias",
+                 "attn.out_proj.weight": "out.weight", "attn.out_proj.bias": "out.bias"}
+
+
+def _param_diff(model: nn.Module, sized: nn.Module) -> list[str]:
+    """Every parameter whose size differs between `model` and the sizing probe's `sized`, by name.
+
+    Empty when the two are the same modules. Otherwise it names the module, so a
+    count that moves is a module difference to state rather than a total to
+    round.
+    """
+    def sizes(m: nn.Module, rename: dict[str, str]) -> dict[str, int]:
+        out = {}
+        for name, p in m.named_parameters():
+            for old, new in rename.items():
+                name = name.replace(old, new)
+            out[name] = p.numel()
+        return out
+
+    mine, theirs = sizes(model, {}), sizes(sized, _SIZING_NAMES)
+    return [f"{n}: {mine.get(n, 0):,} here, {theirs.get(n, 0):,} in the sizing probe"
+            for n in sorted(mine.keys() | theirs.keys()) if mine.get(n) != theirs.get(n)]
 
 
 def _identity_cache(shards: Sequence[data.Shard], cells: int) -> list[np.ndarray]:
@@ -338,7 +570,7 @@ def _check_windows(cfg: config.Config, shards: Sequence[data.Shard],
 
 
 def _self_check() -> None:
-    """Item 1's working-when list (`docs/phase2_structural_plan.md`, item 1)."""
+    """Items 1 and 3's working-when lists (`docs/phase2_structural_plan.md`)."""
     codes, cells = 512, 64
 
     # ---- the layout: no data needed
@@ -389,15 +621,121 @@ def _self_check() -> None:
 
     # The mask measurement's arrangement, array for array, at the full context
     # and the shorter ones a rollout is asked to run at.
-    spec = importlib.util.spec_from_file_location("mask_probe", ROOT / "bench" / "mask_probe.py")
-    probe = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(probe)
+    probe = _bench_module("mask_probe")
     for c in (4, 8, 15):
         mine, theirs = layout(c, cells), probe.layout("block", c + 1, cells)
         for f in ("src", "read", "tgt", "block"):
             assert np.array_equal(getattr(mine, f), getattr(theirs, f)), f"ctx {c}: {f} differs"
     print("layout: 15 blocks of 65 = 975 positions, 960 frame targets, action[t] before "
           "frame t, round-trips; equals bench/mask_probe.py's block layout at ctx 4, 8, 15")
+
+    # ---- the model (item 3): no data needed
+    torch.manual_seed(0)
+    base = config.load(ROOT / "mirage" / "configs" / "base.json")
+    model = build(base).eval()
+    params = sum(p.numel() for p in model.parameters())
+    sizing = _bench_module("dyn_size_probe")
+    dyn = base.dynamics
+
+    def sized(tied: bool) -> nn.Module:
+        return sizing.Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"],
+                               codes + sizing.N_ACTIONS, codes, len(lay.src),
+                               learned_pos=False, tied=tied, mlp_ratio=dyn["mlp_ratio"])
+
+    diff = _param_diff(model, sized(tied=False))
+    assert not diff, "a module differs from the sizing probe's rope_untied:\n  " + "\n  ".join(diff)
+    assert params == SIZED_PARAMS, f"{params:,} parameters, the sizing probe's r49 row says {SIZED_PARAMS:,}"
+    # The control: against the tied variant the one difference is the head, named.
+    assert _param_diff(model, sized(tied=True)) == \
+        ["head.weight: 196,608 here, 0 in the sizing probe"], _param_diff(model, sized(tied=True))
+    assert not any(isinstance(m, nn.MultiheadAttention) for m in model.modules())
+    print(f"model: {params:,} parameters, the sizing probe's rope_untied (r49) exactly, "
+          f"parameter for parameter; its tied variant differs by head.weight alone")
+
+    # The model the mask measurement trained and selected, function for
+    # function: the same weights from the same seed, and bit-identical logits
+    # under the same mask. A count cannot see a post-norm block, another RoPE
+    # base or another initialisation; this can.
+    torch.manual_seed(0)   # the seed `model` was built from
+    measured = probe.build_model(base, len(lay.src)).eval()
+    sd, sd_m = model.state_dict(), measured.state_dict()
+    assert list(sd) == list(sd_m) and all(torch.equal(sd[k], sd_m[k]) for k in sd), \
+        "not bench/mask_probe.py's parameters and initialisation"
+    mask = attention_mask(lay)
+    assert torch.equal(mask, probe.layout("block", frames, cells).mask()), \
+        "the mask differs from bench/mask_probe.py's block mask"
+    x_any = torch.randint(0, codes + N_ACTIONS, (1, len(lay.src)))
+    with torch.no_grad():
+        assert torch.equal(model(x_any, mask, torch.from_numpy(lay.read)),
+                           measured(x_any, mask, torch.from_numpy(lay.read))), \
+            "logits differ from bench/mask_probe.py's model"
+    del measured
+    print("model: bench/mask_probe.py's block-causal model - same parameters from the same "
+          "seed, same mask, bit-identical logits")
+
+    # It builds from cfg.dynamics and refuses what it does not implement,
+    # including the strict mask config.py admits for the mask measurement.
+    for key, other in (("mask", "strict_causal"), ("pos_encoding", "learned"),
+                       ("output_head", "tied")):
+        cfg_x = dataclasses.replace(base, dynamics={**base.dynamics, key: other})
+        assert _refused(build, cfg_x), f"built a model with dynamics.{key} = {other!r}"
+    assert _refused(Dynamics, 384, 1, 5, 4, codes, 975), "built 384 channels over 5 heads"
+    assert _refused(Dynamics, 18, 1, 6, 4, codes, 975), "built an odd RoPE head width"
+    x, y = (torch.from_numpy(a) for a in assemble(lay, tok[:1], act[:1], codes))
+    read = torch.from_numpy(lay.read)
+    assert _refused(model, torch.cat((x, x), 1), mask, read), "ran past the RoPE tables"
+    print("build: refuses a strict mask, learned positions, a tied head, and head widths "
+          "RoPE cannot pair")
+
+    # RoPE is applied, and attention depends on distance, not absolute position.
+    cos, sin = model.cos.double(), model.sin.double()
+    q, k = torch.randn(2, 2 * cos.shape[1], dtype=torch.float64)
+
+    def score(i: int, j: int) -> float:
+        return float((rope(q, cos[i], sin[i]) * rope(k, cos[j], sin[j])).sum())
+    assert abs(score(10, 3) - score(900, 893)) < 1e-5 < 1e-2 < abs(score(10, 3) - score(10, 4)), \
+        (score(10, 3), score(900, 893), score(10, 4))
+
+    # Causality, per block, on the model built from the config. Double
+    # precision on CPU, so "unchanged" can mean bit-identical and a change far
+    # down the sequence is not rounded away.
+    m64 = build(base).double().eval()
+    probes = (0, 63, 64, 65, 500, 973, 974)   # block edges, the action slots, the last position
+    check_block_causal(m64, lay, mask, x, probes)
+    # The controls: each wrong mask must fail the same assert.
+    n = len(lay.src)
+    shifted = torch.from_numpy((np.arange(n) + 1) // (cells + 1))
+    wrong = {
+        "no mask": torch.ones(n, n, dtype=torch.bool),
+        "strictly causal": torch.ones(n, n, dtype=torch.bool).tril(),
+        "blocks shifted one position": shifted[None, :] <= shifted[:, None],
+        "no attention across blocks": torch.from_numpy(lay.block[None, :] == lay.block[:, None]),
+    }
+    for name, bad in wrong.items():
+        assert _refused(check_block_causal, m64, lay, bad, x, probes), f"passed with {name}"
+    print(f"causality: altering positions {', '.join(map(str, probes))} leaves every "
+          f"earlier-block logit bit-identical and moves all of its own block and later; "
+          f"fails with {', '.join(wrong)}")
+
+    # The loss is scored at frame-token positions only: 64 a block, never the
+    # action slot, and every target a frame code. Frame 0 is only context, and
+    # action[0] is not in the input (asserted with the layout above).
+    is_action = lay.src >= frames * cells
+    assert is_action.sum() == lay.ctx and not is_action[lay.read].any(), "an action slot is scored"
+    assert np.bincount(lay.block[lay.read]).tolist() == [cells] * lay.ctx
+    assert lay.tgt.min() == cells and lay.tgt.max() < frames * cells, "a target outside frames 1..15"
+    assert np.array_equal(np.bincount(lay.tgt // cells, minlength=frames), [0] + [cells] * lay.ctx)
+    y_act = assemble(lay, tok[:1], np.full_like(act[:1], N_ACTIONS - 1), codes)[1]
+    assert y_act.max() < codes and np.array_equal(y_act, y.numpy()), "an action reached a target"
+    with torch.no_grad():
+        got = frame_loss(m64, x, y, mask, read)
+        full = m64(x, mask, torch.arange(n))
+    assert m64(x, mask, read).shape == (1, lay.ctx * cells, codes)
+    assert torch.equal(got, F.cross_entropy(full[0, lay.read].float(), y[0])), \
+        "the loss read other positions"
+    print(f"loss: {lay.ctx} x {cells} frame targets, read only at frame-token positions, "
+          f"no action slot and no action target; frame 0 is context only")
+    del m64
 
     # ---- the data: the generated set if present, else the committed fixture
     cfg, shard_dir, fixture = data.self_check_config()
@@ -447,6 +785,30 @@ def _self_check() -> None:
         splits = [s for s in ("train", "val") if want[s]]
         print("windows against WindowSampler, identity-coded cache:")
         _check_windows(cfg, shards, index, tokens, splits, identity=True)
+
+        # One window through assemble and the model: the sequence it feeds
+        # round-trips to the token rows and actions of the records
+        # WindowSampler returns at the same index, the rows item 1 asserted.
+        i = len(every) // 2
+        t, w = every[i], data.WindowSampler(shards, index, ctx)[i]
+        ep = next(e for e in index if e.episode_id == t.episode_id)
+        rows = ep.start + w.meta["step_idx"].astype(np.int64)
+        lay_c = layout(ctx, cells)
+        xw, yw = assemble(lay_c, t.tokens, t.actions, codes)
+        pool = np.full((ctx + 1) * cells + ctx + 1, -1)
+        pool[lay_c.src], pool[lay_c.tgt] = xw, yw
+        assert np.array_equal(pool[:(ctx + 1) * cells].reshape(ctx + 1, cells), tokens[ep.shard][rows])
+        assert np.array_equal(pool[(ctx + 1) * cells + 1:] - codes, w.meta["action"][1:])
+        named = pool[:(ctx + 1) * cells].reshape(ctx + 1, cells)
+        assert np.array_equal(named[:, 0] + 512 * named[:, 1], rows) and \
+            (named[:, 2] == ep.shard).all(), "a row is another frame's"
+        with torch.no_grad():
+            lw = build(cfg).eval()(torch.from_numpy(xw)[None], attention_mask(lay_c),
+                                   torch.from_numpy(lay_c.read))
+        assert lw.shape == (1, ctx * cells, codes) and torch.isfinite(lw).all()
+        print(f"model input: window {i} (episode {t.episode_id}, offset {t.offset}) assembles "
+              f"to {len(xw)} positions that round-trip to its {ctx + 1} cache rows and "
+              f"actions; the model returns {ctx * cells} x {codes} logits")
 
         # The cache refusals, on one shard: each edit must stop the load.
         one = shards[:1]

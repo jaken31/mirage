@@ -4,9 +4,11 @@ This comparison had to run before choosing the dynamics model's token layout
 (see `docs/phase2_structural_plan.md` and the requirements doc). The attention
 mask is baked into every checkpoint trained with it, and the result decides
 whether "predicts the next token" still describes the model. **This is not the
-real dynamics model.** `mirage/dynamics.py` does not exist, and this file is
-not meant to become it: it trains the already-sized model shape twice, once
-per mask, and compares.
+real dynamics model**, which is `mirage/dynamics.py`, and this file is not
+meant to become it: it trains the already-sized model shape twice, once per
+mask, and compares. Its block-causal model is kept here rather than imported,
+so it stays the model this measurement ran, and `python -m mirage.dynamics`
+asserts the two give bit-identical logits.
 
 Terms used below: an "arm" is one side of the comparison (one mask). "Teacher
 forcing" means scoring each prediction with the true earlier tokens as input.

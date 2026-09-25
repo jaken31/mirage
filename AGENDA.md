@@ -393,7 +393,14 @@ window sampler, in `mirage/dynamics.py`, self-checked by `python -m mirage.dynam
 **Item 2 landed 2026-09-24**: the `dynamics` config section names every shape
 knob - head count, MLP ratio, RoPE, the untied head and the block-causal mask
 beside `d_model` and `n_layers` - so `dynamics_hash` changes when any of them
-does. Item 3 is next.
+does.
+
+**Item 3 landed 2026-09-24**: the model, in `mirage/dynamics.py` - the mask
+measurement's block-causal model, built from the `dynamics` section, at the
+sizing probe's 14,593,152 parameters exactly, with its loss scored at frame
+targets only and its causality asserted per block. `dynamics.py` passed the
+500-line trigger, so item 6's rollout and gate go in `dynamics_eval.py`. Item 4
+is next.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
