@@ -328,10 +328,13 @@ def frozen_share(frames: np.ndarray, ctx: int) -> float:
 
 
 def drift_verdict(drift_gen: np.ndarray, drift_truth: np.ndarray, frozen: float,
-                  frozen_max: float) -> bool:
+                  frozen_truth: float, frozen_ratio_max: float) -> bool:
     """Gate row 6: every link within `DRIFT_RATIO_MAX` of the truth's drift, and the
-    rollout not frozen - a rollout that repeats its seed reads no drift at all."""
-    return bool((drift_gen <= DRIFT_RATIO_MAX * drift_truth).all()) and frozen <= frozen_max
+    rollout's frozen share within `frozen_ratio_max` of the truth's on the same
+    frames - a rollout that repeats its seed reads no drift at all, while the
+    truth itself repeats frames whenever the arm and blocks hold still."""
+    return (bool((drift_gen <= DRIFT_RATIO_MAX * drift_truth).all())
+            and frozen <= frozen_ratio_max * frozen_truth)
 
 
 def link_drift(major: np.ndarray, start: int, window: int = DRIFT_WINDOW) -> np.ndarray:
@@ -638,8 +641,9 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     drift_gen = link_drift(gen.link_major, ctx).mean(0)
     drift_truth = link_drift(truth.link_major, ctx).mean(0)
     frozen = frozen_share(rolls[ctx].frames, ctx)
-    frozen_max = cfg.validator["rollout_frozen_share_max"]
-    row6 = drift_verdict(drift_gen, drift_truth, frozen, frozen_max)
+    frozen_truth = frozen_share(eps.tokens, ctx)
+    frozen_ratio = cfg.validator["rollout_frozen_ratio_max"]
+    row6 = drift_verdict(drift_gen, drift_truth, frozen, frozen_truth, frozen_ratio)
 
     # Row 7: at each reappearance inside the rollout, is the block where the truth shows it?
     events = reappearances(eps.visible, ctx)
@@ -679,8 +683,8 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
          f">= {FOLLOW_RATIO:.0%} of truth (reported)", None),
         (6, f"Link drift over {DRIFT_WINDOW}-step windows ({names})",
          " / ".join(f"{g:.1%} vs {t:.1%}" for g, t in zip(drift_gen, drift_truth))
-         + f"; {frozen:.1%} frozen",
-         f"<= {DRIFT_RATIO_MAX}x truth; <= {frozen_max:.0%} frozen", row6),
+         + f"; frozen {frozen:.1%} vs {frozen_truth:.1%}",
+         f"<= {DRIFT_RATIO_MAX}x truth; frozen <= {frozen_ratio:g}x", row6),
         (7, "Block reappears in place after full occlusion",
          f"{near[PERMANENCE_TOL_PX] / max(len(events), 1):.1%} within {PERMANENCE_TOL_PX:g} px, "
          f"{near[PERMANENCE_TOL_C_PX] / max(len(events), 1):.1%} within {PERMANENCE_TOL_C_PX:g} px "
@@ -714,7 +718,8 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     # frozen rollout reads the longest horizon and no link drift at all.
     print(f"    {frozen:.1%} of generated frames repeat the frame before them token for token "
           f"(decision 5's trigger is a rollout that freezes); a frozen rollout reads the whole "
-          f"horizon in row 4, and row 6 fails above {frozen_max:.0%}")
+          f"horizon in row 4, and row 6 fails above {frozen_ratio:g}x the truth's "
+          f"{frozen_truth:.1%} on the same frames")
     if row1["margin_cells"] > 0 and np.median(hz) < EXPOSURE_TRIGGER:
         print(f"    decision 7's trigger fires: horizon under {EXPOSURE_TRIGGER} while row 1 passes")
     print(f"    row 5 on {follow['frames']:,} action-balanced one-step predictions: the pixel "
@@ -724,7 +729,7 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     return {"run_id": run_id, "checkpoint": file, "step": ck["step"], "row1": row1,
             "population": pop["population"], "rollout_s": secs, "row2_exact": row2,
             "row3_ran": ran, "row9_identical": row9,
-            "horizon": hz.tolist(), "frozen_share": frozen, "truth_fires": int(truth_fire.sum()), "q3_regression": sub,
+            "horizon": hz.tolist(), "frozen_share": frozen, "frozen_share_truth": frozen_truth, "truth_fires": int(truth_fire.sum()), "q3_regression": sub,
             "follow": follow,
             "drift_rollout": drift_gen.tolist(), "drift_truth": drift_truth.tolist(),
             "permanence_events": len(events), "permanence_truth_absent": truth_absent,
@@ -860,14 +865,24 @@ def _check_rows() -> None:
     major[0, 2:] = 0.0
     assert np.isinf(link_drift(major, 2)).all(), "a vanished link read finite drift"
     assert _refused(link_drift, major[:, :150], 2)
-    # A rollout that repeats its seed's last frame reads no drift, and fails row 6.
-    frames = np.repeat(np.arange(4 * 64).reshape(1, 4, 64), 3, 0)
-    frames[:, 2:] = frames[:, 1:2]
-    assert frozen_share(frames, 2) == 1.0 and np.isclose(frozen_share(frames, 1), 2 / 3)
-    still, truth = link_drift(np.full((3, 202, 2), 10.0), 2).mean(0), np.array([0.26, 0.62])
-    assert not drift_verdict(still, truth, frozen_share(frames, 2), 0.1), "a frozen rollout passed row 6"
-    assert drift_verdict(still, truth, 0.1, 0.1) and not drift_verdict(truth * 1.2, truth, 0.0, 0.1)
-
+    # Row 6's frozen clause, against a truth that holds still for 2 of its 8
+    # generated frames. A rollout that repeats its seed's last frame reads no
+    # drift and fails; one that repeats frames as often as the truth passes.
+    truth_tok = np.repeat(np.arange(10 * 64).reshape(1, 10, 64), 3, 0)
+    truth_tok[:, 4], truth_tok[:, 8] = truth_tok[:, 3], truth_tok[:, 7]
+    frozen_truth = frozen_share(truth_tok, 2)
+    stuck = truth_tok.copy()
+    stuck[:, 2:] = stuck[:, 1:2]
+    assert frozen_truth == 0.25 and frozen_share(stuck, 2) == 1.0
+    still, drift = link_drift(np.full((3, 202, 2), 10.0), 2).mean(0), np.array([0.26, 0.62])
+    assert not drift_verdict(still, drift, frozen_share(stuck, 2), frozen_truth, 1.1), \
+        "a frozen rollout passed row 6"
+    assert drift_verdict(drift, drift, frozen_share(truth_tok.copy(), 2), frozen_truth, 1.1), \
+        "a rollout frozen as often as the truth failed row 6"
+    stuck[:, 2:] = truth_tok[:, 2:]
+    stuck[:, 6] = stuck[:, 5]
+    assert frozen_share(stuck, 2) == 0.375 and not drift_verdict(drift, drift, 0.375, frozen_truth, 1.1)
+    assert not drift_verdict(drift * 1.2, drift, 0.0, frozen_truth, 1.1)
     # Row 7: block 0 hides at 3..4 and returns at 5; block 1 hides at 0..1
     # (never seen before, not an event) and hides for good at 6.
     vis = np.array([[[9, 9, 9, 0, 0, 9, 9, 9], [0, 0, 9, 9, 9, 9, 0, 0]]])

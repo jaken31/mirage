@@ -431,7 +431,8 @@ requirement says it must catch every time, and the pixel-measured
 action-following sign is at chance on the ground truth itself. Restating either
 requirement is the captain's call. Also found: that run's best checkpoint only
 copies, so its rollouts freeze, and a frozen rollout reads no link drift; the
-link-drift row now also fails above 10% frozen frames.
+link-drift row now also fails when more frames freeze than 1.1x the truth's
+share on the same frames.
 The plan's item 6 and the `runs.jsonl` row have the numbers.
 
 **Next:** **the first real run** - `python -m mirage.dynamics --train`,
