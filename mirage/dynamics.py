@@ -727,7 +727,7 @@ def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Lay
 def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: float = LR,
           lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
           clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
-          eval_windows: int | None = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
+          eval_windows: int = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
           runs_dir: Path | str = ROOT / "runs", splits: TokenSplits | None = None,
@@ -740,7 +740,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     phase's headline warning sign.
 
     **Gate row 1's measure is scored every `eval_every` steps** and at each
-    epoch's end, on `eval_windows` fixed val windows (all of them if None),
+    epoch's end, on `eval_windows` fixed val windows,
     with persistence on exactly those windows beside every point. The best
     point's weights are kept as `best.pt`, apart from the per-epoch resumable
     `model.pt`, and when the run stops `mirage.dynamics_eval` scores both on the
@@ -792,10 +792,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
 
     # The fixed windows, drawn the way the mask measurement drew its curve's,
     # and a fixed train subset as large as the val split for the epoch gap.
-    ev = np.random.default_rng(eval_seed)
-    n_eval = len(splits.val) if eval_windows is None else eval_windows
-    val_sub = np.sort(ev.choice(len(splits.val), n_eval, replace=False))
-    train_sub = np.sort(ev.choice(len(splits.train), min(n_eval, len(splits.train)), replace=False))
+    val_sub = np.sort(np.random.default_rng(eval_seed).choice(len(splits.val), eval_windows,
+                                                              replace=False))
     gap_idx = np.sort(np.random.default_rng([eval_seed, 1]).choice(
         len(splits.train), min(len(splits.val), len(splits.train)), replace=False))
     tok_sub = _stack(splits.val, val_sub)[0]
@@ -846,7 +844,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     print(f"dynamics: {params:,} parameters, {len(lay.src)} positions, {len(splits.train):,} train "
           f"/ {len(splits.val):,} val windows, {per_epoch:,} steps/epoch x {epochs} at batch "
           f"{batch} on {dev} ({knobs['precision']})")
-    print(f"  gate row 1 every {eval_every:,} steps on {n_eval:,} fixed val windows, "
+    print(f"  gate row 1 every {eval_every:,} steps on {eval_windows:,} fixed val windows, "
           f"persistence there {persistence:.4%}")
 
     monitor = GpuMonitor() if cuda else None
@@ -868,13 +866,12 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 peak["reserved"] = max(peak["reserved"], torch.cuda.max_memory_reserved(dev))
                 monitor.phase = "eval"
             sv = score_windows(model, splits.val, val_sub, lay, mask, dev)
-            st = score_windows(model, splits.train, train_sub, lay, mask, dev)
             s = last_frame_summary(sv["pred"], sv["target"], sv["prev"])
             assert s["persistence"] == persistence, "the fixed windows moved"
             rec = {"step": step, "epoch": epoch, "val_acc_last": s["acc"], "persistence": persistence,
                    "margin_points": s["margin_points"], "margin_cells": s["margin_cells"],
                    "copy_overlap": s["copy_overlap"], "val_acc_changed": s["acc_changed"],
-                   "val_ce_sub": float(sv["ce"].mean()), "train_ce_sub": float(st["ce"].mean())}
+                   "val_ce_sub": float(sv["ce"].mean())}
             rec["best"] = best is None or rec["val_acc_last"] > best["val_acc_last"]
             if rec["best"]:
                 best = {k: rec[k] for k in ("step", "epoch", "val_acc_last", "persistence",
@@ -986,9 +983,6 @@ def main() -> None:
                     help=f"the epoch cap and the schedule's length (default {EPOCH_CAP})")
     ap.add_argument("--batch", type=int, default=BATCH)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--eval-windows", default=str(EVAL_WINDOWS),
-                    help=f"fixed val windows gate row 1 is scored on every {EVAL_EVERY:,} "
-                         f"steps, or 'all' (default {EVAL_WINDOWS})")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue that run from its last per-epoch checkpoint; every "
@@ -999,7 +993,6 @@ def main() -> None:
         _self_check()
         return
     train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
-          eval_windows=None if args.eval_windows == "all" else int(args.eval_windows),
           steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
 
 
