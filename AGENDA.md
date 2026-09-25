@@ -402,6 +402,14 @@ targets only and its causality asserted per block. `dynamics.py` passed the
 500-line trigger, so item 6's rollout and gate go in `dynamics_eval.py`. Item 4
 is next.
 
+**Item 5 landed 2026-09-25**: the token-to-pixel path, `FSQ.indices_to_codes`
+and `Tokenizer.decode`, in `mirage/fsq.py`, self-checked by `python -m mirage.fsq`
+(every id, both ways, exact) and `python -m mirage.fsq_eval` (R1's cached rows
+against `reconstruct`). **It found that `reconstruct` does not encode the way
+the cache was written**: the input's memory layout flips 0.33% of tokens under
+TF32 at the same batch. The plan's item 5 has the numbers and what it means for
+item 6's calibration.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
