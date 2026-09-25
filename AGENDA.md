@@ -399,8 +399,22 @@ does.
 measurement's block-causal model, built from the `dynamics` section, at the
 sizing probe's 14,593,152 parameters exactly, with its loss scored at frame
 targets only and its causality asserted per block. `dynamics.py` passed the
-500-line trigger, so item 6's rollout and gate go in `dynamics_eval.py`. Item 4
-is next.
+500-line trigger, so item 6's rollout and gate go in `dynamics_eval.py`.
+
+**Item 4 landed 2026-09-25**: the training loop, in `mirage/dynamics.py`, with the
+best checkpoint's full-population score in `mirage/dynamics_eval.py`. bf16, a
+per-epoch resumable checkpoint with `--resume RUN_ID`, held-out loss and the
+train/val gap every epoch, decision 4a's stopping rule recorded on the run, and
+gate row 1's measure every 1,000 steps beside persistence on the same 512
+windows. **The one-epoch run answered "no" again**: no sub-epoch point was
+above persistence, and the best checkpoint (step 1,000) is 0.19 points below it
+on the full population, 86.50% against 86.69%. Peak training VRAM is 2.20 GB at
+batch 16. The plan's item 4 and the `runs.jsonl` row have the rest.
+
+**Next:** item 5 (the token-to-pixel inverse, in flight), then item 6. **The
+first real run** - `python -m mirage.dynamics --train`, 10-epoch cap, under
+`systemd-inhibit --what=idle:sleep` - is an overnight window and waits for a
+go. Decision 4 chooses a remedy only after it measures the gap.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
