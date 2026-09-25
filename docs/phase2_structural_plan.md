@@ -330,6 +330,13 @@ arm's hash - which proves the arms differ in the mask alone. The move changed
 `dynamics_hash`, so the sizing probe's and the mask measurement's `runs.jsonl`
 rows carry the hash from before it.
 
+**RoPE's base followed during item 3**, 2026-09-24: it had been a
+`ROPE_BASE = 10_000.0` constant in `mirage/dynamics.py` and
+`bench/mask_probe.py`, so no hash named it. It is now `rope_base` 10000.0 in the
+`dynamics` section, a positive float, and both files build from it and refuse any
+other value - the only base the mask measurement trained with. No behaviour
+changed, but `dynamics_hash` moved again.
+
 Two consequences, both verifiable by reading `mirage/config.py`:
 
 - `EXPECTED_KEYS` is checked with `_check_keys`, which rejects **unknown** keys as
