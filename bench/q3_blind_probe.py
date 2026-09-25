@@ -131,7 +131,8 @@ def continuity(cfg: config.Config, lag: int = LAG, device: str | None = None) ->
     splits = dynamics.load_splits(cfg)
     palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
     eps = dynamics_eval.val_episodes(splits, len(palette.blocks))
-    truth = dynamics_eval.truth_features(cfg, splits, eps, palette, dev)
+    tok, _ = fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, dev)
+    truth = dynamics_eval.truth_features(tok, cfg, eps, palette, dev)
     return dynamics_eval.substitution_test(
         truth, dynamics_eval.continuity_bounds(cfg, palette), lag, STRIDE)
 

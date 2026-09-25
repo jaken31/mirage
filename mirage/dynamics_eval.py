@@ -487,10 +487,9 @@ def agreement(delta: np.ndarray, command: np.ndarray) -> float:
     return float((np.sign(delta[driven]) == command[driven]).mean())
 
 
-def truth_features(cfg: config.Config, splits: dynamics.TokenSplits, eps: Episodes,
+def truth_features(tok: torch.nn.Module, cfg: config.Config, eps: Episodes,
                    palette: validator.Palette, dev: torch.device) -> Features:
-    """Every val frame's features, measured on its cached row decoded through R1."""
-    tok, _ = fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, dev)
+    """Every val frame's features, measured on its cached row decoded through `tok`, R1."""
     grid, cells = tuple(cfg.shapes.token_grid), math.prod(cfg.shapes.token_grid)
     px = decode_u8(tok, eps.tokens.reshape(-1, cells), grid, dev)
     return features(px.reshape(*eps.actions.shape, *px.shape[1:]), palette,
@@ -511,7 +510,8 @@ def calibrate_continuity(cfg: config.Config, device: str | None = None) -> dict:
     splits = dynamics.load_splits(cfg)
     palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
     eps = val_episodes(splits, len(palette.blocks))
-    truth = truth_features(cfg, splits, eps, palette, dev)
+    tok, _ = fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, dev)
+    truth = truth_features(tok, cfg, eps, palette, dev)
     change = step_change(*consecutive(truth))
     bounds = {k: change[k].reshape(-1, change[k].shape[-1]).max(0) for k in CONTINUITY_KEYS}
     assert not fires(change, bounds).any()
@@ -589,7 +589,7 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
 
     # The pixel rows: ground truth is the cache decoded, the rollout its own tokens decoded.
     tok, _ = fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, dev)
-    truth = truth_features(cfg, splits, eps, palette, dev)
+    truth = truth_features(tok, cfg, eps, palette, dev)
     px = decode_u8(tok, rolls[ctx].frames.reshape(-1, cells), grid, dev)
     gen = features(px.reshape(n_eps, length, *px.shape[1:]), palette, tau)
 
@@ -765,7 +765,9 @@ def _self_check() -> None:
         print("continuity bounds: skipped - no CUDA device")
     else:
         eps = val_episodes(splits, len(palette.blocks))
-        truth = truth_features(cfg, splits, eps, palette, torch.device("cuda"))
+        cuda = torch.device("cuda")
+        truth = truth_features(fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, cuda)[0], cfg, eps,
+                               palette, cuda)
         bounds = continuity_bounds(cfg, palette)
         fire = fires(step_change(*consecutive(truth)), bounds)
         assert not fire.any(), f"{int(fire.sum())} ground-truth transitions fire the continuity check"
