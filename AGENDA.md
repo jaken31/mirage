@@ -435,10 +435,16 @@ link-drift row now also fails when more frames freeze than 1.1x the truth's
 share on the same frames.
 The plan's item 6 and the `runs.jsonl` row have the numbers.
 
-**Next:** **the first real run** - `python -m mirage.dynamics --train`,
-10-epoch cap, under `systemd-inhibit --what=idle:sleep` - is an overnight
-window and waits for a go, then the gate on it. Decision 4 chooses a remedy
-only after it measures the gap.
+**The first real run and its gate landed 2026-09-26** (r62, r63): decision
+4a's rule stopped it at epoch 5, held-out loss rising from epoch 1, and **the
+gate does not pass** - both checkpoints fail rows 1 and 6. The best checkpoint
+is 0.14 points under persistence and its rollouts freeze on every frame.
+
+**Next:** decision 4 chooses a remedy only after it measures the gap, and the
+gap is now measured. Decision 5's revisit trigger, a rollout that freezes,
+fired again on this run: `best.pt` freezes on 100% of generated frames while
+`model.pt` moves (44.2% frozen) (r63). Whether that reopens temperature
+sampling is undecided.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

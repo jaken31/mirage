@@ -836,6 +836,22 @@ gate prints both shares on row 6 and under the table. The
 link-drift requirement's risk row already warned the bar might not tell a bad
 model from the simulator.
 
+**On the first 10-epoch run** (`20260925-235653-dyn`, r62) **the gate does not
+pass**: both checkpoints exit 1 on rows 1 and 6, and rows 2, 3, 8 and 9 pass
+(r63). Row 1 is the training run's own figure again: `best.pt` (step 3,000)
+is 0.14 points under persistence, `model.pt` (step 86,470) 4.33 points under.
+`best.pt`'s rollouts still freeze completely: 100% of generated frames repeat
+the one before, against the truth's 20.1% on the same frames. `model.pt`'s
+rollouts move. They freeze on 44.2% of frames, 2.2x the truth's, and drift
+51.0% on link0 and 70.6% on link1 against the truth's 26.3% and 62.4%, so row
+6 fails on both of its clauses. Re-gated under the same code, the one-epoch
+run's checkpoints freeze on 100% and 92.0%. The reported rows read: row 4's
+median horizon is 585 frames on `best.pt` and 211 on `model.pt`. Row 5 is 2.5%
+and 51.9% against the truth's 47.1%, on an instrument at chance. Row 7 is 0 of
+21 events on every checkpoint of both runs. In 20 of those 21 the decoded truth
+does not show the block at the reappearance frame, so they score as misses
+whatever the model does.
+
 `dynamics_eval.py` is now past 500 lines. Decision 6's split is by when code
 runs, and everything in it runs against a finished checkpoint, so nothing moves.
 
@@ -956,7 +972,9 @@ rule itself is unchanged; item 4 has the amendment.
 **5. Rollout decoding - DECIDED 2026-09-21: greedy.** The revisit trigger in item
 6 stays in place: a rollout that freezes or falls into a short loop, not one that
 merely drifts. Greedy keeps gate row 9 an exact-reproduction row rather than a
-statistical one.
+statistical one. The trigger fired again on the 10-epoch run: `best.pt`
+freezes on 100% of generated frames while `model.pt` moves (44.2% frozen)
+(r63). Whether that reopens temperature sampling is undecided.
 
 **6. Whether `dynamics_eval.py` splits out - governed by its trigger, which fired
 at item 3 (2026-09-24).** The same 500-line trigger that split `fsq_eval.py` out
