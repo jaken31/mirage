@@ -972,7 +972,9 @@ rule itself is unchanged; item 4 has the amendment.
 **5. Rollout decoding - DECIDED 2026-09-21: greedy.** The revisit trigger in item
 6 stays in place: a rollout that freezes or falls into a short loop, not one that
 merely drifts. Greedy keeps gate row 9 an exact-reproduction row rather than a
-statistical one.
+statistical one. The trigger fired again on the 10-epoch run: `best.pt`
+freezes on 100% of generated frames while `model.pt` moves (44.2% frozen)
+(r63). Whether that reopens temperature sampling is undecided.
 
 **6. Whether `dynamics_eval.py` splits out - governed by its trigger, which fired
 at item 3 (2026-09-24).** The same 500-line trigger that split `fsq_eval.py` out
