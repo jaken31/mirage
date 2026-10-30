@@ -200,8 +200,15 @@ class Rollout(NamedTuple):
 
 @torch.no_grad()
 def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, steps: int,
-            dev: torch.device) -> Rollout:
+            dev: torch.device, temperature: float = 0.0,
+            generator: torch.Generator | None = None) -> Rollout:
     """Greedy rollout (decision 5) from seed clips `(B, ctx, cells)`, `steps` frames long.
+
+    `temperature` above 0 samples each cell from `softmax(logits / temperature)`
+    with `generator` instead of taking the argmax - only for
+    `bench/temperature_probe.py`, which measures decision 5's revisit trigger.
+    The gate never passes it. One seeded generator reproduces a sampled rollout
+    exactly, on the same device.
 
     `actions[:, t]` is `action[t]`, read at the record of the clip's frame `t`,
     so it has `ctx + steps` columns. Step `k` builds the `ctx + 1`-frame window
@@ -221,6 +228,8 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
     b, ctx, cells = seed.shape
     if actions.shape != (b, ctx + steps):
         raise ValueError(f"actions {actions.shape} for {b} clips of {ctx} frames and {steps} steps")
+    if temperature < 0 or (temperature > 0 and generator is None):
+        raise ValueError(f"temperature {temperature} needs to be 0, or above 0 with a generator")
     codes = model.head.out_features
     lay = dynamics.layout(ctx, cells)
     mask = dynamics.attention_mask(lay).to(dev)
@@ -233,7 +242,13 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
         x, _ = dynamics.assemble(lay, frames[:, k:k + ctx + 1], actions[:, k:k + ctx + 1], codes)
         with dynamics._autocast(dev):
             logits = model(torch.from_numpy(x).to(dev), mask, read)
-        frames[:, ctx + k] = logits.float()[:, -cells:].argmax(-1).cpu().numpy()
+        last = logits.float()[:, -cells:]
+        if temperature > 0:
+            probs = torch.softmax(last.reshape(-1, codes) / temperature, -1)
+            pick = torch.multinomial(probs, 1, generator=generator).reshape(b, cells)
+        else:
+            pick = last.argmax(-1)
+        frames[:, ctx + k] = pick.cpu().numpy()
     model.train(was)
     return Rollout(frames, steps)
 
@@ -850,10 +865,21 @@ def _check_rollout(cfg: config.Config) -> None:
         assert rc.passes == steps and rc.frames.shape == (3, c + steps, cells)
     assert np.array_equal(rollout(model, tok[:, :ctx], act, steps, dev).frames, r.frames)
     assert _refused(rollout, model, tok[:, :ctx], act[:, 1:], steps, dev)
+
+    # Temperature (bench/temperature_probe.py only): one seed reproduces, a
+    # vanishing temperature is the argmax, and T = 1 on a random model moves.
+    def sampled(t: float, s: int) -> np.ndarray:
+        g = torch.Generator(dev).manual_seed(s)
+        return rollout(model, tok[:, :ctx], act, steps, dev, temperature=t, generator=g).frames
+    assert np.array_equal(sampled(1.0, 0), sampled(1.0, 0)), "a seeded sample did not reproduce"
+    assert not np.array_equal(sampled(1.0, 0), sampled(1.0, 1)), "the seed did not reach the sample"
+    assert np.array_equal(sampled(1e-6, 0), r.frames), "a vanishing temperature is not the argmax"
+    assert _refused(rollout, model, tok[:, :ctx], act, steps, dev, 1.0)
+    assert _refused(rollout, model, tok[:, :ctx], act, steps, dev, -1.0)
     print(f"rollout: {steps} steps in {steps} passes; the first frame is the one-pass argmax; "
           f"frame ctx + k reads action[ctx + k] and the frames before it, its own output "
           f"feeding the next step; runs at ctx "
-          f"{', '.join(map(str, ROLLOUT_CTXS))}; reproduces exactly")
+          f"{', '.join(map(str, ROLLOUT_CTXS))}; reproduces exactly, sampled too at one seed")
 
 
 def _check_rows() -> None:
