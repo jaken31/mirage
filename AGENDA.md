@@ -446,8 +446,12 @@ fired again on this run: `best.pt` freezes on 100% of generated frames while
 `model.pt` moves (44.2% frozen) (r63). **Temperature sampling was measured
 against it 2026-10-30 and does not fix it** (`bench/temperature_probe.py`,
 r64): it unfreezes the rollout with noise, not motion, and row 6 still fails at
-every temperature. Greedy stays; the next step is decision 4's overfitting
-remedy.
+every temperature. Greedy stays; the lever is training.
+
+**Decision 4's remedy, chosen 2026-10-30: heavier regularisation first** -
+dropout 0.1 and weight decay 0.1 on matrices, now the `--train` defaults; the
+plan's decision 4 has why. **Next:** the 10-epoch run under decision 4a's rule,
+then `--eval` on it. If the gap only narrows, a smaller model is second.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

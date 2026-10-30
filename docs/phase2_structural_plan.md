@@ -955,6 +955,19 @@ any remedy is chosen. Recorded alongside it: **more data is the remedy tangled u
 with `data_hash` provenance**, since regenerating the set moves the hash and
 orphans both the checkpoint and the token cache, while a smaller model and
 heavier regularisation do not.
+**Remedy chosen 2026-10-30: heavier regularisation first.** The gap is measured
+(r62): train cross-entropy falls to 0.0375 while held-out loss is lowest after
+epoch 1 (0.4716) and rises every epoch to 1.0414 at epoch 5. That run had no
+dropout and AdamW weight decay of 1e-4 on every parameter. `mirage/dynamics.py`
+now defaults to GPT-2's values: dropout 0.1 at the embeddings, the attention
+weights and both residual branches, and weight decay 0.1 on matrices and
+embeddings only, none on biases or LayerNorm gains. Both are `--dropout` and
+`--weight-decay` and travel in the run's `knobs`, never in `dynamics_hash`;
+dropout has no weights, so the parameter count is unchanged (self-check). Chosen
+first because it is the cheapest lever and the one the run had none of. **A
+smaller model is the second remedy** if this one only narrows the gap, and more
+data stays last for its `data_hash` cost. The next run keeps decision 4a's
+stopping rule unchanged. Unmeasured until it lands.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first.
