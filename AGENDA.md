@@ -443,8 +443,11 @@ is 0.14 points under persistence and its rollouts freeze on every frame.
 **Next:** decision 4 chooses a remedy only after it measures the gap, and the
 gap is now measured. Decision 5's revisit trigger, a rollout that freezes,
 fired again on this run: `best.pt` freezes on 100% of generated frames while
-`model.pt` moves (44.2% frozen) (r63). Whether that reopens temperature
-sampling is undecided.
+`model.pt` moves (44.2% frozen) (r63). **Temperature sampling was measured
+against it 2026-10-30 and does not fix it** (`bench/temperature_probe.py`,
+r64): it unfreezes the rollout with noise, not motion, and row 6 still fails at
+every temperature. Greedy stays; the next step is decision 4's overfitting
+remedy.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
