@@ -974,7 +974,12 @@ rule itself is unchanged; item 4 has the amendment.
 merely drifts. Greedy keeps gate row 9 an exact-reproduction row rather than a
 statistical one. The trigger fired again on the 10-epoch run: `best.pt`
 freezes on 100% of generated frames while `model.pt` moves (44.2% frozen)
-(r63). Whether that reopens temperature sampling is undecided.
+(r63). **Measured 2026-10-30, and greedy stays** (`bench/temperature_probe.py`,
+r64): no temperature from 0.5 to 1.0 passes gate row 6 on either checkpoint.
+Sampling unfreezes the rollout, but the motion it adds is noise rather than the
+arm's - drift explodes or a link vanishes, and accuracy against the truth falls
+below holding the seed frame still. The lever is training (decision 4), not
+decoding.
 
 **6. Whether `dynamics_eval.py` splits out - governed by its trigger, which fired
 at item 3 (2026-09-24).** The same 500-line trigger that split `fsq_eval.py` out
