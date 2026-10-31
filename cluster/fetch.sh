@@ -5,6 +5,7 @@
 set -euo pipefail
 ip=${1:?usage: cluster/fetch.sh <public-ip>}
 root=$(cd "$(dirname "$0")/.." && pwd)
+export RSYNC_RSH="ssh -o StrictHostKeyChecking=accept-new"
 rsync -az --info=progress2 --exclude 20260829-005439-r1 \
       "ubuntu@$ip:mirage/runs/" "$root/runs/"
 echo "fetched; now release the node in the console - the meter runs until you do"
