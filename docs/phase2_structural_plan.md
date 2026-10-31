@@ -981,6 +981,11 @@ sizes from 0.53M to 14.6M, two seeds each: the best held-out loss is
 seed-to-seed spread (up to 0.73 points) is larger than any size effect. A
 smaller model trades a smaller gap for a worse fit, so capacity is not what
 holds the model at copying. More data stays last; the objective remedies are next.
+**The objective remedies measured 2026-10-31 (r67).** Input-token corruption
+lowers the best held-out loss below every r66 run (0.4592 at 30%) and delays
+overfitting, but no checkpoint beats persistence; weighting changed cells makes
+every measure worse and is dropped. Corruption is the remedy carried forward,
+stronger and trained longer.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first.

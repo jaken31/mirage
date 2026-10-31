@@ -79,3 +79,15 @@ The self-check asserts the weights land on exactly the changed cells, uniform
 weights reproduce the plain mean, and corruption at 15% hits 15% of frame
 inputs and no action. Held-out loss stays the plain, uncorrupted mean, so the
 train/val gap stays comparable with r62. **Unmeasured** until a run lands.
+
+## Measured 2026-10-31 (`runs.jsonl` r67)
+
+At 2.0M parameters, dropout 0.1, against r66's runs of the same setting:
+**corruption works on the loss and not on the gate.** At 15% it lowers the best
+held-out loss from 0.475-0.478 to 0.4625-0.4629 on both seeds and moves the
+minimum from epoch 2-3 to 5-6; at 30% it reaches 0.4592, halves the final gap
+and runs to the cap without tripping. No checkpoint beats persistence. **The
+change weight fails** at 4 and 8: the model predicts change too often, and every
+measure is worse. Finding 2's inference - that the unchanged cells' share of the
+gradient is what holds the model at copying - is not supported in this form.
+

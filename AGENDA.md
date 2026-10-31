@@ -466,6 +466,14 @@ to 0.73 points. **Next:** the objective remedies, `--change-weight` and
 `--corrupt`, each alone and together, at 2.0M (dyn192x4, dropout 0.1), two seeds
 each, read against the r66 runs at that size.
 
+**Landed 2026-10-31 (r67): corruption helps the loss, not the gate; the change
+weight hurts.** Corruption lowers the best held-out loss from 0.475-0.478 to
+0.459-0.463 and delays overfitting (30% ran to the cap without a trip), but no
+checkpoint beats persistence. The change weight at 4 and 8 makes the model
+predict change too often and is dropped. **Next:** corruption at 30% and above,
+trained past 10 epochs (`--resume` the 30% run, or raise `--epochs`), and find
+out why lower cross-entropy is not becoming higher top-1 accuracy.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
