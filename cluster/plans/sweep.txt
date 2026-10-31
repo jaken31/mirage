@@ -1,0 +1,9 @@
+# Decision 4's size sweep (r66). Weight decay 0.1 throughout, the --train default.
+0 base     --dropout 0.3          # full size, stronger dropout
+1 dyn256x6 --dropout 0.1
+2 dyn256x6 --dropout 0.3
+3 dyn192x4 --dropout 0.1
+4 dyn192x4 --dropout 0.3
+5 dyn128x4 --dropout 0.1          # ~21 tokens per parameter, Chinchilla-optimal
+6 dyn128x4 --dropout 0.0          # control: does the optimal size need dropout at all
+7 dyn128x2 --dropout 0.1

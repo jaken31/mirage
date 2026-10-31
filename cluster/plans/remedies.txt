@@ -1,0 +1,11 @@
+# The copy-collapse remedies (docs/research_copy_collapse.md) at 2.0M, dropout
+# 0.1, read against r66's two runs of the same setting (seeds 0 and 1).
+# Each remedy alone and together, two seeds each, then one stronger dose of each.
+0 dyn192x4 --dropout 0.1 --change-weight 4 --seed 0
+1 dyn192x4 --dropout 0.1 --change-weight 4 --seed 1
+2 dyn192x4 --dropout 0.1 --corrupt 0.15 --seed 0
+3 dyn192x4 --dropout 0.1 --corrupt 0.15 --seed 1
+4 dyn192x4 --dropout 0.1 --change-weight 4 --corrupt 0.15 --seed 0
+5 dyn192x4 --dropout 0.1 --change-weight 4 --corrupt 0.15 --seed 1
+6 dyn192x4 --dropout 0.1 --change-weight 8 --seed 0
+7 dyn192x4 --dropout 0.1 --corrupt 0.3 --seed 0
