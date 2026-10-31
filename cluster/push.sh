@@ -12,6 +12,9 @@ t0=$SECONDS
 # A fresh node per lease means a new host key every time; accept it once.
 export RSYNC_RSH="ssh -o StrictHostKeyChecking=accept-new"
 
+# rsync creates only the last directory of a destination, and the code copy
+# below excludes data/ and runs/, so make both targets first.
+ssh -o StrictHostKeyChecking=accept-new "$host" 'mkdir -p mirage/data/shards mirage/runs/20260829-005439-r1'
 rsync -az --exclude .venv --exclude runs --exclude data --exclude build \
       --exclude .claude-flow --exclude .git "$root/" "$host:mirage/"
 rsync -az --info=progress2 "$root/data/shards/" "$host:mirage/data/shards/"
