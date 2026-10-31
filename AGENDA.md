@@ -470,9 +470,20 @@ each, read against the r66 runs at that size.
 weight hurts.** Corruption lowers the best held-out loss from 0.475-0.478 to
 0.459-0.463 and delays overfitting (30% ran to the cap without a trip), but no
 checkpoint beats persistence. The change weight at 4 and 8 makes the model
-predict change too often and is dropped. **Next:** corruption at 30% and above,
-trained past 10 epochs (`--resume` the 30% run, or raise `--epochs`), and find
-out why lower cross-entropy is not becoming higher top-1 accuracy.
+predict change too often and is dropped.
+
+**Landed 2026-10-31 (r68, `bench/ce_top1_probe.py`): the CE gain is earned
+where the argmax still loses.** Corruption roughly doubles the probability on
+the true token of cells that change (to about 0.24), which cuts their loss but
+rarely makes it the top guess, while static cells lose a little confidence.
+Where the model bets on a change it claims about 55% and is right about 35%, and
+half those cells never changed. More than half of all token changes (7.4 of 13.3
+points) are on fields whose pixels did not move - R1's spurious flips. Copying
+unless the model is confident, with the threshold held out, only ties
+persistence (-0.09 to +0.09 points, fold noise larger than that). **Next:** the
+lever is the target, not decoding or more corruption: measure what the spurious
+flips cost - score and train with them treated as "no change" - before another
+training sweep.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
