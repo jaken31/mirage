@@ -453,6 +453,12 @@ dropout 0.1 and weight decay 0.1 on matrices, now the `--train` defaults; the
 plan's decision 4 has why. **Next:** the 10-epoch run under decision 4a's rule,
 then `--eval` on it. If the gap only narrows, a smaller model is second.
 
+**Landed 2026-10-31:** that run's gate fails rows 1 and 6 as r63 did; its best
+checkpoint is again a near-copy at step 1,000. `docs/research_copy_collapse.md`
+surveys the copy-first pattern, and its two cheap remedies are now
+`--change-weight` and `--corrupt`, off by default. **Next:** read the B300
+size sweep, then run its best size with both remedies on, each alone too.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance

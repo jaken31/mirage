@@ -968,6 +968,13 @@ first because it is the cheapest lever and the one the run had none of. **A
 smaller model is the second remedy** if this one only narrows the gap, and more
 data stays last for its `data_hash` cost. The next run keeps decision 4a's
 stopping rule unchanged. Unmeasured until it lands.
+**Measured 2026-10-31: regularisation narrows the gap and does not close it.**
+Held-out loss still rose every epoch after the first, 0.4745 to 0.5802 at epoch
+5 against r62's 1.0414, and the best checkpoint is a near-copy at step 1,000,
+0.02 points under persistence; the gate fails rows 1 and 6. **The next step
+attacks the objective, not capacity alone**: a loss weighted toward changed
+cells and input-token corruption (`docs/research_copy_collapse.md`), both
+training knobs that move no hash, alongside the smaller-model sweep.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first.
