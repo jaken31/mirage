@@ -456,8 +456,15 @@ then `--eval` on it. If the gap only narrows, a smaller model is second.
 **Landed 2026-10-31:** that run's gate fails rows 1 and 6 as r63 did; its best
 checkpoint is again a near-copy at step 1,000. `docs/research_copy_collapse.md`
 surveys the copy-first pattern, and its two cheap remedies are now
-`--change-weight` and `--corrupt`, off by default. **Next:** read the B300
-size sweep, then run its best size with both remedies on, each alone too.
+`--change-weight` and `--corrupt`, off by default.
+
+**The B300 size sweep landed 2026-10-31 (`runs.jsonl` r66): size is not the
+lever.** 16 runs, 0.53M to 14.6M parameters, dropout 0 to 0.3, two seeds each:
+none beats persistence, smaller models shrink the gap but not the best held-out
+loss (0.472-0.496 at every size), and seeds alone move the best checkpoint by up
+to 0.73 points. **Next:** the objective remedies, `--change-weight` and
+`--corrupt`, each alone and together, at 2.0M (dyn192x4, dropout 0.1), two seeds
+each, read against the r66 runs at that size.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

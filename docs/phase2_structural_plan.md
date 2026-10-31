@@ -975,6 +975,12 @@ Held-out loss still rose every epoch after the first, 0.4745 to 0.5802 at epoch
 attacks the objective, not capacity alone**: a loss weighted toward changed
 cells and input-token corruption (`docs/research_copy_collapse.md`), both
 training knobs that move no hash, alongside the smaller-model sweep.
+**The smaller-model remedy measured 2026-10-31 (r66): it does not help.** Five
+sizes from 0.53M to 14.6M, two seeds each: the best held-out loss is
+0.472-0.496 at every size, every best checkpoint is under persistence, and the
+seed-to-seed spread (up to 0.73 points) is larger than any size effect. A
+smaller model trades a smaller gap for a worse fit, so capacity is not what
+holds the model at copying. More data stays last; the objective remedies are next.
 
 **4a. The first run's stopping rule - DECIDED 2026-09-21**, the part decision 4
 otherwise leaves open. An epoch cap or a divergence trip, whichever fires first.
