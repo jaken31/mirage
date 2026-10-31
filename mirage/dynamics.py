@@ -88,6 +88,7 @@ import json
 import math
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -891,6 +892,9 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 raise ValueError(f"resume {resume}: {k} is {was!r}, "
                                  f"this call asks for {knobs[k]!r}")
         model.load_state_dict(ck["state_dict"])
+        if len(ck["opt"]["param_groups"]) == 1:
+            # Saved before the decay split: one group, decay on every parameter.
+            opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         opt.load_state_dict(ck["opt"])
         rng.bit_generator.state = ck["np_rng"]
         # `.cpu()` because `set_rng_state` takes a CPU ByteTensor - the bug that
@@ -1293,6 +1297,19 @@ def _check_training(base: config.Config) -> None:
         assert _refused(lambda: train(tiny, **common, runs_dir=runs, name="y",
                                       resume=rest["run_id"])), \
             "resumed a run the stopping rule had already stopped"
+        # A checkpoint from before the decay split has one optimizer group over
+        # model.parameters() in order; it must still resume.
+        legacy = runs / f"{first['run_id']}-legacy"
+        shutil.copytree(runs / first["run_id"], legacy)
+        ck = torch.load(legacy / "model.pt", weights_only=True)
+        ps = list(build(tiny).parameters())
+        split = [i for i, p in enumerate(ps) if p.dim() >= 2] + [i for i, p in enumerate(ps) if p.dim() < 2]
+        g = {k: v for k, v in ck["opt"]["param_groups"][0].items() if k != "params"}
+        ck["opt"] = {"state": {split[i]: s for i, s in ck["opt"]["state"].items()},
+                     "param_groups": [{**g, "params": list(range(len(ps)))}]}
+        torch.save(ck, legacy / "model.pt")
+        old = train(tiny, **common, runs_dir=runs, name="legacy", resume=legacy.name)
+        assert old["epochs_done"] == 3, "a one-group checkpoint did not resume"
         print(f"train: ended after epoch 1 and resumed, {len(losses(whole))} steps bit-identical to "
               f"an uninterrupted run - losses, epoch records, sub-epoch points, model.pt and "
               f"best.pt; every record carries dynamics_hash; refuses another knob or a stopped run")
