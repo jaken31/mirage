@@ -88,6 +88,7 @@ import json
 import math
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -339,11 +340,16 @@ class Block(nn.Module):
     priced. Written out because RoPE has to rotate q and k between the
     projection and the attention, and so that `F.scaled_dot_product_attention`
     takes the mask instead of a materialized attention matrix.
+
+    `dropout` is GPT-2's three sites - attention weights, and each residual
+    branch before it rejoins the stream - active in training mode only. It has
+    no parameters, so the count is unchanged.
     """
 
-    def __init__(self, d: int, heads: int, mlp_ratio: int) -> None:
+    def __init__(self, d: int, heads: int, mlp_ratio: int, dropout: float = 0.0) -> None:
         super().__init__()
-        self.heads = heads
+        self.heads, self.p = heads, dropout
+        self.drop = nn.Dropout(dropout)
         self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.qkv = nn.Linear(d, 3 * d)       # MHA's in_proj
         self.out = nn.Linear(d, d)           # MHA's out_proj
@@ -356,9 +362,10 @@ class Block(nn.Module):
         q, k, v = self.qkv(self.n1(x)).view(b, n, 3, self.heads, d // self.heads) \
             .permute(2, 0, 3, 1, 4)
         a = F.scaled_dot_product_attention(rope(q, cos, sin), rope(k, cos, sin), v,
-                                           attn_mask=mask)
-        x = x + self.out(a.transpose(1, 2).reshape(b, n, d))
-        return x + self.mlp(self.n2(x))
+                                           attn_mask=mask,
+                                           dropout_p=self.p if self.training else 0.0)
+        x = x + self.drop(self.out(a.transpose(1, 2).reshape(b, n, d)))
+        return x + self.drop(self.mlp(self.n2(x)))
 
 
 class Dynamics(nn.Module):
@@ -376,13 +383,15 @@ class Dynamics(nn.Module):
     """
 
     def __init__(self, d_model: int, n_layers: int, n_heads: int, mlp_ratio: int,
-                 codes: int, max_len: int, rope_base: float) -> None:
+                 codes: int, max_len: int, rope_base: float, dropout: float = 0.0) -> None:
         super().__init__()
         if d_model % n_heads or (d_model // n_heads) % 2:
             raise ValueError(f"d_model {d_model} over {n_heads} heads is not an even head width, "
                              f"which RoPE's channel pairs need")
         self.embed = nn.Embedding(codes + N_ACTIONS, d_model)
-        self.blocks = nn.ModuleList([Block(d_model, n_heads, mlp_ratio) for _ in range(n_layers)])
+        self.drop = nn.Dropout(dropout)   # on the embeddings, GPT-2's fourth site
+        self.blocks = nn.ModuleList([Block(d_model, n_heads, mlp_ratio, dropout)
+                                     for _ in range(n_layers)])
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, codes, bias=False)
         half = d_model // n_heads // 2
@@ -404,16 +413,17 @@ class Dynamics(nn.Module):
         if n > len(self.cos):
             raise ValueError(f"{n} positions, but the RoPE tables hold {len(self.cos)}")
         cos, sin = self.cos[:n], self.sin[:n]
-        x = self.embed(tok)
+        x = self.drop(self.embed(tok))
         for blk in self.blocks:
             x = blk(x, mask, cos, sin)
         return self.head(self.norm(x[:, read]))
 
 
-def build(cfg: config.Config) -> Dynamics:
+def build(cfg: config.Config, dropout: float = 0.0) -> Dynamics:
     """The model `cfg.dynamics` names, sized for a `ctx + 1`-frame window.
 
-    Refuses a `dynamics` value this file does not implement, so a checkpoint's
+    `dropout` is a training knob, not part of the model: it has no weights, so
+    it travels in a run's `knobs` and never in `dynamics_hash`. Refuses a `dynamics` value this file does not implement, so a checkpoint's
     `dynamics_hash` always names the model that produced it.
     """
     dyn = cfg.dynamics
@@ -423,7 +433,7 @@ def build(cfg: config.Config) -> Dynamics:
                              f"only {want!r}")
     max_len = len(layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid)).src)
     return Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"], dyn["mlp_ratio"],
-                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"])
+                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"], dropout)
 
 
 def attention_mask(lay: Layout) -> torch.Tensor:
@@ -437,8 +447,12 @@ def attention_mask(lay: Layout) -> torch.Tensor:
 
 
 def frame_loss(model: Dynamics, x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor,
-               read: torch.Tensor) -> torch.Tensor:
+               read: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
     """Mean cross-entropy over a batch's frame targets, and at no other position.
+
+    `weight`, `(B, R)`, makes it a weighted mean, sum(w * ce) / sum(w), so the
+    weights move the loss between targets without changing its scale
+    (`change_weights`). None is the plain mean, bit for bit.
 
     `x`, `y` are `assemble`'s inputs `(B, L)` and targets `(B, R)`, `read` the
     layout's `(R,)` read positions. The model computes logits only at `read`,
@@ -449,7 +463,36 @@ def frame_loss(model: Dynamics, x: torch.Tensor, y: torch.Tensor, mask: torch.Te
     ids 512-520 as code 511.
     """
     logits = model(x, mask, read)
-    return F.cross_entropy(logits.flatten(0, 1).float(), y.flatten())
+    if weight is None:
+        return F.cross_entropy(logits.flatten(0, 1).float(), y.flatten())
+    ce = F.cross_entropy(logits.flatten(0, 1).float(), y.flatten(), reduction="none")
+    w = weight.flatten().float()
+    return (w * ce).sum() / w.sum()
+
+
+def change_weights(lay: Layout, tok: np.ndarray, factor: float) -> np.ndarray:
+    """`(B, R)` loss weights: `factor` where a target cell's token differs from the frame before.
+
+    About 87% of target cells repeat the frame before (persistence, r54), so a
+    plain mean is mostly a copying signal; this shifts weight onto the cells
+    that move, the remedy CAER takes with action effects
+    (`docs/research_copy_collapse.md`). `tok` is `(B, ctx+1, cells)`.
+    """
+    flat = tok.reshape(len(tok), -1)
+    return np.where(flat[:, lay.tgt] != flat[:, lay.tgt - lay.cells], factor, 1.0)
+
+
+def corrupt_inputs(x: torch.Tensor, codes: int, p: float) -> torch.Tensor:
+    """`x` with each frame-token input replaced by a uniform random code with probability `p`.
+
+    Action ids (`>= codes`) are never touched and the targets are not inputs,
+    so only the context is corrupted. Random replacement rather than a mask
+    token: in data-limited autoregressive training it beat masking at every
+    rate tested, best at 15% (`docs/research_copy_collapse.md`). Draws from
+    torch's generator on `x`'s device, which resume restores.
+    """
+    hit = (torch.rand(x.shape, device=x.device) < p) & (x < codes)
+    return torch.where(hit, torch.randint_like(x, codes), x)
 
 
 def check_block_causal(model: Dynamics, lay: Layout, mask: torch.Tensor, x: torch.Tensor,
@@ -497,8 +540,19 @@ TRIP_EXTRA = 2
 # measurements; they travel in each checkpoint's `knobs`, never in a hash.
 BATCH = 16
 LR, LR_FLOOR, WARMUP = 3e-4, 3e-5, 0.05
-WEIGHT_DECAY = 1e-4
 CLIP = 1.0
+# Decision 4's first remedy (2026-10-30): heavier regularisation, after the
+# 10-epoch run memorised its windows - train cross-entropy 0.0375 while held-out
+# loss rose every epoch after the first (r62). That run trained at weight decay
+# 1e-4 on every parameter and no dropout. GPT-2's values, decay on matrices only.
+WEIGHT_DECAY = 0.1
+DROPOUT = 0.1
+# Decision 4's second step (2026-10-31), against the copy-first pattern both
+# runs showed (`docs/research_copy_collapse.md`): weight changed target cells
+# by CHANGE_WEIGHT, and corrupt input frame tokens at rate CORRUPT. Off by
+# default until a run shows they help; both are --flags.
+CHANGE_WEIGHT = 1.0
+CORRUPT = 0.0
 
 # Gate row 1's measure is scored every `EVAL_EVERY` steps on `EVAL_WINDOWS` val
 # windows drawn with `EVAL_SEED`, which are the mask measurement's 512 curve
@@ -703,8 +757,10 @@ def _environment(dev: torch.device) -> dict:
 # the environment and derived counts may differ, so resuming on another
 # machine stays possible (`fsq.train` draws the same line).
 RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
-                "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
+                "dropout", "change_weight", "corrupt", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
                 "seq_len")
+# The value a knob had before it existed, for resuming a run that predates it.
+KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0}
 
 
 def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
@@ -728,7 +784,8 @@ def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Lay
 
 def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: float = LR,
           lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
-          clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
+          dropout: float = DROPOUT, change_weight: float = CHANGE_WEIGHT,
+          corrupt: float = CORRUPT, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
           eval_windows: int = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
@@ -774,9 +831,14 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     codes = cfg.tokenizer["codebook_size"]
 
     torch.manual_seed(seed)   # immediately before `build`: the mask measurement's initial weights
-    model = build(cfg).to(dev)
+    model = build(cfg, dropout).to(dev)
     params = sum(p.numel() for p in model.parameters())
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Decay matrices and embeddings, not biases or LayerNorm gains, which
+    # decay toward a value that means nothing (GPT-2's split).
+    groups = [[p for p in model.parameters() if p.dim() >= 2],
+              [p for p in model.parameters() if p.dim() < 2]]
+    opt = torch.optim.AdamW([{"params": groups[0], "weight_decay": weight_decay},
+                             {"params": groups[1], "weight_decay": 0.0}], lr=lr)
     rng = np.random.default_rng(seed)
 
     per_epoch = steps_per_epoch or len(splits.train) // batch
@@ -804,7 +866,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     hashes = {"data_hash": cfg.data_hash, "tokenizer_hash": cfg.tokenizer_hash,
               "dynamics_hash": cfg.dynamics_hash}
     knobs = dict(tokenizer_run=TOKENIZER_RUN, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
-                 warmup=warmup, weight_decay=weight_decay, clip=clip, seed=seed,
+                 warmup=warmup, weight_decay=weight_decay, dropout=dropout,
+                 change_weight=change_weight, corrupt=corrupt, clip=clip, seed=seed,
                  eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
                  steps_per_epoch=per_epoch, seq_len=len(lay.src), targets=len(lay.tgt),
                  params=params, precision="bf16 autocast" if cuda else "fp32",
@@ -823,10 +886,15 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
             if ck[k] != v:
                 raise ValueError(f"resume {resume}: {k} is {ck[k]}, the config's is {v}")
         for k in RESUME_KNOBS:
-            if ck["knobs"][k] != knobs[k]:
-                raise ValueError(f"resume {resume}: {k} is {ck['knobs'][k]!r}, "
+            # Absent from a run older than the knob; those trained with it off.
+            was = ck["knobs"].get(k, KNOB_OFF.get(k))
+            if was != knobs[k]:
+                raise ValueError(f"resume {resume}: {k} is {was!r}, "
                                  f"this call asks for {knobs[k]!r}")
         model.load_state_dict(ck["state_dict"])
+        if len(ck["opt"]["param_groups"]) == 1:
+            # Saved before the decay split: one group, decay on every parameter.
+            opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         opt.load_state_dict(ck["opt"])
         rng.bit_generator.state = ck["np_rng"]
         # `.cpu()` because `set_rng_state` takes a CPU ByteTensor - the bug that
@@ -909,8 +977,12 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                     g["lr"] = lr_at(step)
                 tok, act = _stack(splits.train, order[s])
                 x, y = (torch.from_numpy(a).to(dev) for a in assemble(lay, tok, act, codes))
+                w = None if change_weight == 1.0 else \
+                    torch.from_numpy(change_weights(lay, tok, change_weight)).to(dev)
+                if corrupt:
+                    x = corrupt_inputs(x, codes, corrupt)
                 with _autocast(dev):
-                    loss = frame_loss(model, x, y, mask, read)
+                    loss = frame_loss(model, x, y, mask, read, w)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 gnorm = float(nn.utils.clip_grad_norm_(model.parameters(), clip))
@@ -985,6 +1057,14 @@ def main() -> None:
                     help=f"the epoch cap and the schedule's length (default {EPOCH_CAP})")
     ap.add_argument("--batch", type=int, default=BATCH)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
+                    help=f"AdamW decay on matrices and embeddings (default {WEIGHT_DECAY})")
+    ap.add_argument("--dropout", type=float, default=DROPOUT,
+                    help=f"GPT-2's four dropout sites, training mode only (default {DROPOUT})")
+    ap.add_argument("--change-weight", type=float, default=CHANGE_WEIGHT,
+                    help="loss weight on target cells that changed from the frame before")
+    ap.add_argument("--corrupt", type=float, default=CORRUPT,
+                    help="share of input frame tokens replaced by random codes in training")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue that run from its last per-epoch checkpoint; every "
@@ -1007,7 +1087,8 @@ def main() -> None:
         _self_check()
         return
     train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
-          steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
+          weight_decay=args.weight_decay, dropout=args.dropout,
+          change_weight=args.change_weight, corrupt=args.corrupt, steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
 
 
 # ----------------------------------------------------------------- self-check
@@ -1216,6 +1297,19 @@ def _check_training(base: config.Config) -> None:
         assert _refused(lambda: train(tiny, **common, runs_dir=runs, name="y",
                                       resume=rest["run_id"])), \
             "resumed a run the stopping rule had already stopped"
+        # A checkpoint from before the decay split has one optimizer group over
+        # model.parameters() in order; it must still resume.
+        legacy = runs / f"{first['run_id']}-legacy"
+        shutil.copytree(runs / first["run_id"], legacy)
+        ck = torch.load(legacy / "model.pt", weights_only=True)
+        ps = list(build(tiny).parameters())
+        split = [i for i, p in enumerate(ps) if p.dim() >= 2] + [i for i, p in enumerate(ps) if p.dim() < 2]
+        g = {k: v for k, v in ck["opt"]["param_groups"][0].items() if k != "params"}
+        ck["opt"] = {"state": {split[i]: s for i, s in ck["opt"]["state"].items()},
+                     "param_groups": [{**g, "params": list(range(len(ps)))}]}
+        torch.save(ck, legacy / "model.pt")
+        old = train(tiny, **common, runs_dir=runs, name="legacy", resume=legacy.name)
+        assert old["epochs_done"] == 3, "a one-group checkpoint did not resume"
         print(f"train: ended after epoch 1 and resumed, {len(losses(whole))} steps bit-identical to "
               f"an uninterrupted run - losses, epoch records, sub-epoch points, model.pt and "
               f"best.pt; every record carries dynamics_hash; refuses another knob or a stopped run")
@@ -1361,6 +1455,23 @@ def _self_check() -> None:
     print("build: refuses a strict mask, learned positions, a tied head, another RoPE base, "
           "and head widths RoPE cannot pair")
 
+    # Dropout (decision 4's remedy) adds no parameter and no initialisation
+    # draw, so the same seed builds the same weights; in eval mode it is the
+    # model without it, bit for bit, and in training mode it does act.
+    torch.manual_seed(0)
+    dropped = build(base, 0.5).eval()
+    sd_d = dropped.state_dict()
+    assert list(sd_d) == list(sd) and all(torch.equal(sd[k], sd_d[k]) for k in sd), \
+        "dropout changed the parameters or their initialisation"
+    with torch.no_grad():
+        clean = model(x_any, mask, read)
+        assert torch.equal(dropped(x_any, mask, read), clean), "dropout acts in eval mode"
+        assert not torch.equal(dropped.train()(x_any, mask, read), clean), \
+            "dropout does nothing in training mode"
+    del dropped
+    print("dropout: same parameters from the same seed, identical logits in eval mode, "
+          "different ones in training mode")
+
     # RoPE is applied, and attention depends on distance, not absolute position.
     cos, sin = model.cos.double(), model.sin.double()
     q, k = torch.randn(2, 2 * cos.shape[1], dtype=torch.float64)
@@ -1409,6 +1520,31 @@ def _self_check() -> None:
         "the loss read other positions"
     print(f"loss: {lay.ctx} x {cells} frame targets, read only at frame-token positions, "
           f"no action slot and no action target; frame 0 is context only")
+
+    # The copy-collapse remedies. Uniform weights are the plain mean; a weight
+    # lands on exactly the cells whose token differs from the frame before.
+    tok_w = tok[:1].copy()
+    tok_w[0, 1:] = tok_w[0, :1]           # every frame repeats frame 0 ...
+    tok_w[0, 7, 5] = (tok_w[0, 6, 5] + 1) % codes   # ... except one cell of frame 7
+    cw = change_weights(lay, tok_w, 4.0)
+    assert cw.shape == (1, lay.ctx * cells) and (cw == 4.0).sum() == 2, \
+        "the cell, and the same cell one frame later, are the two changes"
+    assert cw[0, lay.tgt == 7 * cells + 5] == 4.0 and cw[0, lay.tgt == 8 * cells + 5] == 4.0
+    with torch.no_grad():
+        assert torch.allclose(frame_loss(m64, x, y, mask, read, torch.ones_like(y)), got), \
+            "uniform weights are not the plain mean"
+        ce = F.cross_entropy(full[0, lay.read].float(), y[0], reduction="none")
+        w = torch.rand(y.shape)   # frame_loss scores in float32, as training does
+        assert torch.allclose(frame_loss(m64, x, y, mask, read, w), (w[0] * ce).sum() / w.sum())
+    xs = x.repeat(64, 1)
+    hit = corrupt_inputs(xs, codes, 0.15) != xs
+    frame_in = xs < codes
+    assert not hit[~frame_in].any(), "corruption touched an action"
+    assert torch.equal(corrupt_inputs(xs, codes, 0.0), xs)
+    rate = hit[frame_in].float().mean().item()
+    assert 0.13 < rate < 0.16, rate   # 15% drawn, less the 1/512 that redraw the same code
+    print(f"remedies: change weights land on exactly the changed cells; weighted loss is the "
+          f"weighted mean; corruption hits {rate:.1%} of frame inputs at 15% and no action")
     del m64
 
     # ---- training (item 4): no data needed

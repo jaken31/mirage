@@ -156,6 +156,16 @@ the tokenizer checkpoint, the decode path or the `validator` continuity bounds d
 | `NUM-DYN-Q3-CONT` | **53.7%** | Share of `bench/q3_blind_probe.py`'s 810 300-step substitutions the continuity check fires on, with its bounds at the largest per-step change over the 16,173 decoded val transitions (0.0% of clean ones fire). The requirement asks 100%, so gate row 4 is reported | r61 | current, **these bounds only** |
 | `NUM-DYN-Q4-PIXEL` | **47.1% / 89.7%** | Action agreement on the same 9,480 action-balanced val frames: the pixel link angle's per-step sign on decoded ground truth, and the simulator's joint angles. The first is chance, so gate row 5 is reported | r61 | current |
 
+## Dynamics - decision 4's remedies against copy collapse
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-DYN-SWEEP-SIZES` | **0.53M to 14.6M** | Parameter range of r66's size sweep: 529,024 to 14,593,152, five sizes | r66 | current |
+| `NUM-DYN-SWEEP-CEMIN` | **0.472-0.496** | Best held-out loss across r66's 16 runs - the same band at every size, so size is not the lever | r66 | current |
+| `NUM-DYN-SWEEP-SEED` | **0.73 points** | Largest seed-to-seed spread of the best checkpoint's margin over persistence at one setting (5.0M, dropout 0.1: -0.17 and -0.90) - larger than any size effect | r66 | current |
+| `NUM-DYN-REF-CE` | **0.475-0.478** | Best held-out loss of r66's two dyn192x4, dropout 0.1 runs (0.4752, 0.4776): the reference r67's remedies are read against | r66, r67 | current, **dyn192x4 only** |
+| `NUM-DYN-CORRUPT-CE` | **0.4592** | Best held-out loss with input corruption at 30% (dyn192x4, dropout 0.1, seed 0) - the lowest of any run. 15% gives 0.4625-0.4629. No checkpoint of it beats persistence | r67 | current, **dyn192x4 only** |
+
 ## Dataset - the 96x96 fork
 
 | ID | Value | What it is | Source | Status |

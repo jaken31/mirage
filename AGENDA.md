@@ -446,8 +446,44 @@ fired again on this run: `best.pt` freezes on 100% of generated frames while
 `model.pt` moves (44.2% frozen) (r63). **Temperature sampling was measured
 against it 2026-10-30 and does not fix it** (`bench/temperature_probe.py`,
 r64): it unfreezes the rollout with noise, not motion, and row 6 still fails at
-every temperature. Greedy stays; the next step is decision 4's overfitting
-remedy.
+every temperature. Greedy stays; the lever is training.
+
+**Decision 4's remedy, chosen 2026-10-30: heavier regularisation first** -
+dropout 0.1 and weight decay 0.1 on matrices, now the `--train` defaults; the
+plan's decision 4 has why. **Next:** the 10-epoch run under decision 4a's rule,
+then `--eval` on it. If the gap only narrows, a smaller model is second.
+
+**Landed 2026-10-31:** that run's gate fails rows 1 and 6 as r63 did; its best
+checkpoint is again a near-copy at step 1,000. `docs/research_copy_collapse.md`
+surveys the copy-first pattern, and its two cheap remedies are now
+`--change-weight` and `--corrupt`, off by default.
+
+**The B300 size sweep landed 2026-10-31 (`runs.jsonl` r66): size is not the
+lever.** 16 runs, 0.53M to 14.6M parameters, dropout 0 to 0.3, two seeds each:
+none beats persistence, smaller models shrink the gap but not the best held-out
+loss (0.472-0.496 at every size), and seeds alone move the best checkpoint by up
+to 0.73 points. **Next:** the objective remedies, `--change-weight` and
+`--corrupt`, each alone and together, at 2.0M (dyn192x4, dropout 0.1), two seeds
+each, read against the r66 runs at that size.
+
+**Landed 2026-10-31 (r67): corruption helps the loss, not the gate; the change
+weight hurts.** Corruption lowers the best held-out loss from 0.475-0.478 to
+0.459-0.463 and delays overfitting (30% ran to the cap without a trip), but no
+checkpoint beats persistence. The change weight at 4 and 8 makes the model
+predict change too often and is dropped.
+
+**Landed 2026-10-31 (r68, `bench/ce_top1_probe.py`): the CE gain is earned
+where the argmax still loses.** Corruption roughly doubles the probability on
+the true token of cells that change (to about 0.24), which cuts their loss but
+rarely makes it the top guess, while static cells lose a little confidence.
+Where the model bets on a change it claims about 55% and is right about 35%, and
+half those cells never changed. More than half of all token changes (7.4 of 13.3
+points) are on fields whose pixels did not move - R1's spurious flips. Copying
+unless the model is confident, with the threshold held out, only ties
+persistence (-0.09 to +0.09 points, fold noise larger than that). **Next:** the
+lever is the target, not decoding or more corruption: measure what the spurious
+flips cost - score and train with them treated as "no change" - before another
+training sweep.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
