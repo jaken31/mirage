@@ -480,10 +480,16 @@ Where the model bets on a change it claims about 55% and is right about 35%, and
 half those cells never changed. More than half of all token changes (7.4 of 13.3
 points) are on fields whose pixels did not move - R1's spurious flips. Copying
 unless the model is confident, with the threshold held out, only ties
-persistence (-0.09 to +0.09 points, fold noise larger than that). **Next:** the
-lever is the target, not decoding or more corruption: measure what the spurious
-flips cost - score and train with them treated as "no change" - before another
-training sweep.
+persistence (-0.09 to +0.09 points, fold noise larger than that).
+
+**Landed 2026-10-31 (r69): the whole deficit is on quiet fields.** On the 12% of
+cells whose pixels moved, every trained checkpoint beats persistence (54% against
+51%), and training longer helps - the "overfit" final checkpoint is best there.
+Row 1 fails because on quiet fields the model changes 4-8% of tokens chasing R1's
+spurious flips. Copying every quiet field with that skill would clear row 1 by
+about half a point, an upper estimate. **Next:** train with each quiet-field
+target set to the previous token, inputs unchanged, so the model stops learning
+the flips; score it on raw row 1 as well as on moving fields.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
