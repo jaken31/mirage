@@ -125,7 +125,23 @@ def probe(st: dict, pop: dict, fold: np.ndarray) -> dict:
             "calibration": [[b / 10, round(float(st["p_max"][bins == b].mean()), 3),
                              round(float(hit[bins == b].mean()), 3), int((bins == b).sum())]
                             for b in range(10) if (bins == b).any()],
-            "copy_unless_confident": held_out(st, tgt, prev, fold)}
+            "copy_unless_confident": held_out(st, tgt, prev, fold),
+            "clean_target": clean_target(pred, tgt, prev, quiet)}
+
+
+def clean_target(pred: np.ndarray, tgt: np.ndarray, prev: np.ndarray, quiet: np.ndarray) -> dict:
+    """Row 1's measure with R1's spurious flips removed: on a quiet field the target is the
+    previous token. Also the measure on moving fields alone, where every target is real."""
+    clean = np.where(quiet, prev, tgt)
+    moving = ~quiet
+    return {"persistence": round(float((prev == clean).mean()), 5),
+            "acc": round(float((pred == clean).mean()), 5),
+            "margin": round(margin(pred, clean, prev, np.ones_like(quiet)), 3),
+            "moving_share": round(float(moving.mean()), 4),
+            "moving_persistence": round(float((prev == tgt)[moving].mean()), 4),
+            "moving_acc": round(float((pred == tgt)[moving].mean()), 4),
+            "moving_margin": round(margin(pred, tgt, prev, moving), 3),
+            "quiet_copy": round(float((pred == prev)[quiet].mean()), 4)}
 
 
 def main() -> None:
@@ -150,11 +166,13 @@ def main() -> None:
         model, meta = de.load_checkpoint(ROOT / "runs" / ck, cfg, dev)
         r = {"step": meta["step"], **probe(cell_stats(model, splits, lay, mask, dev), pop, fold)}
         res["runs"][ck] = r
-        c = r["copy_unless_confident"]
+        c, k = r["copy_unless_confident"], r["clean_target"]
         print(f"{ck} (step {r['step']:,}): last-frame CE {r['last_frame_ce']:.4f}  greedy "
               f"{r['greedy_margin']:+.2f} pts  bets {r['bets']['share']:.1%} conf "
               f"{r['bets']['mean_conf']:.2f} hit {r['bets']['hit_rate']:.2f}  held-out gated "
-              f"{c['held_out_margin']:+.3f} pts (delta {c['tune_0']['delta']}/{c['tune_1']['delta']})",
+              f"{c['held_out_margin']:+.3f} pts (delta {c['tune_0']['delta']}/{c['tune_1']['delta']})  "
+              f"clean target {k['margin']:+.2f} pts  moving fields {k['moving_acc']:.2%} vs "
+              f"{k['moving_persistence']:.2%} ({k['moving_margin']:+.2f})  quiet copy {k['quiet_copy']:.2%}",
               flush=True)
     if args.out:
         Path(args.out).write_text(json.dumps(res, indent=1))

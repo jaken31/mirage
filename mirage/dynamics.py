@@ -482,6 +482,46 @@ def change_weights(lay: Layout, tok: np.ndarray, factor: float) -> np.ndarray:
     return np.where(flat[:, lay.tgt] != flat[:, lay.tgt - lay.cells], factor, 1.0)
 
 
+def quiet_fields(splits: "TokenSplits", grid: tuple[int, int]) -> dict[int, np.ndarray]:
+    """Per episode of both splits, `(length, cells)` bool: no pixel of the cell's 15x15
+    field changed since the frame before (`token_stability_probe._field_changed`, on
+    frames flipped right side up as the cache is). Row 0 has no frame before: False.
+    """
+    if splits.shards is None:
+        raise ValueError("quiet fields need the shards' pixels")
+    probe = _bench_module("token_stability_probe")
+    cells = math.prod(grid)
+    out = {}
+    for sampler in (splits.train, splits.val):
+        for ep in sampler.windows.episodes:
+            px = np.ascontiguousarray(
+                splits.shards[ep.shard].pixels[ep.start:ep.start + ep.length, ::-1])
+            q = np.zeros((ep.length, cells), bool)
+            q[1:] = ~probe._field_changed(px, grid).reshape(ep.length - 1, cells)
+            out[ep.episode_id] = q
+    return out
+
+
+def window_quiet(windows: "TokenWindowSampler", idx: Iterable[int],
+                 quiet: dict[int, np.ndarray]) -> np.ndarray:
+    """`(B, ctx+1, cells)` rows of `quiet_fields` for windows `idx`, aligned with their tokens."""
+    got = [windows[int(i)] for i in idx]
+    return np.stack([quiet[w.episode_id][w.offset:w.offset + windows.window] for w in got])
+
+
+def clean_targets(lay: Layout, tok: np.ndarray, y: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """`assemble`'s targets `y` with every quiet-field target set to the frame before's token.
+
+    About 7.4% of last-frame cells change token on a field whose pixels did not
+    move - R1's spurious flips, which no model can predict and which training
+    on them teaches the model to bet on change (r68, r69). The inputs are left
+    as they are, so copying a quiet cell is exactly what persistence does on the
+    gate's raw targets. `tok` is `(B, ctx+1, cells)`, `q` is `window_quiet`'s.
+    """
+    flat, qf = tok.reshape(len(tok), -1), q.reshape(len(q), -1)
+    return np.where(qf[:, lay.tgt], flat[:, lay.tgt - lay.cells], y)
+
+
 def corrupt_inputs(x: torch.Tensor, codes: int, p: float) -> torch.Tensor:
     """`x` with each frame-token input replaced by a uniform random code with probability `p`.
 
@@ -553,6 +593,9 @@ DROPOUT = 0.1
 # default until a run shows they help; both are --flags.
 CHANGE_WEIGHT = 1.0
 CORRUPT = 0.0
+# Train on targets with R1's spurious flips held at the frame before's token
+# (`clean_targets`, r69). Off by default until a run shows it helps.
+CLEAN_FLIPS = False
 
 # Gate row 1's measure is scored every `EVAL_EVERY` steps on `EVAL_WINDOWS` val
 # windows drawn with `EVAL_SEED`, which are the mask measurement's 512 curve
@@ -619,14 +662,16 @@ def _autocast(dev: torch.device):
 
 @torch.no_grad()
 def score_windows(model: Dynamics, windows: TokenWindowSampler, idx: np.ndarray, lay: Layout,
-                  mask: torch.Tensor, dev: torch.device,
-                  batch: int = EVAL_BATCH) -> dict[str, np.ndarray]:
+                  mask: torch.Tensor, dev: torch.device, batch: int = EVAL_BATCH,
+                  quiet: dict[int, np.ndarray] | None = None) -> dict[str, np.ndarray]:
     """Held-out loss and gate row 1's measure on windows `idx`, one forward pass each.
 
     Per window: `ce`, the mean cross-entropy over all its frame targets - the
     training loss, measured in eval mode. Per cell of each window's last frame:
     `pred`, the model's greedy prediction; `target`, the true token; `prev`, the
-    token one frame earlier, which is what persistence predicts.
+    token one frame earlier, which is what persistence predicts. With `quiet`,
+    `ce` is over `clean_targets` - the loss a `--clean-flips` run trains - while
+    `target` stays the raw token gate row 1 scores.
 
     **`pred` is the generated next frame, not a teacher-forced one.** Under
     block-causal the layout stops before the window's last frame, so no cell of
@@ -642,7 +687,10 @@ def score_windows(model: Dynamics, windows: TokenWindowSampler, idx: np.ndarray,
                                         for k in ("pred", "target", "prev")}}
     for j in range(0, len(idx), batch):
         tok, act = _stack(windows, idx[j:j + batch])
-        x, y = (torch.from_numpy(a).to(dev) for a in assemble(lay, tok, act, codes))
+        xa, ya = assemble(lay, tok, act, codes)
+        if quiet is not None:
+            ya = clean_targets(lay, tok, ya, window_quiet(windows, idx[j:j + batch], quiet))
+        x, y = (torch.from_numpy(a).to(dev) for a in (xa, ya))
         with _autocast(dev):
             logits = model(x, mask, read)
         logits = logits.float()
@@ -757,14 +805,15 @@ def _environment(dev: torch.device) -> dict:
 # the environment and derived counts may differ, so resuming on another
 # machine stays possible (`fsq.train` draws the same line).
 RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
-                "dropout", "change_weight", "corrupt", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
+                "dropout", "change_weight", "corrupt", "clean_flips", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
                 "seq_len")
 # The value a knob had before it existed, for resuming a run that predates it.
-KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0}
+KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False}
 
 
 def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
-             mask: torch.Tensor, dev: torch.device) -> dict:
+             mask: torch.Tensor, dev: torch.device,
+             quiet: dict[int, np.ndarray] | None = None) -> dict:
     """The end-of-epoch pass: held-out loss over every val window, and the train/val gap.
 
     The train side is a fixed subset of as many train windows, scored the same
@@ -773,8 +822,9 @@ def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Lay
     same). The val pass also yields gate row 1's measure on the full population
     for free, so it is logged too.
     """
-    val = score_windows(model, splits.val, np.arange(len(splits.val)), lay, mask, dev)
-    train_ce = float(score_windows(model, splits.train, gap_idx, lay, mask, dev)["ce"].mean())
+    val = score_windows(model, splits.val, np.arange(len(splits.val)), lay, mask, dev, quiet=quiet)
+    train_ce = float(score_windows(model, splits.train, gap_idx, lay, mask, dev,
+                                   quiet=quiet)["ce"].mean())
     val_ce = float(val["ce"].mean())
     full = last_frame_summary(val["pred"], val["target"], val["prev"])
     return {"val_ce": val_ce, "train_ce": train_ce, "gap_ce": val_ce - train_ce,
@@ -785,7 +835,7 @@ def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Lay
 def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: float = LR,
           lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
           dropout: float = DROPOUT, change_weight: float = CHANGE_WEIGHT,
-          corrupt: float = CORRUPT, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
+          corrupt: float = CORRUPT, clean_flips: bool = CLEAN_FLIPS, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
           eval_windows: int = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
@@ -829,6 +879,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     lay = layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid))
     mask, read = attention_mask(lay).to(dev), torch.from_numpy(lay.read).to(dev)
     codes = cfg.tokenizer["codebook_size"]
+    quiet = quiet_fields(splits, tuple(cfg.shapes.token_grid)) if clean_flips else None
 
     torch.manual_seed(seed)   # immediately before `build`: the mask measurement's initial weights
     model = build(cfg, dropout).to(dev)
@@ -867,7 +918,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
               "dynamics_hash": cfg.dynamics_hash}
     knobs = dict(tokenizer_run=TOKENIZER_RUN, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
                  warmup=warmup, weight_decay=weight_decay, dropout=dropout,
-                 change_weight=change_weight, corrupt=corrupt, clip=clip, seed=seed,
+                 change_weight=change_weight, corrupt=corrupt, clean_flips=clean_flips,
+                 clip=clip, seed=seed,
                  eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
                  steps_per_epoch=per_epoch, seq_len=len(lay.src), targets=len(lay.tgt),
                  params=params, precision="bf16 autocast" if cuda else "fp32",
@@ -935,7 +987,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 peak["alloc"] = max(peak["alloc"], torch.cuda.max_memory_allocated(dev))
                 peak["reserved"] = max(peak["reserved"], torch.cuda.max_memory_reserved(dev))
                 monitor.phase = "eval"
-            sv = score_windows(model, splits.val, val_sub, lay, mask, dev)
+            sv = score_windows(model, splits.val, val_sub, lay, mask, dev, quiet=quiet)
             s = last_frame_summary(sv["pred"], sv["target"], sv["prev"])
             assert s["persistence"] == persistence, "the fixed windows moved"
             rec = {"step": step, "epoch": epoch, "val_acc_last": s["acc"], "persistence": persistence,
@@ -976,7 +1028,10 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 for g in opt.param_groups:
                     g["lr"] = lr_at(step)
                 tok, act = _stack(splits.train, order[s])
-                x, y = (torch.from_numpy(a).to(dev) for a in assemble(lay, tok, act, codes))
+                xa, ya = assemble(lay, tok, act, codes)
+                if quiet is not None:
+                    ya = clean_targets(lay, tok, ya, window_quiet(splits.train, order[s], quiet))
+                x, y = (torch.from_numpy(a).to(dev) for a in (xa, ya))
                 w = None if change_weight == 1.0 else \
                     torch.from_numpy(change_weights(lay, tok, change_weight)).to(dev)
                 if corrupt:
@@ -1003,7 +1058,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
             if cuda:
                 monitor.phase = "eval"
             rec = {"epoch": epoch, "step": step,
-                   **held_out(model, splits, gap_idx, lay, mask, dev),
+                   **held_out(model, splits, gap_idx, lay, mask, dev, quiet),
                    "ms_per_step_median": (round(1e3 * float(np.median(step_s)), 1)
                                           if step_s else None),
                    "timed_steps": len(step_s), "batch": batch, "gpu": gpu,
@@ -1065,6 +1120,8 @@ def main() -> None:
                     help="loss weight on target cells that changed from the frame before")
     ap.add_argument("--corrupt", type=float, default=CORRUPT,
                     help="share of input frame tokens replaced by random codes in training")
+    ap.add_argument("--clean-flips", action="store_true",
+                    help="train on targets with quiet-field token changes set to the frame before's")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue that run from its last per-epoch checkpoint; every "
@@ -1088,7 +1145,8 @@ def main() -> None:
         return
     train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
           weight_decay=args.weight_decay, dropout=args.dropout,
-          change_weight=args.change_weight, corrupt=args.corrupt, steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
+          change_weight=args.change_weight, corrupt=args.corrupt, clean_flips=args.clean_flips,
+          steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
 
 
 # ----------------------------------------------------------------- self-check
@@ -1541,6 +1599,14 @@ def _self_check() -> None:
     frame_in = xs < codes
     assert not hit[~frame_in].any(), "corruption touched an action"
     assert torch.equal(corrupt_inputs(xs, codes, 0.0), xs)
+    q = np.random.default_rng(3).random(tok.shape) < 0.5
+    ys = assemble(lay, tok, act, codes)[1]
+    yc = clean_targets(lay, tok, ys, q)
+    flat, qf = tok.reshape(len(tok), -1), q.reshape(len(q), -1)
+    assert np.array_equal(yc[qf[:, lay.tgt]], flat[:, lay.tgt - lay.cells][qf[:, lay.tgt]]), \
+        "a quiet target is not the frame before's token"
+    assert np.array_equal(yc[~qf[:, lay.tgt]], ys[~qf[:, lay.tgt]]), "a moving target changed"
+    assert np.array_equal(clean_targets(lay, tok, ys, np.zeros_like(q)), ys)
     rate = hit[frame_in].float().mean().item()
     assert 0.13 < rate < 0.16, rate   # 15% drawn, less the 1/512 that redraw the same code
     print(f"remedies: change weights land on exactly the changed cells; weighted loss is the "
