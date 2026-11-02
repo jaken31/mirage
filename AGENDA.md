@@ -495,9 +495,13 @@ the flips; score it on raw row 1 as well as on moving fields.
 time, on one seed.** The best checkpoint beats persistence by 0.17 points
 (1,726 cells) on the full population, where the same setting without it scored
 -0.16. Row 6 still fails: greedy rollouts freeze on 95% of generated frames
-against the truth's 20%. **Next:** seed 1 (training) confirms or refutes row 1;
-then the freeze is the open problem - decision 5's trigger, now on a model whose
-one-step score is real.
+against the truth's 20%.
+
+**Landed 2026-11-02 (r71): row 1 holds on seed 1**, best checkpoint +0.25
+points, final +0.08, where both seeds without the knob fail. Row 6 fails the
+same way (95% frozen). **Next:** the freeze - decision 5's trigger, now on a
+model whose one-step score is real. Re-measure temperature sampling on these
+checkpoints (`bench/temperature_probe.py`) before anything heavier.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
