@@ -491,6 +491,14 @@ about half a point, an upper estimate. **Next:** train with each quiet-field
 target set to the previous token, inputs unchanged, so the model stops learning
 the flips; score it on raw row 1 as well as on moving fields.
 
+**Landed 2026-11-01 (r70): `--clean-flips` passes gate row 1 for the first
+time, on one seed.** The best checkpoint beats persistence by 0.17 points
+(1,726 cells) on the full population, where the same setting without it scored
+-0.16. Row 6 still fails: greedy rollouts freeze on 95% of generated frames
+against the truth's 20%. **Next:** seed 1 (training) confirms or refutes row 1;
+then the freeze is the open problem - decision 5's trigger, now on a model whose
+one-step score is real.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
