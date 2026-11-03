@@ -166,6 +166,17 @@ the tokenizer checkpoint, the decode path or the `validator` continuity bounds d
 | `NUM-DYN-REF-CE` | **0.475-0.478** | Best held-out loss of r66's two dyn192x4, dropout 0.1 runs (0.4752, 0.4776): the reference r67's remedies are read against | r66, r67 | current, **dyn192x4 only** |
 | `NUM-DYN-CORRUPT-CE` | **0.4592** | Best held-out loss with input corruption at 30% (dyn192x4, dropout 0.1, seed 0) - the lowest of any run. 15% gives 0.4625-0.4629. No checkpoint of it beats persistence | r67 | current, **dyn192x4 only** |
 
+## Dynamics - clean-flip targets (`--clean-flips`)
+
+Training with every quiet-field target set to the previous token, inputs
+unchanged. Both rows are dyn192x4, dropout 0.1, 10-epoch cap, scored on the
+full val population `NUM-DYN-PERSIST-R1-ALL` names (persistence 86.686%).
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-DYN-CLEAN-MARGIN` | **+0.17 / +0.25 points** | Gate row 1 margin of `best.pt` over persistence, seed 0 (`20261101-211710-dyn`, +1,726 cells) and seed 1 (`20261101-214508-dyn`, +2,543 cells). The first runs to pass row 1; the same setting without the knob scored -0.16 and -0.60 (r66). Final checkpoints: -0.13 and +0.08 | r70, r71 | current, **dyn192x4, these two runs only** |
+| `NUM-DYN-ROLLOUT-FROZEN` | **95.3% / 94.7% vs 20.1%** | Gate row 6: share of greedy-rollout frames identical to the frame before, `best.pt` of seed 0 and seed 1, against the ground truth's share. Why row 6 still fails | r70, r71 | current, **greedy decoding, these two checkpoints only** |
+
 ## Dataset - the 96x96 fork
 
 | ID | Value | What it is | Source | Status |
