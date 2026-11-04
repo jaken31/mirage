@@ -39,7 +39,7 @@ which this probe checks holds on CUDA. Row 1 is untouched either way: it
 scores one-step predictions from true context, which decoding never reaches.
 
     python bench/temperature_probe.py --self-check      # no dataset, no GPU needed
-    python bench/temperature_probe.py RUN_ID [--temperatures 0 0.5 0.7 1.0] [--seed 0]
+    python bench/temperature_probe.py RUN_ID [--temperatures 0 0.5 0.7 1.0] [--seed 0] [--config PATH]
 """
 import argparse
 import json
@@ -87,8 +87,8 @@ def measure(frames: np.ndarray, truth: np.ndarray, ctx: int) -> dict:
 
 
 def run(run_id: str, temperatures: tuple[float, ...], seed: int,
-        runs_dir: Path = ROOT / "runs") -> dict:
-    cfg = config.load(CONFIG)
+        runs_dir: Path = ROOT / "runs", config_path: Path | str = CONFIG) -> dict:
+    cfg = config.load(config_path)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ctx, cells = cfg.data["ctx"], math.prod(cfg.shapes.token_grid)
     grid = tuple(cfg.shapes.token_grid)
@@ -179,11 +179,12 @@ def main() -> None:
     ap.add_argument("--temperatures", type=float, nargs="+", default=list(TEMPERATURES))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--json", metavar="PATH", help="also write the result here")
+    ap.add_argument("--config", default=str(CONFIG), help="the config the run was trained with")
     args = ap.parse_args()
     if args.self_check or not args.run_id:
         _self_check()
         return
-    out = run(args.run_id, tuple(args.temperatures), args.seed)
+    out = run(args.run_id, tuple(args.temperatures), args.seed, config_path=args.config)
     if args.json:
         Path(args.json).write_text(json.dumps(out, indent=2))
 
