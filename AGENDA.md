@@ -499,9 +499,20 @@ against the truth's 20%.
 
 **Landed 2026-11-02 (r71): row 1 holds on seed 1**, best checkpoint +0.25
 points, final +0.08, where both seeds without the knob fail. Row 6 fails the
-same way (95% frozen). **Next:** the freeze - decision 5's trigger, now on a
-model whose one-step score is real. Re-measure temperature sampling on these
-checkpoints (`bench/temperature_probe.py`) before anything heavier.
+same way (95% frozen).
+
+**Landed 2026-11-02 (r72): sampling still does not unfreeze rollouts.** At
+T 1.0 the frozen share falls under the truth's, but frames change a third as
+often as the truth's, a link drops out of whole windows, and rollout accuracy
+never beats holding the seed frame still. Greedy stays (decision 5).
+
+**Landed 2026-11-03 (r73): context corruption does not fix the freeze either.**
+`--clean-flips --corrupt 0.3` passes row 1 on both seeds (+0.09, +0.07 points)
+and fails row 6 the same way: 92.0% and 92.1% of generated frames frozen against
+the truth's 20.1%. Clean flips alone froze 90-95% depending on the checkpoint, so
+corruption moves nothing. **Next:** decision 7's second remedy, scheduled
+sampling - train on context the model generated itself, so it sees its own
+frozen frames and learns to move off them.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
