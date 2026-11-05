@@ -535,6 +535,40 @@ def corrupt_inputs(x: torch.Tensor, codes: int, p: float) -> torch.Tensor:
     return torch.where(hit, torch.randint_like(x, codes), x)
 
 
+def sample_inputs(model: "Dynamics", lay: Layout, x: torch.Tensor, mask: torch.Tensor,
+                  read: torch.Tensor, p: float) -> torch.Tensor:
+    """`x` with whole context frames replaced by the model's own greedy prediction of them.
+
+    Decision 7's second remedy, scheduled sampling, in its one-pass form: a
+    no-grad pass on the true context predicts every frame from the frames
+    before it, and each context frame after the first is swapped for that
+    prediction with probability `p`, per window and frame. The targets stay
+    true, so the model learns to recover from its own errors. Its own error is
+    staleness - one-step predictions freeze about a third of frames against the
+    truth's 22.5%, and rollouts compound that to 92-95% - which random
+    corruption (`corrupt_inputs`) does not imitate (r73). The pass runs in eval
+    mode, no dropout, as the rollout does. The rate is constant, not ramped.
+    """
+    frames = (lay.ctx + 1) * lay.cells
+    pos = np.full(frames, -1)
+    own = lay.src < frames
+    pos[lay.src[own]] = np.flatnonzero(own)
+    at = pos[lay.tgt]                       # input position of each target, -1 for the last frame
+    keep = np.flatnonzero(at >= 0)
+    was = model.training
+    model.eval()
+    with torch.no_grad(), _autocast(x.device):
+        pred = model(x, mask, read).argmax(-1)
+    model.train(was)
+    dev = x.device
+    at_t, keep_t = torch.from_numpy(at[keep]).to(dev), torch.from_numpy(keep).to(dev)
+    frame = torch.from_numpy(lay.tgt[keep] // lay.cells).to(dev)
+    hit = (torch.rand(len(x), lay.ctx + 1, device=dev) < p)[:, frame]
+    out = x.clone()
+    out[:, at_t] = torch.where(hit, pred[:, keep_t], x[:, at_t])
+    return out
+
+
 def check_block_causal(model: Dynamics, lay: Layout, mask: torch.Tensor, x: torch.Tensor,
                        positions: Iterable[int]) -> None:
     """Raise unless `model` under `mask` is block-causal over `lay`, altering each of `positions`.
@@ -596,6 +630,10 @@ CORRUPT = 0.0
 # Train on targets with R1's spurious flips held at the frame before's token
 # (`clean_targets`, r69). Off by default until a run shows it helps.
 CLEAN_FLIPS = False
+# Replace each context frame after the first, at this rate, by the model's own
+# one-step prediction of it (`sample_inputs`, decision 7's second remedy). Off by
+# default until a run shows it helps.
+SCHED_SAMPLE = 0.0
 
 # Gate row 1's measure is scored every `EVAL_EVERY` steps on `EVAL_WINDOWS` val
 # windows drawn with `EVAL_SEED`, which are the mask measurement's 512 curve
@@ -805,10 +843,10 @@ def _environment(dev: torch.device) -> dict:
 # the environment and derived counts may differ, so resuming on another
 # machine stays possible (`fsq.train` draws the same line).
 RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
-                "dropout", "change_weight", "corrupt", "clean_flips", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
+                "dropout", "change_weight", "corrupt", "clean_flips", "sched_sample", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
                 "seq_len")
 # The value a knob had before it existed, for resuming a run that predates it.
-KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False}
+KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False, "sched_sample": 0.0}
 
 
 def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
@@ -835,7 +873,8 @@ def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Lay
 def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: float = LR,
           lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
           dropout: float = DROPOUT, change_weight: float = CHANGE_WEIGHT,
-          corrupt: float = CORRUPT, clean_flips: bool = CLEAN_FLIPS, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
+          corrupt: float = CORRUPT, clean_flips: bool = CLEAN_FLIPS,
+          sched_sample: float = SCHED_SAMPLE, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
           eval_windows: int = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
@@ -919,7 +958,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     knobs = dict(tokenizer_run=TOKENIZER_RUN, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
                  warmup=warmup, weight_decay=weight_decay, dropout=dropout,
                  change_weight=change_weight, corrupt=corrupt, clean_flips=clean_flips,
-                 clip=clip, seed=seed,
+                 sched_sample=sched_sample, clip=clip, seed=seed,
                  eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
                  steps_per_epoch=per_epoch, seq_len=len(lay.src), targets=len(lay.tgt),
                  params=params, precision="bf16 autocast" if cuda else "fp32",
@@ -1034,6 +1073,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 x, y = (torch.from_numpy(a).to(dev) for a in (xa, ya))
                 w = None if change_weight == 1.0 else \
                     torch.from_numpy(change_weights(lay, tok, change_weight)).to(dev)
+                if sched_sample:
+                    x = sample_inputs(model, lay, x, mask, read, sched_sample)
                 if corrupt:
                     x = corrupt_inputs(x, codes, corrupt)
                 with _autocast(dev):
@@ -1122,6 +1163,8 @@ def main() -> None:
                     help="share of input frame tokens replaced by random codes in training")
     ap.add_argument("--clean-flips", action="store_true",
                     help="train on targets with quiet-field token changes set to the frame before's")
+    ap.add_argument("--sched-sample", type=float, default=SCHED_SAMPLE,
+                    help="share of context frames replaced by the model's own one-step prediction")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue that run from its last per-epoch checkpoint; every "
@@ -1146,6 +1189,7 @@ def main() -> None:
     train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
           weight_decay=args.weight_decay, dropout=args.dropout,
           change_weight=args.change_weight, corrupt=args.corrupt, clean_flips=args.clean_flips,
+          sched_sample=args.sched_sample,
           steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
 
 
@@ -1611,6 +1655,19 @@ def _self_check() -> None:
     assert 0.13 < rate < 0.16, rate   # 15% drawn, less the 1/512 that redraw the same code
     print(f"remedies: change weights land on exactly the changed cells; weighted loss is the "
           f"weighted mean; corruption hits {rate:.1%} of frame inputs at 15% and no action")
+    with torch.no_grad():
+        greedy = m64(x, mask, read).argmax(-1)[0]
+    assert torch.equal(sample_inputs(m64, lay, x, mask, read, 0.0), x)
+    xs1 = sample_inputs(m64, lay, x, mask, read, 1.0)[0]
+    moved = xs1 != x[0]
+    in_frame0 = torch.from_numpy(lay.block == 0) & torch.from_numpy(lay.src < cells)
+    assert not moved[torch.from_numpy(lay.src >= (lay.ctx + 1) * cells)].any(), "sampling touched an action"
+    assert not moved[in_frame0].any(), "sampling touched frame 0, which has no prediction"
+    for f in range(1, lay.ctx):
+        ins = torch.from_numpy(np.flatnonzero((lay.src >= f * cells) & (lay.src < (f + 1) * cells)))
+        assert torch.equal(xs1[ins], greedy[(f - 1) * cells:f * cells]), f"frame {f} is not its prediction"
+    print("scheduled sampling: at rate 1 every context frame after the first is the model's own "
+          "greedy prediction of it; frame 0 and the actions are untouched; rate 0 is the identity")
     del m64
 
     # ---- training (item 4): no data needed
