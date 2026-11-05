@@ -514,6 +514,14 @@ corruption moves nothing. **Next:** decision 7's second remedy, scheduled
 sampling - train on context the model generated itself, so it sees its own
 frozen frames and learns to move off them.
 
+**Landed 2026-11-05 (r74): scheduled sampling does not fix the freeze.**
+`--clean-flips --sched-sample 0.25` passes row 1 narrowly on both seeds (+0.11,
++0.02 points) and fails row 6 like every remedy before it: 92.1% and 91.2% of
+generated frames frozen against the truth's 20.1%. Final checkpoints sit at or
+under persistence. Sampling, corruption and scheduled sampling all leave the
+freeze in place, so decision 7's remedy list is spent. **Next:** find what holds
+rollouts still before trying another remedy.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
