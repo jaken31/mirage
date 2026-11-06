@@ -957,15 +957,18 @@ a random subset of the 15 target frames per window, not a shorter epoch cap.
 
 ### Rollout: K rounds per frame
 
-Per step: the context stream runs once and its per-layer keys and values are
-kept; the query block starts all `[MASK]`; then K rounds, each a pass of the 64
-query positions only against the cached context. In round `k` (1..K), every
-still-masked cell gets a code (argmax at temperature 0, else sampled from a
-seeded `torch.Generator`) and a confidence, the probability of that code. The
-most confident are committed so that `ceil(64 * cos(pi/2 * k/K))` cells stay
-masked; round K commits the rest. Committed cells are never revised (Copilot4D's
-revisable sampling is a later addition, see the trigger). Self-check: the
-cached query pass equals the full 1,935-position forward pass.
+Per step, the model reads the context stream plus the frame's one query block
+(1,039 positions at `ctx` 15; query blocks never see each other, so dropping
+the other 14 changes no logit of the last frame - self-checked against the full
+1,935-position layout). The query block starts all `[MASK]`, then K rounds, each
+a full pass. In round `k` (1..K), every still-masked cell gets a code (argmax at
+temperature 0, else sampled from a seeded `torch.Generator`) and a confidence,
+the model's probability of that code. The most confident are committed so that
+`floor(64 * cos(pi/2 * k/K))` cells stay masked, held to at least one commit a
+round; round K commits the rest (`dynamics.unmask_schedule`). Committed cells
+are never revised (Copilot4D's revisable sampling is a later addition, see the
+trigger). A step costs K passes of about today's length, so no key/value cache
+was built: K=16 is about 16x today's rollout time.
 
 **K=1 is today's model's information set.** One round from an all-`[MASK]`
 query block: each cell sees every earlier frame and `action[t+1]`, and the

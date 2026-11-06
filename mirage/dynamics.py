@@ -205,6 +205,81 @@ def layout(ctx: int, cells: int) -> Layout:
     return Layout(ctx, cells, src, read, tgt, t)
 
 
+class MaskLayout(NamedTuple):
+    """The K-round model's arrangement: today's context stream, then a query block per target frame.
+
+    `src` and `block` are `layout`'s context stream unchanged, so position `p <
+    len(src)` holds exactly what it holds in the one-pass model. After it, one
+    64-position query block per frame in `frames` holds that frame's own tokens,
+    each revealed or `[MASK]`; `read` is those positions, `tgt` their pool slots,
+    and `qframe` each one's frame. `pos` is every position's RoPE index: the
+    context's own, and for query cell `i` of frame `f`, the index of the context
+    slot frame `f`'s cell `i` occupies (`f * (cells + 1) + i`), so a query sits
+    just after `action[f]` in relative distance (`world_model_architecture.md`,
+    "Phase 2 decision: a frame is decoded in K masked rounds, not one pass").
+    """
+    ctx: int
+    cells: int
+    src: np.ndarray     # (n,) the context stream's pool indices, `layout`'s
+    read: np.ndarray    # (R,) the query positions, n .. n + R - 1
+    tgt: np.ndarray     # (R,) pool index of each query cell's token
+    block: np.ndarray   # (n,) the context stream's attention blocks, `layout`'s
+    pos: np.ndarray     # (n + R,) RoPE index of every position
+    qframe: np.ndarray  # (R,) the frame each query cell belongs to, 1..ctx
+
+
+def mask_layout(ctx: int, cells: int, frames: Iterable[int] | None = None) -> MaskLayout:
+    """The K-round layout of a `ctx + 1`-frame window, with query blocks for `frames` (default 1..ctx).
+
+    Training gives every target frame a query block; scoring and rollout give
+    only the last one (`scoring_layout`), because query blocks never see each
+    other and so the last frame's logits are the same either way (`_self_check`).
+    """
+    base = layout(ctx, cells)
+    frames = np.arange(1, ctx + 1) if frames is None else np.asarray(list(frames))
+    if len(frames) == 0 or len(set(frames.tolist())) != len(frames) or frames.min() < 1 or frames.max() > ctx:
+        raise ValueError(f"query frames {frames.tolist()} are not distinct frames in 1..{ctx}")
+    n, i = len(base.src), np.tile(np.arange(cells), len(frames))
+    qframe = np.repeat(frames, cells)
+    return MaskLayout(ctx, cells, base.src, n + np.arange(len(qframe)), qframe * cells + i,
+                      base.block, np.concatenate((np.arange(n), qframe * (cells + 1) + i)), qframe)
+
+
+def scoring_layout(model: nn.Module, ctx: int, cells: int) -> "Layout | MaskLayout":
+    """The layout one pass predicts a window's last frame through, for `model`'s decoding.
+
+    One-pass: `layout`. K-round: the context stream and the last frame's query
+    block only, 1,039 positions at `ctx` 15, which gate row 1 scores with every
+    query cell masked and the rollout fills in `rounds` passes.
+    """
+    if getattr(model, "mask_id", None) is None:
+        return layout(ctx, cells)
+    return mask_layout(ctx, cells, [ctx])
+
+
+def seq_len(lay: "Layout | MaskLayout") -> int:
+    """Input positions a layout feeds the model."""
+    return len(lay.pos) if isinstance(lay, MaskLayout) else len(lay.src)
+
+
+def unmask_schedule(cells: int, rounds: int) -> list[int]:
+    """How many cells stay masked after each of `rounds` rounds: MaskGIT's cosine.
+
+    `floor(cells * cos(pi/2 * r / rounds))` after round `r`, held to at least
+    one commit a round and to enough masked cells that every later round still
+    commits one; 0 after the last. One round commits all `cells` at once.
+    """
+    if not 1 <= rounds <= cells:
+        raise ValueError(f"{rounds} rounds for {cells} cells; it takes 1 to {cells}")
+    out, prev = [], cells
+    for r in range(1, rounds + 1):
+        m = math.floor(cells * math.cos(math.pi / 2 * r / rounds))
+        m = max(min(m, prev - 1), rounds - r)
+        out.append(m)
+        prev = m
+    return out
+
+
 def assemble(lay: Layout, tokens: np.ndarray, actions: np.ndarray,
              codes: int) -> tuple[np.ndarray, np.ndarray]:
     """Tokens `(..., ctx+1, cells)` and actions `(..., ctx+1)` -> inputs `(..., L)`, targets `(..., R)`.
@@ -383,12 +458,16 @@ class Dynamics(nn.Module):
     """
 
     def __init__(self, d_model: int, n_layers: int, n_heads: int, mlp_ratio: int,
-                 codes: int, max_len: int, rope_base: float, dropout: float = 0.0) -> None:
+                 codes: int, max_len: int, rope_base: float, dropout: float = 0.0,
+                 mask_token: bool = False) -> None:
         super().__init__()
         if d_model % n_heads or (d_model // n_heads) % 2:
             raise ValueError(f"d_model {d_model} over {n_heads} heads is not an even head width, "
                              f"which RoPE's channel pairs need")
-        self.embed = nn.Embedding(codes + N_ACTIONS, d_model)
+        # The K-round model's learned `[MASK]` is one more input id, after the
+        # actions; it is never a target, because the head outputs codes only.
+        self.mask_id = codes + N_ACTIONS if mask_token else None
+        self.embed = nn.Embedding(codes + N_ACTIONS + int(mask_token), d_model)
         self.drop = nn.Dropout(dropout)   # on the embeddings, GPT-2's fourth site
         self.blocks = nn.ModuleList([Block(d_model, n_heads, mlp_ratio, dropout)
                                      for _ in range(n_layers)])
@@ -407,12 +486,22 @@ class Dynamics(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, tok: torch.Tensor, mask: torch.Tensor,
-                read: torch.Tensor) -> torch.Tensor:
-        """`(B, L)` ids, an `(L, L)` mask and `(R,)` positions -> `(B, R, codes)` logits there."""
+                read: torch.Tensor, pos: torch.Tensor | None = None) -> torch.Tensor:
+        """`(B, L)` ids, an `(L, L)` mask and `(R,)` positions -> `(B, R, codes)` logits there.
+
+        `pos`, `(L,)`, is each position's RoPE index; None is `0 .. L-1`, the
+        one-pass layout. The K-round layout passes `MaskLayout.pos`.
+        """
         n = tok.shape[1]
-        if n > len(self.cos):
-            raise ValueError(f"{n} positions, but the RoPE tables hold {len(self.cos)}")
-        cos, sin = self.cos[:n], self.sin[:n]
+        top = n if pos is None else int(pos.max()) + 1
+        if top > len(self.cos):
+            raise ValueError(f"RoPE index {top - 1}, but the RoPE tables hold {len(self.cos)}")
+        if pos is None:
+            cos, sin = self.cos[:n], self.sin[:n]
+        else:
+            if pos.shape != (n,):
+                raise ValueError(f"{tuple(pos.shape)} RoPE indices for {n} positions")
+            cos, sin = self.cos[pos], self.sin[pos]
         x = self.drop(self.embed(tok))
         for blk in self.blocks:
             x = blk(x, mask, cos, sin)
@@ -431,9 +520,34 @@ def build(cfg: config.Config, dropout: float = 0.0) -> Dynamics:
         if dyn[key] != want:
             raise ValueError(f"dynamics.{key} is {dyn[key]!r}; mirage.dynamics implements "
                              f"only {want!r}")
-    max_len = len(layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid)).src)
+    ctx, cells = cfg.data["ctx"], math.prod(cfg.shapes.token_grid)
+    mg = is_maskgit(cfg)
+    max_len = int(mask_layout(ctx, cells).pos.max()) + 1 if mg else len(layout(ctx, cells).src)
     return Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"], dyn["mlp_ratio"],
-                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"], dropout)
+                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"], dropout, mg)
+
+
+def is_maskgit(cfg: config.Config) -> bool:
+    """True if `cfg` names the K-round masked model (`dynamics.frame_decoding`)."""
+    return config.setting(cfg, "dynamics", "frame_decoding") == "maskgit"
+
+
+def mask_queries(y: torch.Tensor, cells: int, mask_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Training's query inputs: each target frame of `y`, `(B, R)`, with its own share of cells masked.
+
+    Per frame, MaskGIT's cosine: `ratio = cos(pi/2 * u)`, `u ~ U[0, 1)`, and
+    `ceil(ratio * cells)` cells - at least one - drawn uniformly are set to
+    `mask_id`. Returns the inputs and the `(B, R)` bool of masked cells, which
+    is where the loss is scored. Draws from torch's generator on `y`'s device,
+    which resume restores.
+    """
+    b, r = y.shape
+    f = r // cells
+    u = torch.rand(b, f, 1, device=y.device)
+    n = torch.ceil(cells * torch.cos(math.pi / 2 * u)).clamp(min=1)
+    rank = torch.rand(b, f, cells, device=y.device).argsort(-1).argsort(-1)
+    hidden = (rank < n).reshape(b, r)
+    return torch.where(hidden, torch.full_like(y, mask_id), y), hidden
 
 
 def attention_mask(lay: Layout) -> torch.Tensor:
@@ -441,13 +555,26 @@ def attention_mask(lay: Layout) -> torch.Tensor:
 
     Full attention inside a block, causal across blocks. A shorter context's
     mask is the top-left corner of a longer one's, because blocks never move.
+
+    For a `MaskLayout`, the context rows are that mask and never see a query;
+    query frame `f`'s rows see context blocks up to `f - 1` (every earlier frame
+    and `action[f]`) and all of frame `f`'s own query block, both ways.
     """
     blk = torch.from_numpy(lay.block)
-    return blk[None, :] <= blk[:, None]
+    m = blk[None, :] <= blk[:, None]
+    if not isinstance(lay, MaskLayout):
+        return m
+    n, qf = len(lay.src), torch.from_numpy(lay.qframe)
+    out = torch.zeros(len(lay.pos), len(lay.pos), dtype=torch.bool)
+    out[:n, :n] = m
+    out[n:, :n] = blk[None, :] <= qf[:, None] - 1
+    out[n:, n:] = qf[None, :] == qf[:, None]
+    return out
 
 
 def frame_loss(model: Dynamics, x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor,
-               read: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
+               read: torch.Tensor, weight: torch.Tensor | None = None,
+               pos: torch.Tensor | None = None) -> torch.Tensor:
     """Mean cross-entropy over a batch's frame targets, and at no other position.
 
     `weight`, `(B, R)`, makes it a weighted mean, sum(w * ce) / sum(w), so the
@@ -461,8 +588,11 @@ def frame_loss(model: Dynamics, x: torch.Tensor, y: torch.Tensor, mask: torch.Te
     the whole loss mask, and why there is no clamp: the sizing probe's
     cross-entropy over every position with `clamp(max=511)` would train action
     ids 512-520 as code 511.
+
+    The K-round model passes its layout's `pos` and, as `weight`, the masked
+    cells (`mask_queries`), so the loss is the mean over masked cells only.
     """
-    logits = model(x, mask, read)
+    logits = model(x, mask, read, pos)
     if weight is None:
         return F.cross_entropy(logits.flatten(0, 1).float(), y.flatten())
     ce = F.cross_entropy(logits.flatten(0, 1).float(), y.flatten(), reduction="none")
@@ -600,6 +730,44 @@ def check_block_causal(model: Dynamics, lay: Layout, mask: torch.Tensor, x: torc
                              f"which should attend to it")
 
 
+def check_mask_causal(model: Dynamics, lay: MaskLayout, mask: torch.Tensor, x: torch.Tensor,
+                      positions: Iterable[int]) -> None:
+    """Raise unless `model` under `mask` keeps the K-round layout's information flow.
+
+    Altering a context position in block `b` must move exactly the context
+    logits from block `b` on and the query logits of frames after `b` - frame
+    `f` sees blocks up to `f - 1`, so the frame whose clean tokens sit in block
+    `b` never sees them. Altering a query cell of frame `f` must move exactly
+    frame `f`'s query logits: no context logit, no other frame's.
+    """
+    positions = list(positions)
+    if x.shape[0] != 1:
+        raise ValueError(f"one sequence to alter, not a batch of {x.shape[0]}")
+    n, length = len(lay.src), len(lay.pos)
+    read, pos = torch.arange(length), torch.from_numpy(lay.pos)
+    # One sequence per pass: at this length CPU attention gives two identical
+    # rows of one batch logits that differ in the last bit, which would read as
+    # a leak.
+    with torch.no_grad():
+        ref = model(x, mask, read, pos)[0]
+    for p in positions:
+        y = x.clone()
+        y[0, p] = (y[0, p] + 1) % model.embed.num_embeddings
+        with torch.no_grad():
+            moved = (model(y, mask, read, pos)[0] != ref).any(-1).numpy()
+        if p < n:
+            want = np.concatenate((lay.block >= lay.block[p], lay.qframe > lay.block[p]))
+        else:
+            f = lay.qframe[p - n]
+            want = np.concatenate((np.zeros(n, bool), lay.qframe == f))
+        if (moved & ~want).any():
+            raise ValueError(f"altering position {p} moved position {int(np.flatnonzero(moved & ~want)[0])}, "
+                             f"which must not see it")
+        if (want & ~moved).any():
+            raise ValueError(f"altering position {p} left position {int(np.flatnonzero(want & ~moved)[0])} "
+                             f"unchanged, which should see it")
+
+
 # ------------------------------------------------------------------- training
 
 # Decision 4a, the first run's stopping rule: a 10-epoch cap, or a trip when
@@ -716,11 +884,19 @@ def score_windows(model: Dynamics, windows: TokenWindowSampler, idx: np.ndarray,
     it is in the input at all (`_self_check` asserts that changing it leaves the
     input unchanged), and one pass is the whole generation - the mask
     measurement confirmed generated equals this pass exactly (r54).
+
+    **The K-round model** is scored through `scoring_layout`'s layout, the last
+    frame's query block appended with every cell `[MASK]`: one round, K=1, which
+    sees what the one-pass model sees. `ce` is then over that frame's cells.
     """
     was = model.training
     model.eval()
     codes, cells = model.head.out_features, lay.cells
     read = torch.from_numpy(lay.read).to(dev)
+    mg = isinstance(lay, MaskLayout)
+    if mg and (model.mask_id is None or not np.array_equal(lay.qframe, np.full(cells, lay.ctx))):
+        raise ValueError("score a K-round model through scoring_layout's layout")
+    pos = torch.from_numpy(lay.pos).to(dev) if mg else None
     out = {"ce": np.empty(len(idx)), **{k: np.empty((len(idx), cells), np.int64)
                                         for k in ("pred", "target", "prev")}}
     for j in range(0, len(idx), batch):
@@ -729,8 +905,10 @@ def score_windows(model: Dynamics, windows: TokenWindowSampler, idx: np.ndarray,
         if quiet is not None:
             ya = clean_targets(lay, tok, ya, window_quiet(windows, idx[j:j + batch], quiet))
         x, y = (torch.from_numpy(a).to(dev) for a in (xa, ya))
+        if mg:
+            x = torch.cat((x, torch.full((len(x), cells), model.mask_id, dtype=x.dtype, device=dev)), 1)
         with _autocast(dev):
-            logits = model(x, mask, read)
+            logits = model(x, mask, read, pos)
         logits = logits.float()
         part = slice(j, j + len(tok))
         out["ce"][part] = F.cross_entropy(logits.transpose(1, 2), y,
@@ -844,9 +1022,10 @@ def _environment(dev: torch.device) -> dict:
 # machine stays possible (`fsq.train` draws the same line).
 RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
                 "dropout", "change_weight", "corrupt", "clean_flips", "sched_sample", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
-                "seq_len")
+                "seq_len", "mask_schedule")
 # The value a knob had before it existed, for resuming a run that predates it.
-KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False, "sched_sample": 0.0}
+KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False, "sched_sample": 0.0,
+            "mask_schedule": None}
 
 
 def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
@@ -915,8 +1094,18 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     cuda = dev.type == "cuda"
     runs_dir = Path(runs_dir)
     splits = splits or load_splits(cfg)
-    lay = layout(cfg.data["ctx"], math.prod(cfg.shapes.token_grid))
+    ctx, cells = cfg.data["ctx"], math.prod(cfg.shapes.token_grid)
+    mg = is_maskgit(cfg)
+    if mg and sched_sample:
+        raise ValueError("scheduled sampling is the one-pass model's remedy; the K-round model "
+                         "has no one-pass prediction of its context frames to swap in")
+    # The K-round model trains with a query block per target frame and is
+    # scored (gate row 1, held-out loss) through the last frame's alone, K=1.
+    lay = mask_layout(ctx, cells) if mg else layout(ctx, cells)
     mask, read = attention_mask(lay).to(dev), torch.from_numpy(lay.read).to(dev)
+    pos = torch.from_numpy(lay.pos).to(dev) if mg else None
+    ev = mask_layout(ctx, cells, [ctx]) if mg else lay
+    ev_mask = attention_mask(ev).to(dev) if mg else mask
     codes = cfg.tokenizer["codebook_size"]
     quiet = quiet_fields(splits, tuple(cfg.shapes.token_grid)) if clean_flips else None
 
@@ -960,7 +1149,9 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                  change_weight=change_weight, corrupt=corrupt, clean_flips=clean_flips,
                  sched_sample=sched_sample, clip=clip, seed=seed,
                  eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
-                 steps_per_epoch=per_epoch, seq_len=len(lay.src), targets=len(lay.tgt),
+                 steps_per_epoch=per_epoch, seq_len=seq_len(lay), targets=len(lay.tgt),
+                 frame_decoding="maskgit" if mg else "one_pass",
+                 mask_schedule="cosine per frame" if mg else None,
                  params=params, precision="bf16 autocast" if cuda else "fp32",
                  train_windows=len(splits.train), val_windows=len(splits.val),
                  action_changes=splits.train.action_changes + splits.val.action_changes,
@@ -1002,7 +1193,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                              f"decision (decision 4a), not a resume")
         print(f"resumed {resume} after epoch {start}/{epochs}")
 
-    print(f"dynamics: {params:,} parameters, {len(lay.src)} positions, {len(splits.train):,} train "
+    print(f"dynamics: {params:,} parameters, {seq_len(lay)} positions, {len(splits.train):,} train "
           f"/ {len(splits.val):,} val windows, {per_epoch:,} steps/epoch x {epochs} at batch "
           f"{batch} on {dev} ({knobs['precision']})")
     print(f"  gate row 1 every {eval_every:,} steps on {eval_windows:,} fixed val windows, "
@@ -1026,7 +1217,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                 peak["alloc"] = max(peak["alloc"], torch.cuda.max_memory_allocated(dev))
                 peak["reserved"] = max(peak["reserved"], torch.cuda.max_memory_reserved(dev))
                 monitor.phase = "eval"
-            sv = score_windows(model, splits.val, val_sub, lay, mask, dev, quiet=quiet)
+            sv = score_windows(model, splits.val, val_sub, ev, ev_mask, dev, quiet=quiet)
             s = last_frame_summary(sv["pred"], sv["target"], sv["prev"])
             assert s["persistence"] == persistence, "the fixed windows moved"
             rec = {"step": step, "epoch": epoch, "val_acc_last": s["acc"], "persistence": persistence,
@@ -1068,6 +1259,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                     g["lr"] = lr_at(step)
                 tok, act = _stack(splits.train, order[s])
                 xa, ya = assemble(lay, tok, act, codes)
+                raw = ya
                 if quiet is not None:
                     ya = clean_targets(lay, tok, ya, window_quiet(splits.train, order[s], quiet))
                 x, y = (torch.from_numpy(a).to(dev) for a in (xa, ya))
@@ -1075,10 +1267,16 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                     torch.from_numpy(change_weights(lay, tok, change_weight)).to(dev)
                 if sched_sample:
                     x = sample_inputs(model, lay, x, mask, read, sched_sample)
-                if corrupt:
+                if corrupt:   # the context only: query blocks are appended after
                     x = corrupt_inputs(x, codes, corrupt)
+                if mg:
+                    # Revealed query cells hold the raw tokens, as a rollout's
+                    # committed cells hold its own; the loss is on the masked ones.
+                    q, hidden = mask_queries(torch.from_numpy(raw).to(dev), cells, model.mask_id)
+                    x = torch.cat((x, q), 1)
+                    w = hidden.float() if w is None else w * hidden
                 with _autocast(dev):
-                    loss = frame_loss(model, x, y, mask, read, w)
+                    loss = frame_loss(model, x, y, mask, read, w, pos)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 gnorm = float(nn.utils.clip_grad_norm_(model.parameters(), clip))
@@ -1099,7 +1297,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
             if cuda:
                 monitor.phase = "eval"
             rec = {"epoch": epoch, "step": step,
-                   **held_out(model, splits, gap_idx, lay, mask, dev, quiet),
+                   **held_out(model, splits, gap_idx, ev, ev_mask, dev, quiet),
                    "ms_per_step_median": (round(1e3 * float(np.median(step_s)), 1)
                                           if step_s else None),
                    "timed_steps": len(step_s), "batch": batch, "gpu": gpu,
@@ -1173,6 +1371,10 @@ def main() -> None:
     ap.add_argument("--eval", metavar="RUN_ID",
                     help="the gate table for that run (mirage.dynamics_eval); exits 1 if a "
                          "pass/fail row misses")
+    ap.add_argument("--rounds", type=int,
+                    help="with --eval on a K-round model: decoding rounds per frame (default 1)")
+    ap.add_argument("--temperature", type=float, default=0.0,
+                    help="with --eval on a K-round model: sampling temperature, seeded (default 0)")
     ap.add_argument("--checkpoint", choices=("best", "final"), default="best",
                     help="with --eval: best.pt, kept by gate row 1's measure (default), or the "
                          "last per-epoch model.pt")
@@ -1181,7 +1383,8 @@ def main() -> None:
         # Imported here: `dynamics_eval` imports this file. Nonzero exit when a
         # pass/fail row misses, as `python -m mirage.fsq --eval` does.
         from mirage import dynamics_eval
-        out = dynamics_eval.evaluate(args.eval, config.load(args.config), args.checkpoint)
+        out = dynamics_eval.evaluate(args.eval, config.load(args.config), args.checkpoint,
+                                     rounds=args.rounds, temperature=args.temperature)
         raise SystemExit(1 if out["failed_rows"] else 0)
     if not args.train:
         _self_check()
@@ -1439,6 +1642,120 @@ def _check_training(base: config.Config) -> None:
               "of 10, across a resume at 6; the final record says trip, epoch 7")
 
 
+def _check_maskgit(base: config.Config) -> None:
+    """The K-round model on CPU without data: its layout, schedule, mask, loss and training."""
+    codes, cells, ctx = 512, 64, base.data["ctx"]
+    one, lay = layout(ctx, cells), mask_layout(ctx, cells)
+    n = len(one.src)
+    assert n == 975 and seq_len(lay) == 1935 == n + 960 and int(lay.pos.max()) == 1038
+    # The context stream is the one-pass layout, position for position.
+    assert np.array_equal(lay.src, one.src) and np.array_equal(lay.block, one.block)
+    assert np.array_equal(lay.pos[:n], np.arange(n)) and np.array_equal(lay.tgt, one.tgt)
+    # A query cell's RoPE index is the context slot its token occupies one
+    # block later; the last frame has none, so it continues the stream's stride.
+    qpos = lay.pos[lay.read]
+    inside = qpos < n
+    assert inside.sum() == (ctx - 1) * cells
+    assert np.array_equal(lay.src[qpos[inside]], lay.tgt[inside]), "a query is not at its token's slot"
+    assert np.array_equal(qpos[~inside], ctx * (cells + 1) + np.arange(cells))
+    for bad in ([0], [ctx + 1], [3, 3], []):
+        assert _refused(mask_layout, ctx, cells, bad), bad
+    for k in (1, 2, 4, 8, 16, 64):
+        sch = unmask_schedule(cells, k)
+        assert len(sch) == k and sch[-1] == 0 and all(a > b for a, b in zip([cells] + sch, sch)), (k, sch)
+    assert unmask_schedule(cells, 1) == [0] and unmask_schedule(cells, 2) == [45, 0]
+    assert _refused(unmask_schedule, cells, 0) and _refused(unmask_schedule, cells, cells + 1)
+    print(f"maskgit layout: the one-pass context stream ({n} positions) then 15 query blocks, "
+          f"{seq_len(lay)} positions; each query at its token's RoPE slot; cosine schedule "
+          f"commits all {cells} cells in K rounds, at least one a round")
+
+    mg = dataclasses.replace(base, dynamics={**base.dynamics, "frame_decoding": "maskgit"})
+    assert is_maskgit(mg) and not is_maskgit(base)
+    torch.manual_seed(0)
+    model = build(mg)
+    params = sum(p.numel() for p in model.parameters())
+    assert params == SIZED_PARAMS + base.dynamics["d_model"], params
+    assert model.mask_id == codes + N_ACTIONS and len(model.cos) == 1039
+    assert build(base).mask_id is None
+    del model
+
+    mask = attention_mask(lay)
+    assert torch.equal(mask[:n, :n], attention_mask(one)) and not mask[:n, n:].any()
+    m64 = build(mg).double().eval()
+    rng = np.random.default_rng(5)
+    tok = rng.integers(0, codes, (1, ctx + 1, cells))
+    act = rng.integers(0, N_ACTIONS, (1, ctx + 1))
+    xa, ya = (torch.from_numpy(a) for a in assemble(lay, tok, act, codes))
+    torch.manual_seed(1)
+    q, hidden = mask_queries(ya, cells, m64.mask_id)
+    x = torch.cat((xa, q), 1)
+    probes = (0, 64, 500, 974, n, n + 63, n + 64, n + 959)
+    check_mask_causal(m64, lay, mask, x, probes)
+    blk, qf = torch.from_numpy(lay.block), torch.from_numpy(lay.qframe)
+    wrong = {name: mask.clone() for name in ("query sees its own frame's context",
+             "causal inside a query block", "context sees queries", "queries see other frames")}
+    wrong["query sees its own frame's context"][n:, :n] = blk[None, :] <= qf[:, None]
+    wrong["causal inside a query block"][n:, n:] &= torch.ones(960, 960, dtype=torch.bool).tril()
+    wrong["context sees queries"][:n, n:] = True
+    wrong["queries see other frames"][n:, n:] = True
+    for name, bad in wrong.items():
+        assert _refused(check_mask_causal, m64, lay, bad, x, probes), f"passed with {name}"
+    print(f"maskgit causality: positions {', '.join(map(str, probes))} move exactly what may "
+          f"see them; fails with {', '.join(wrong)}")
+
+    # Scoring through the last frame's query block alone is the full layout's
+    # last frame, because query blocks never see each other.
+    ev = scoring_layout(m64, ctx, cells)
+    assert isinstance(ev, MaskLayout) and np.array_equal(ev.qframe, np.full(cells, ctx))
+    pos = torch.from_numpy(lay.pos)
+    read = torch.from_numpy(lay.read)
+    all_masked = torch.full((1, 960), m64.mask_id)
+    with torch.no_grad():
+        full = m64(torch.cat((xa, all_masked), 1), mask, read, pos)[:, -cells:]
+        alone = m64(torch.cat((xa, all_masked[:, :cells]), 1), attention_mask(ev),
+                    torch.from_numpy(ev.read), torch.from_numpy(ev.pos))
+    assert torch.allclose(full, alone, atol=1e-10), "the last frame's logits depend on other query blocks"
+
+    # The mask draw: revealed cells keep their token, at least one masked a frame,
+    # and the cosine's share - E[ceil(64 cos(pi u / 2))] / 64 is about 64.4%.
+    yy = torch.randint(0, codes, (4096, 960))
+    qq, hh = mask_queries(yy, cells, m64.mask_id)
+    per = hh.reshape(4096, ctx, cells).sum(-1)
+    assert torch.equal(qq[~hh], yy[~hh]) and (qq[hh] == m64.mask_id).all()
+    assert int(per.min()) >= 1 and int(per.max()) == cells
+    share, whole = float(hh.float().mean()), float((per == cells).float().mean())
+    assert 0.63 < share < 0.66 and 0.10 < whole < 0.13, (share, whole)
+    # The loss is the mean over masked cells only.
+    with torch.no_grad():
+        got = frame_loss(m64, x, ya, mask, read, hidden.double(), pos)
+        ce = F.cross_entropy(m64(x, mask, read, pos)[0].float(), ya[0], reduction="none")
+    assert torch.allclose(got, ce[hidden[0]].mean()), "the loss read unmasked cells"
+    print(f"maskgit training draw: {share:.1%} of cells masked, {whole:.1%} of frames whole, "
+          f"revealed cells unchanged; loss over masked cells only; the last frame scored alone "
+          f"equals the full layout's")
+    del m64
+
+    tiny = dataclasses.replace(mg, dynamics={**mg.dynamics, "d_model": 16, "n_layers": 1, "n_heads": 2})
+    splits = TokenSplits(_Synthetic(12, ctx, cells, codes, 0), _Synthetic(4, ctx, cells, codes, 1), None)
+    common = dict(epochs=2, batch=2, steps_per_epoch=2, eval_every=1, eval_windows=2,
+                  log_every=1, device="cpu", splits=splits, score=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp)
+        whole_run = train(tiny, **common, runs_dir=runs, name="mg-whole")
+        first = train(tiny, **common, runs_dir=runs, name="mg-first", session_epochs=1)
+        rest = train(tiny, **common, runs_dir=runs, name="mg-rest", resume=first["run_id"])
+
+        def losses(r: dict) -> list:
+            return [(x["step"], x["loss"]) for x in _records(runs / r["run_id"]) if "loss" in x]
+        steps = len(losses(whole_run))
+        assert losses(whole_run) == losses(first) + losses(rest), "the resumed masked losses differ"
+        assert whole_run["seq_len"] == 1935 and whole_run["frame_decoding"] == "maskgit"
+        assert _refused(lambda: train(tiny, **{**common, "sched_sample": 0.25}, runs_dir=runs,
+                                      name="mg-sched")), "a K-round run took scheduled sampling"
+    print(f"maskgit train: {steps} steps, resumed bit-identical; "
+          f"refuses scheduled sampling")
+
+
 def _self_check() -> None:
     """Items 1 and 3's working-when lists (`docs/phase2_structural_plan.md`)."""
     codes, cells = 512, 64
@@ -1672,6 +1989,7 @@ def _self_check() -> None:
 
     # ---- training (item 4): no data needed
     _check_training(base)
+    _check_maskgit(base)
 
     # ---- the data: the generated set if present, else the committed fixture
     cfg, shard_dir, fixture = data.self_check_config()
