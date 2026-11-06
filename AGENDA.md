@@ -548,6 +548,21 @@ between decoding cells in sequence within a frame (changes the attention mask,
 an irreversible decision) and the residual pixel predictor, before training
 anything; a shared per-frame motion signal alone would not fix it.
 
+**Landed 2026-11-06 (r77): greedy misses changes mostly because the model cannot
+tell which moving cells change.** `bench/keep_mass_probe.py`, one step from real
+context. On moving cells that truly change, greedy keeps the old token 64-71% of
+the time. About three quarters of that is the model rating keep likelier; the
+rest is change being likelier but split over about four codes, so keep still
+wins. Cells that change and cells that keep get only weakly different change
+probabilities (about 0.5 against 0.3). A per-cell decoding rule can recover at
+most the split part, so r76's rule could not have fixed it. **Next:** a
+literature review favours retraining with masked target frames and decoding
+each frame in a few confidence-ordered rounds with sampling (MaskGIT-style,
+sweeping 1/2/4/8/16 rounds; one round reproduces today's model), with
+token-by-token decoding as the fallback and a residual predictor last. It
+changes the input layout, an irreversible decision, so write the design into
+`docs/world_model_architecture.md` before training.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
