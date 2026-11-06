@@ -530,10 +530,23 @@ moves only part of the arm: 77-82% of moving cells stay put, against 51% in the
 truth. One such part-moved frame at the end of real context pushes moving-cell
 accuracy under persistence and lifts the frozen share to 51-63%. In the rollout
 that happens at step 1, and a frozen frame stays frozen 96-98% of the time.
-Removing the tokenizer's flips changes nothing. **Next:** choose a remedy that
-makes a frame's cells move together - decoding cells in sequence within a frame
-(changes the attention mask, an irreversible decision), one shared motion
-signal per frame, or the residual pixel predictor - before training anything.
+Removing the tokenizer's flips changes nothing.
+
+**Landed 2026-11-05 (r76): moving cells together unfreezes, but the motion is
+only partly right.** `bench/coord_decode_probe.py`, decode-time only: on a
+frame the model expects to move, every cell under a keep-probability threshold
+is made to change. At the strictest setting the frozen share falls to the
+truth's (16-24% against 21%), so the freeze is a decoding effect. But token
+accuracy stays near the arm held still, forced changes cost accuracy even from
+real context, and frames drift off the tokenizer's (round trip 57-62% against
+35%). The base link does track the true pose for about 200 steps - half the
+held-still error on r74 - while the forearm is worse than held still for its
+first ~100 steps. Row 6 still fails: too many frozen frames at the looser
+settings, a vanished forearm at the strictest. **Next:** the model's
+prediction for a moving cell is the bottleneck, not only coordination. Choose
+between decoding cells in sequence within a frame (changes the attention mask,
+an irreversible decision) and the residual pixel predictor, before training
+anything; a shared per-frame motion signal alone would not fix it.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
