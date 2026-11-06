@@ -371,6 +371,36 @@ def features(frames: np.ndarray, palette: validator.Palette, tau: float) -> Feat
                               (box[:, :, 1] + box[:, :, 3]) / 2), -1).reshape(*lead, len(blocks), 2))
 
 
+def link_cells(frames: np.ndarray, palette: validator.Palette, grid: tuple[int, int]) -> np.ndarray:
+    """Which of a frame's cells each link covers: `(..., h, w, 3)` uint8 -> `(..., links, cells)` bool.
+
+    Cell `i` (grid row `i // w`, column `i % w`, the token cache's order) covers
+    link `l` when any pixel of its patch has `l`'s colour as its nearest palette
+    colour (`validator._label`). Meant for **renders**, whose pixels sit within
+    0.75 of the palette; `frames` must already be right side up, as the token
+    cache's rows are (`val_pixels`). This is what lets accuracy be scored per
+    link, which r77 could not do.
+    """
+    lead, (h, w) = frames.shape[:-3], frames.shape[-3:-1]
+    gh, gw = grid
+    if h % gh or w % gw:
+        raise ValueError(f"{h}x{w} frames do not split into a {gh}x{gw} grid")
+    links = np.array(palette.links)
+    out = np.empty((math.prod(lead), len(links), gh * gw), bool)
+    for j, f in enumerate(frames.reshape(-1, h, w, 3)):
+        lab = validator._label(f, palette)[0]
+        patch = lab.reshape(gh, h // gh, gw, w // gw).transpose(0, 2, 1, 3).reshape(gh * gw, -1)
+        out[j] = (patch[None] == links[:, None, None]).any(-1)
+    return out.reshape(*lead, len(links), gh * gw)
+
+
+def val_pixels(splits: dynamics.TokenSplits) -> np.ndarray:
+    """The val episodes' renders `(E, T, h, w, 3)`, rows flipped right side up as the token cache's are,
+    in `val_episodes`' order."""
+    return np.stack([np.ascontiguousarray(splits.shards[ep.shard].pixels[ep.start:ep.start + ep.length, ::-1])
+                     for ep in splits.val.windows.episodes])
+
+
 # Gate row 6: the link-drift statistic's window, the requirement's 200 steps.
 DRIFT_WINDOW = 200
 DRIFT_RATIO_MAX = 1.1
@@ -830,6 +860,17 @@ def _self_check() -> None:
     print("summary: static cells, false flips, copy overlap and the marginal baseline by hand")
 
     cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
+    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
+    frame = np.zeros((64, 64, 3), np.uint8) + palette.rgb[0].astype(np.uint8)
+    l0, l1 = palette.links[0], palette.links[1]
+    frame[0:3, 8:10] = palette.rgb[l0]      # grid row 0, column 1: cell 1
+    frame[60:64, 63] = palette.rgb[l1]      # grid row 7, column 7: cell 63
+    frame[17, 40] = palette.rgb[l1]         # grid row 2, column 5: cell 21
+    lc = link_cells(frame, palette, (8, 8))
+    assert lc.shape == (len(palette.links), 64)
+    assert np.flatnonzero(lc[0]).tolist() == [1] and np.flatnonzero(lc[1]).tolist() == [21, 63], lc.nonzero()
+    assert _refused(link_cells, frame[:60], palette, (8, 8))
+    print("link cells: a link's cells are the patches holding its colour, in the token cache's order")
     _check_rollout(cfg)
     _check_rows()
     real = ROOT / "runs" / dynamics.TOKENIZER_RUN / "tokens" / "manifest.json"
@@ -853,7 +894,6 @@ def _self_check() -> None:
           f"and flips on quiet fields {probe['p_flip_given_quiet_field']:.4%}, all "
           f"token_stability_probe's exactly; fields one transition early read "
           f"{early_rate:.4%} flips and fail")
-    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
     if not torch.cuda.is_available():
         # The cache was encoded, and the bounds calibrated, on CUDA.
         print("continuity bounds: skipped - no CUDA device")
@@ -869,6 +909,16 @@ def _self_check() -> None:
         assert fires(step_change(*consecutive(truth)), {k: 0.9 * v for k, v in bounds.items()}).any()
         q3 = dynamics._bench_module("q3_blind_probe")
         sub = substitution_test(truth, bounds, q3.LAG, q3.STRIDE)
+        # The link cells' orientation against the token cache's: on the cache's
+        # own decoded frames they agree with the renders', and flipped they do not.
+        px = val_pixels(splits)[:3, ::50]
+        dec = decode_u8(fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, cuda)[0],
+                        eps.tokens[:3, ::50].reshape(-1, 64), (8, 8), cuda).reshape(px.shape)
+        a, b = link_cells(px, palette, (8, 8)), link_cells(dec, palette, (8, 8))
+        same, flip = float((a == b).mean()), float((a == link_cells(px[:, :, ::-1], palette, (8, 8))).mean())
+        assert a.any() and same > 0.95 and flip < same - 0.02, (same, flip)
+        print(f"link cells on renders agree with the cache's decoded frames on {same:.1%} of "
+              f"(link, cell) pairs, {flip:.1%} with the renders flipped")
         print(f"continuity bounds: 0 of {fire.size:,} decoded ground-truth transitions fire, and "
               f"bounds 10% tighter do; the q3 regression reads {sub['fire_substituted']:.1%} of "
               f"{sub['pairs']} substitutions (the requirement asks 100%)")
