@@ -571,9 +571,20 @@ rounds at temperature 0, 94-96% of generated frames still repeat the frame
 before (truth 20.1%), token accuracy and pose error match an arm held still, and
 row 6 fails at every K. Likely reason (not measured): keeping the old token is
 each cell's most confident option, so confidence order commits kept cells first
-and the rest follow. **Next, per the decision rule:** propose decoding cells
-one at a time within a frame (raster order). Cheap check first: the same sweep
-at temperature above 0 on these checkpoints, which needs no training.
+and the rest follow.
+
+**Landed 2026-11-07 (r81): sampling unfreezes the masked model, but the motion
+is not right.** At temperature 1.0, 13-25% of frames are frozen against the
+truth's 20.1%. But token accuracy never beats the arm held still past step 200,
+frames drift off the tokenizer's (round trip 46-73% against 35%), and the
+forearm is at or worse than held still throughout - it vanishes from whole
+200-frame windows, so row 6 still fails. The base link does track better than
+held still for steps 25-99. Same shape as the one-pass model under sampling
+(r72) and coordinated decoding (r76): decoding changes buy movement, not
+prediction. **Next:** decide between the decision rule's two matching branches -
+Copilot4D's additions (the model's prediction is the limit) and the tokenizer
+(the forearm, about 6 cells a frame, may be too few tokens to move). Raster
+decoding likely helps neither (inference, from r77).
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
