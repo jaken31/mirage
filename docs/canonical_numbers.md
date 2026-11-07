@@ -176,6 +176,8 @@ full val population `NUM-DYN-PERSIST-R1-ALL` names (persistence 86.686%).
 |---|---|---|---|---|
 | `NUM-DYN-CLEAN-MARGIN` | **+0.17 / +0.25 points** | Gate row 1 margin of `best.pt` over persistence, seed 0 (`20261101-211710-dyn`, +1,726 cells) and seed 1 (`20261101-214508-dyn`, +2,543 cells). The first runs to pass row 1; the same setting without the knob scored -0.16 and -0.60 (r66). Final checkpoints: -0.13 and +0.08 | r70, r71 | current, **dyn192x4, these two runs only** |
 | `NUM-DYN-ROLLOUT-FROZEN` | **95.3% / 94.7% vs 20.1%** | Gate row 6: share of greedy-rollout frames identical to the frame before, `best.pt` of seed 0 and seed 1, against the ground truth's share. Why row 6 still fails | r70, r71 | current, **greedy decoding, these two checkpoints only** |
+| `NUM-DYN-MASK-MARGIN` | **+0.18 / +0.26 points** | Gate row 1 margin of `best.pt` over persistence for the K-round masked model (`dyn192x4_mask.json`, `--clean-flips`), seed 0 (`20261107-002825-dyn`, +1,857 cells) and seed 1 (`20261107-023147-dyn`, +2,579 cells), scored at K=1. Level with the one-pass `NUM-DYN-CLEAN-MARGIN`. Final checkpoints: +0.11 and +0.21 | r78, r79 | current, **these two runs only** |
+| `NUM-DYN-MASK-FROZEN` | **94-96% vs 20.1%** | Frozen share of generated frames for the masked model at every K in 1/2/4/8/16, temperature 0, both seeds' `best.pt`, against the truth's. More rounds do not unfreeze the rollout | r80 | current, **temperature 0 only** |
 
 ## Dataset - the 96x96 fork
 

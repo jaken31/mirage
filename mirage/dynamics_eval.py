@@ -172,11 +172,11 @@ def score_run(run_dir: Path | str, cfg: config.Config, splits: dynamics.TokenSpl
                                        f"--first-target {ctx}",
                           "marginal_top1_code": top1}}
 
-    lay = dynamics.layout(ctx, math.prod(cfg.shapes.token_grid))
-    mask = dynamics.attention_mask(lay).to(dev)
     every = np.arange(len(splits.val))
     for name, file in (("best", "best.pt"), ("final", "model.pt")):
         model, ck = load_checkpoint(run_dir / file, cfg, dev)
+        lay = dynamics.scoring_layout(model, ctx, math.prod(cfg.shapes.token_grid))
+        mask = dynamics.attention_mask(lay).to(dev)
         got = dynamics.score_windows(model, splits.val, every, lay, mask, dev)
         assert np.array_equal(got["target"], pop["target"]) and \
             np.array_equal(got["prev"], pop["prev"]), "scored other cells than the population"
@@ -195,13 +195,13 @@ def score_run(run_dir: Path | str, cfg: config.Config, splits: dynamics.TokenSpl
 
 class Rollout(NamedTuple):
     frames: np.ndarray  # (B, ctx + steps, cells) int64: the seed clip, then every generated frame
-    passes: int         # forward passes the model made, one per generated frame
+    passes: int         # forward passes the model made: `rounds` per generated frame, 1 one-pass
 
 
 @torch.no_grad()
 def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, steps: int,
             dev: torch.device, temperature: float = 0.0,
-            generator: torch.Generator | None = None) -> Rollout:
+            generator: torch.Generator | None = None, rounds: int | None = None) -> Rollout:
     """Greedy rollout (decision 5) from seed clips `(B, ctx, cells)`, `steps` frames long.
 
     `temperature` above 0 samples each cell from `softmax(logits / temperature)`
@@ -224,20 +224,59 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
     window's read positions are scored, exactly as `dynamics.score_windows`
     scores them, so the first step of a batch equals that pass on the same
     windows at the same batch bit for bit (gate row 2).
+
+    **A K-round model** (`model.mask_id` set) decodes each frame in `rounds`
+    passes (default 1) through `dynamics.scoring_layout`'s layout. The frame
+    starts all `[MASK]`; each round every still-masked cell takes a code -
+    the argmax, or a draw from `softmax(logits / temperature)` with
+    `generator` - with the model's probability of that code as its confidence,
+    and the most confident are committed until `dynamics.unmask_schedule`'s
+    count stays masked. Committed cells are never revised. One round at
+    temperature 0 is the one-pass argmax, which gate row 2 checks against
+    `dynamics.score_windows`. `rounds` is refused for a one-pass model.
     """
     b, ctx, cells = seed.shape
     if actions.shape != (b, ctx + steps):
         raise ValueError(f"actions {actions.shape} for {b} clips of {ctx} frames and {steps} steps")
     if temperature < 0 or (temperature > 0 and generator is None):
         raise ValueError(f"temperature {temperature} needs to be 0, or above 0 with a generator")
+    mask_id = getattr(model, "mask_id", None)
+    if mask_id is None and rounds is not None:
+        raise ValueError(f"{rounds} rounds for a one-pass model")
+    if mask_id is not None:
+        schedule = dynamics.unmask_schedule(cells, 1 if rounds is None else rounds)
     codes = model.head.out_features
-    lay = dynamics.layout(ctx, cells)
+    lay = dynamics.scoring_layout(model, ctx, cells)
     mask = dynamics.attention_mask(lay).to(dev)
     read = torch.from_numpy(lay.read).to(dev)
     frames = np.zeros((b, ctx + steps, cells), np.int64)
     frames[:, :ctx] = seed
     was = model.training
     model.eval()
+    if mask_id is not None:
+        pos = torch.from_numpy(lay.pos).to(dev)
+        for k in range(steps):
+            x, _ = dynamics.assemble(lay, frames[:, k:k + ctx + 1], actions[:, k:k + ctx + 1], codes)
+            x = torch.from_numpy(x).to(dev)
+            q = torch.full((b, cells), mask_id, dtype=x.dtype, device=dev)
+            for left in schedule:
+                with dynamics._autocast(dev):
+                    logits = model(torch.cat((x, q), 1), mask, read, pos)
+                logits = logits.float()
+                if temperature > 0:
+                    probs = torch.softmax(logits.reshape(-1, codes) / temperature, -1)
+                    pick = torch.multinomial(probs, 1, generator=generator).reshape(b, cells)
+                else:
+                    pick = logits.argmax(-1)
+                conf = torch.softmax(logits, -1).gather(-1, pick[..., None])[..., 0]
+                hidden = q == mask_id
+                conf = torch.where(hidden, conf, torch.full_like(conf, -math.inf))
+                n = int(hidden[0].sum()) - left   # every row has the same count masked
+                at = conf.topk(n, -1).indices
+                q.scatter_(1, at, pick.gather(1, at))
+            frames[:, ctx + k] = q.cpu().numpy()
+        model.train(was)
+        return Rollout(frames, steps * len(schedule))
     for k in range(steps):
         x, _ = dynamics.assemble(lay, frames[:, k:k + ctx + 1], actions[:, k:k + ctx + 1], codes)
         with dynamics._autocast(dev):
@@ -330,6 +369,36 @@ def features(frames: np.ndarray, palette: validator.Palette, tau: float) -> Feat
                     np.stack([m.px_count[blocks] for m in ms]).reshape(*lead, -1),
                     np.stack(((box[:, :, 0] + box[:, :, 2]) / 2,
                               (box[:, :, 1] + box[:, :, 3]) / 2), -1).reshape(*lead, len(blocks), 2))
+
+
+def link_cells(frames: np.ndarray, palette: validator.Palette, grid: tuple[int, int]) -> np.ndarray:
+    """Which of a frame's cells each link covers: `(..., h, w, 3)` uint8 -> `(..., links, cells)` bool.
+
+    Cell `i` (grid row `i // w`, column `i % w`, the token cache's order) covers
+    link `l` when any pixel of its patch has `l`'s colour as its nearest palette
+    colour (`validator._label`). Meant for **renders**, whose pixels sit within
+    0.75 of the palette; `frames` must already be right side up, as the token
+    cache's rows are (`val_pixels`). This is what lets accuracy be scored per
+    link, which r77 could not do.
+    """
+    lead, (h, w) = frames.shape[:-3], frames.shape[-3:-1]
+    gh, gw = grid
+    if h % gh or w % gw:
+        raise ValueError(f"{h}x{w} frames do not split into a {gh}x{gw} grid")
+    links = np.array(palette.links)
+    out = np.empty((math.prod(lead), len(links), gh * gw), bool)
+    for j, f in enumerate(frames.reshape(-1, h, w, 3)):
+        lab = validator._label(f, palette)[0]
+        patch = lab.reshape(gh, h // gh, gw, w // gw).transpose(0, 2, 1, 3).reshape(gh * gw, -1)
+        out[j] = (patch[None] == links[:, None, None]).any(-1)
+    return out.reshape(*lead, len(links), gh * gw)
+
+
+def val_pixels(splits: dynamics.TokenSplits) -> np.ndarray:
+    """The val episodes' renders `(E, T, h, w, 3)`, rows flipped right side up as the token cache's are,
+    in `val_episodes`' order."""
+    return np.stack([np.ascontiguousarray(splits.shards[ep.shard].pixels[ep.start:ep.start + ep.length, ::-1])
+                     for ep in splits.val.windows.episodes])
 
 
 # Gate row 6: the link-drift statistic's window, the requirement's 200 steps.
@@ -565,14 +634,22 @@ PARAM_BAR = 20_000_000   # "dynamics model parameters <= 20M bf16"
 VRAM_BAR_GB = 7.5        # "peak training VRAM <= 7.5 GB", read as GiB like the run's records
 
 
+ROLLOUT_SEED = 0   # the one generator seed a sampled K-round rollout draws from
+
+
 def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
-             device: str | None = None, runs_dir: Path | str = ROOT / "runs") -> dict:
+             device: str | None = None, runs_dir: Path | str = ROOT / "runs",
+             rounds: int | None = None, temperature: float = 0.0) -> dict:
     """The dynamics gate table for one run: rows 1-6 and 8-9 pass/fail, 7 and 10 reported.
 
     `checkpoint` is `best` (item 4's `best.pt`, kept by gate row 1's measure)
     or `final` (the last per-epoch `model.pt`). Every rollout starts at frame
     0 of a val episode, one per episode, with that episode's own action column,
     and runs to the episode's end.
+
+    `rounds` and `temperature` are the K-round model's decoding (`rollout`);
+    a sampled rollout draws from a generator seeded `ROLLOUT_SEED`, fresh for
+    each rollout, so row 9 reruns the same draws.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     run_dir = Path(runs_dir) / run_id
@@ -598,23 +675,36 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     params = sum(p.numel() for p in model.parameters())
 
     # Rows 3, 2 and 9: one rollout per val episode at each context length.
+    mg = model.mask_id is not None
+    if not mg and (rounds is not None or temperature):
+        raise ValueError("rounds and temperature are the K-round model's; this one decodes in one pass")
+    per = (rounds or 1) if mg else 1
+
+    def roll(m: dynamics.Dynamics, c: int) -> Rollout:
+        if not mg:
+            return rollout(m, eps.tokens[:, :c], eps.actions, length - c, dev)
+        g = torch.Generator(dev).manual_seed(ROLLOUT_SEED) if temperature > 0 else None
+        return rollout(m, eps.tokens[:, :c], eps.actions, length - c, dev, temperature, g, per)
     rolls, secs = {}, {}
     for c in ROLLOUT_CTXS:
         t0 = time.perf_counter()
-        rolls[c] = rollout(model, eps.tokens[:, :c], eps.actions, length - c, dev)
+        rolls[c] = roll(model, c)
         secs[c] = time.perf_counter() - t0
-    ran = {c: r.passes == length - c and r.frames.shape == (n_eps, length, cells)
+    ran = {c: r.passes == (length - c) * per and r.frames.shape == (n_eps, length, cells)
            and np.array_equal(r.frames[:, :c], eps.tokens[:, :c])
            and 0 <= r.frames.min() and r.frames.max() < model.head.out_features
            for c, r in rolls.items()}
-    lay = dynamics.layout(ctx, cells)
+    lay = dynamics.scoring_layout(model, ctx, cells)
     one = dynamics.score_windows(model, splits.val, eps.first, lay,
                                  dynamics.attention_mask(lay).to(dev), dev, batch=n_eps)
     assert np.array_equal(one["target"], eps.tokens[:, ctx]), "row 2 scored other windows"
-    row2 = np.array_equal(rolls[ctx].frames[:, ctx], one["pred"])
+    # Row 2's exactness against one pass holds for one round at temperature 0;
+    # otherwise the row is the fixed count alone: every frame in exactly `per`
+    # passes, all 64 cells committed (`ran`).
+    exact = per == 1 and not temperature
+    row2 = np.array_equal(rolls[ctx].frames[:, ctx], one["pred"]) if exact else ran[ctx]
     again, _ = load_checkpoint(run_dir / file, cfg, dev)
-    row9 = np.array_equal(rollout(again, eps.tokens[:, :ctx], eps.actions, length - ctx, dev).frames,
-                          rolls[ctx].frames)
+    row9 = np.array_equal(roll(again, ctx).frames, rolls[ctx].frames)
     del again
 
     # The pixel rows: ground truth is the cache decoded, the rollout its own tokens decoded.
@@ -684,8 +774,9 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
          f"{row1['acc']:.4%} vs {row1['persistence']:.4%} ({row1['margin_points']:+.2f} pts); "
          f"marginal {row1['marginal_top1_acc']:.2%}", "> persistence", row1["margin_cells"] > 0),
         (2, f"One full next frame from {ctx} frames + one action",
-         f"{'identical' if row2 else 'DIFFERS'} to one pass on {n_eps} windows, "
-         f"{rolls[ctx].passes} passes for {length - ctx} frames", "exact", row2),
+         (f"{'identical' if row2 else 'DIFFERS'} to one pass on {n_eps} windows, " if exact else
+          f"{per} rounds at T {temperature:g}, all cells committed, ")
+         + f"{rolls[ctx].passes} passes for {length - ctx} frames", "exact", row2),
         (3, "Rollout at ctx " + ", ".join(map(str, ROLLOUT_CTXS)) + " from one checkpoint",
          "; ".join(f"{c}: {'ran' if ran[c] else 'FAILED'} {length - c} steps {secs[c]:.0f}s"
                    for c in ROLLOUT_CTXS), "runs", all(ran.values())),
@@ -716,7 +807,8 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     rows.sort(key=lambda r: r[0])
 
     print(f"\ngate table - {run_id} {file} (step {ck['step']:,}, epoch {ck['epoch']}), "
-          f"dynamics_hash {cfg.dynamics_hash[:8]}, {n_eps} val rollouts of {length - ctx} steps")
+          f"dynamics_hash {cfg.dynamics_hash[:8]}, {n_eps} val rollouts of {length - ctx} steps"
+          + (f", {per} rounds at temperature {temperature:g}" if mg else ""))
     print(f"{'#':>2}  {'measure':<52} {'value':<64} {'bar':<18} verdict")
     for n, name, value, bar, ok in rows:
         verdict = "-" if ok is None else ("PASS" if ok else "FAIL")
@@ -742,6 +834,7 @@ def evaluate(run_id: str, cfg: config.Config, checkpoint: str = "best",
     failed = [n for n, _, _, _, ok in rows if ok is False]
     print("\nall pass/fail rows pass" if not failed else f"\nFAILED rows: {failed}")
     return {"run_id": run_id, "checkpoint": file, "step": ck["step"], "row1": row1,
+            "rounds": per if mg else None, "temperature": temperature if mg else None,
             "population": pop["population"], "rollout_s": secs, "row2_exact": row2,
             "row3_ran": ran, "row9_identical": row9,
             "horizon": hz.tolist(), "frozen_share": frozen, "frozen_share_truth": frozen_truth, "truth_fires": int(truth_fire.sum()), "q3_regression": sub,
@@ -767,6 +860,17 @@ def _self_check() -> None:
     print("summary: static cells, false flips, copy overlap and the marginal baseline by hand")
 
     cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
+    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
+    frame = np.zeros((64, 64, 3), np.uint8) + palette.rgb[0].astype(np.uint8)
+    l0, l1 = palette.links[0], palette.links[1]
+    frame[0:3, 8:10] = palette.rgb[l0]      # grid row 0, column 1: cell 1
+    frame[60:64, 63] = palette.rgb[l1]      # grid row 7, column 7: cell 63
+    frame[17, 40] = palette.rgb[l1]         # grid row 2, column 5: cell 21
+    lc = link_cells(frame, palette, (8, 8))
+    assert lc.shape == (len(palette.links), 64)
+    assert np.flatnonzero(lc[0]).tolist() == [1] and np.flatnonzero(lc[1]).tolist() == [21, 63], lc.nonzero()
+    assert _refused(link_cells, frame[:60], palette, (8, 8))
+    print("link cells: a link's cells are the patches holding its colour, in the token cache's order")
     _check_rollout(cfg)
     _check_rows()
     real = ROOT / "runs" / dynamics.TOKENIZER_RUN / "tokens" / "manifest.json"
@@ -790,7 +894,6 @@ def _self_check() -> None:
           f"and flips on quiet fields {probe['p_flip_given_quiet_field']:.4%}, all "
           f"token_stability_probe's exactly; fields one transition early read "
           f"{early_rate:.4%} flips and fail")
-    palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
     if not torch.cuda.is_available():
         # The cache was encoded, and the bounds calibrated, on CUDA.
         print("continuity bounds: skipped - no CUDA device")
@@ -806,6 +909,16 @@ def _self_check() -> None:
         assert fires(step_change(*consecutive(truth)), {k: 0.9 * v for k, v in bounds.items()}).any()
         q3 = dynamics._bench_module("q3_blind_probe")
         sub = substitution_test(truth, bounds, q3.LAG, q3.STRIDE)
+        # The link cells' orientation against the token cache's: on the cache's
+        # own decoded frames they agree with the renders', and flipped they do not.
+        px = val_pixels(splits)[:3, ::50]
+        dec = decode_u8(fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, cuda)[0],
+                        eps.tokens[:3, ::50].reshape(-1, 64), (8, 8), cuda).reshape(px.shape)
+        a, b = link_cells(px, palette, (8, 8)), link_cells(dec, palette, (8, 8))
+        same, flip = float((a == b).mean()), float((a == link_cells(px[:, :, ::-1], palette, (8, 8))).mean())
+        assert a.any() and same > 0.95 and flip < same - 0.02, (same, flip)
+        print(f"link cells on renders agree with the cache's decoded frames on {same:.1%} of "
+              f"(link, cell) pairs, {flip:.1%} with the renders flipped")
         print(f"continuity bounds: 0 of {fire.size:,} decoded ground-truth transitions fire, and "
               f"bounds 10% tighter do; the q3 regression reads {sub['fire_substituted']:.1%} of "
               f"{sub['pairs']} substitutions (the requirement asks 100%)")
@@ -880,6 +993,60 @@ def _check_rollout(cfg: config.Config) -> None:
           f"frame ctx + k reads action[ctx + k] and the frames before it, its own output "
           f"feeding the next step; runs at ctx "
           f"{', '.join(map(str, ROLLOUT_CTXS))}; reproduces exactly, sampled too at one seed")
+    assert _refused(rollout, model, tok[:, :ctx], act, steps, dev, 0.0, None, 2), \
+        "a one-pass model took rounds"
+
+    # ---- the K-round model
+    mg = dataclasses.replace(tiny, dynamics={**tiny.dynamics, "frame_decoding": "maskgit"})
+    torch.manual_seed(0)
+    km = dynamics.build(mg).double().eval()
+    r1 = rollout(km, tok[:, :ctx], act, steps, dev)
+    assert r1.passes == steps and np.array_equal(r1.frames[:, :ctx], tok[:, :ctx])
+    # One round at temperature 0 is the one-pass argmax through the scoring layout.
+    ev = dynamics.scoring_layout(km, ctx, cells)
+    x, _ = dynamics.assemble(ev, tok[:, :ctx + 1], act[:, :ctx + 1], codes)
+    x = torch.cat((torch.from_numpy(x), torch.full((3, cells), km.mask_id)), 1)
+    with torch.no_grad():
+        one = km(x, dynamics.attention_mask(ev), torch.from_numpy(ev.read),
+                 torch.from_numpy(ev.pos)).argmax(-1).numpy()
+    assert np.array_equal(r1.frames[:, ctx], one), "one round is not the one-pass argmax"
+    r4 = rollout(km, tok[:, :ctx], act, steps, dev, rounds=4)
+    assert r4.passes == 4 * steps and 0 <= r4.frames.min() and r4.frames.max() < codes
+    assert np.array_equal(rollout(km, tok[:, :ctx], act, steps, dev, rounds=4).frames, r4.frames)
+
+    def ksampled(s: int) -> np.ndarray:
+        g = torch.Generator(dev).manual_seed(s)
+        return rollout(km, tok[:, :ctx], act, steps, dev, 1.0, g, 4).frames
+    assert np.array_equal(ksampled(0), ksampled(0)) and not np.array_equal(ksampled(0), ksampled(1))
+    assert _refused(rollout, km, tok[:, :ctx], act, steps, dev, 0.0, None, 0)
+
+    # What a round commits, with a stand-in whose answer names its input: every
+    # masked cell predicts the count of committed cells in its query block, with
+    # confidence rising with the cell index. Cells must then commit highest
+    # index first, in unmask_schedule's counts, each round seeing the last's.
+    class Counter(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mask_id, self.head = codes + dynamics.N_ACTIONS, torch.nn.Linear(1, codes)
+
+        def forward(self, x, mask, read, pos):
+            q = x[:, -cells:]
+            out = torch.zeros(len(x), cells, codes, dtype=torch.float64)
+            done = (q != self.mask_id).sum(1)
+            out[torch.arange(len(x))[:, None], torch.arange(cells)[None, :], done[:, None]] = \
+                5.0 + 0.1 * torch.arange(cells, dtype=torch.float64)
+            return out
+    k = 4
+    want, prev, order = np.zeros(cells, np.int64), cells, np.arange(cells)[::-1]
+    for left in dynamics.unmask_schedule(cells, k):
+        want[order[cells - prev:cells - left]] = cells - prev
+        prev = left
+    got = rollout(Counter(), tok[:, :ctx], act, steps, dev, rounds=k).frames
+    assert (got[:, ctx:] == want).all(), "rounds did not commit by confidence on the schedule"
+    print(f"K-round rollout: one round is the one-pass argmax; {k} rounds take {k} passes a "
+          f"frame, commit the most confident cells first in unmask_schedule's counts "
+          f"({', '.join(map(str, dynamics.unmask_schedule(cells, k)))} left masked), each round "
+          f"seeing the last's; reproduces, sampled too at one seed")
 
 
 def _check_rows() -> None:

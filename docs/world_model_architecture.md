@@ -880,6 +880,132 @@ cumulative frame offset, and that is an off-by-one factory. Per-shard makes
 `tokenizer_hash` for the reason already given under provenance: two runs at
 identical config and different seeds share a hash and produce different tokens.
 
+## Phase 2 decision: a frame is decoded in K masked rounds, not one pass
+
+**APPROVED 2026-11-06; measured 2026-11-07 (r78-r80): one-step accuracy holds, rollouts still freeze at every K - see AGENDA.md.** It reopens three decisions in `docs/phase2_structural_plan.md`:
+decision 2's sequence layout (the irreversible one), decision 9's mask, and
+decision 5's greedy rollout.
+
+**Why.** Today's model predicts a frame's 64 cells in one pass, each cell's
+argmax chosen on its own. Gate row 6 (rollout frames that repeat the frame
+before, at most 1.1x the truth's share) fails on both seeds: 95.3% and 94.7%
+frozen against the truth's 20.1% (r70, r71). Four decoding and training
+remedies did not move it - temperature (r64, r72), context corruption (r73),
+scheduled sampling (r74), decode-time coordinated change (r76). r77 says why:
+on moving cells that truly change, argmax keeps the old token 64-71% of the
+time, mostly because the model cannot tell *which* moving cells change
+(p_change about 0.5 on cells that change against about 0.3 on cells that keep).
+r75 shows the consequence: a step that moves only part of the arm becomes
+context that makes the next step copy. Independent per-cell choices cannot
+coordinate "this link moved, so all its cells move". Committing a few confident
+cells, then letting the rest condition on them, can. That is MaskGIT (arXiv
+2202.04200) and Genie's dynamics model (2402.15391).
+
+### Input layout: a second, query stream per target frame
+
+**Kept, exactly:** the context stream is today's layout position for position.
+Frame `t`'s 64 tokens then `action[t+1]`, in 65-position blocks, both read from
+the same record (the no-shift reading, and its phase assertion stays the
+acceptance test); `action[0]` dropped; RoPE over the same position indices
+0..974 at `ctx` 15; the untied head; the codebook ids 0-511 and action ids
+512-520.
+
+**Changed:** each target frame `t+1` gets a *query block* of 64 positions
+holding its own tokens, each either revealed or replaced by a learned `[MASK]`
+id, 521. The logits for frame `t+1` are read at its query block, not at frame
+`t`'s context positions. A query cell takes the RoPE index of the context slot
+its token will occupy one block later, so the query stream reuses the context
+stream's positions and sits just after `action[t+1]` in relative distance. At
+`ctx` 15 that is 15 query blocks: **975 + 960 = 1,935 positions**, against 975
+today. The vocabulary grows by one embedding row (+192 parameters); the head
+still outputs the 512 codes only.
+
+**Rejected: Genie's single-stream masking**, which masks the context frames
+themselves and predicts each frame in place. It costs no extra length, but
+training then sees masked context while rollout sees clean context - the
+mismatch r73's context corruption already measured as unhelpful - and K=1 would
+no longer be today's model.
+
+### Attention
+
+Context positions: block-causal as today, and they never see the query stream,
+so the context stream computes exactly what it does today. Query block `t+1`:
+every context block up to and including block `t` (so every earlier frame and
+`action[t+1]`), plus **all 64 cells of its own query block, bidirectionally**.
+It sees no other query block. `check_block_causal` extends to both claims:
+altering a query cell of frame `t+1` changes only frame `t+1`'s query outputs,
+and altering context frame `t+1` changes no query output for frames up to `t+1`.
+
+### Training
+
+**Each target frame draws its own mask ratio** from MaskGIT's cosine schedule,
+`ratio = cos(pi/2 * u)`, `u ~ U[0,1)`, at least one cell masked; the masked
+cells are a uniform random subset. Per frame rather than per window, because 15
+draws per window cover the schedule better than one, and per window would
+leave whole windows at a low ratio. Cosine rather than Genie's U[0.5,1] because
+rollout's first round is at ratio 1 and its last rounds are near 0, and cosine
+puts mass at both ends (29% of frames above 0.9). **Loss on masked cells only**,
+the plain mean over them. `--clean-flips` keeps its meaning: quiet-field
+targets set to the previous token, for the masked cells being scored. The mask
+ratio distribution is a training knob in `knobs`, not in `dynamics_hash`.
+
+**Cost, unmeasured.** Attention is about 2x the length, so up to about 4x its
+FLOPs, and at `d_model` 192 attention already dominates; a rough count puts a
+step at about 3x today's. A one-epoch timing run comes before the two seeds. If
+10 epochs per seed does not fit, the fallback is a knob giving query blocks to
+a random subset of the 15 target frames per window, not a shorter epoch cap.
+
+### Rollout: K rounds per frame
+
+Per step, the model reads the context stream plus the frame's one query block
+(1,039 positions at `ctx` 15; query blocks never see each other, so dropping
+the other 14 changes no logit of the last frame - self-checked against the full
+1,935-position layout). The query block starts all `[MASK]`, then K rounds, each
+a full pass. In round `k` (1..K), every still-masked cell gets a code (argmax at
+temperature 0, else sampled from a seeded `torch.Generator`) and a confidence,
+the model's probability of that code. The most confident are committed so that
+`floor(64 * cos(pi/2 * k/K))` cells stay masked, held to at least one commit a
+round; round K commits the rest (`dynamics.unmask_schedule`). Committed cells
+are never revised (Copilot4D's revisable sampling is a later addition, see the
+trigger). A step costs K passes of about today's length, so no key/value cache
+was built: K=16 is about 16x today's rollout time.
+
+**K=1 is today's model's information set.** One round from an all-`[MASK]`
+query block: each cell sees every earlier frame and `action[t+1]`, and the
+other 63 query cells carry no information. At temperature 0 that is one-pass
+per-cell argmax - today's rollout, with different weights. So **gate row 1 is
+scored at K=1**, teacher-forced context, all cells masked, against persistence,
+and should land near r70/r71's +0.17 / +0.25 points. If it does not, the
+masked objective has cost the one-pass skill, and that is reported before any
+K sweep.
+
+**Decision 5 (greedy) is overturned** for this model. Gate rows restated:
+
+- **Row 2** (one full next frame, fixed step count, no fallback): every step runs
+  exactly K rounds and commits all 64 cells by round K. K is a rollout argument,
+  so the step count is fixed per rollout. This brings forward the parallel
+  decode schedule the plan had left to Phase 4.
+- **Row 9** (rollout reproduced from checkpoint plus seed clip): stays
+  **identical**. At temperature 0 it is deterministic as today; above 0 the
+  rollout draws from one `torch.Generator` seeded by the rollout's seed, the
+  same path `dynamics_eval.rollout`'s temperature option already reproduced
+  exactly on CUDA (r64).
+
+### Config
+
+New `mirage/configs/dyn192x4_mask.json`: `dyn192x4.json` plus
+`"frame_decoding": "maskgit"` in `dynamics` (closed set `{"one_pass",
+"maskgit"}`; absent means `one_pass`, so the existing hash and checkpoints are
+untouched). That key moves `dynamics_hash`. K, temperature and the mask-ratio
+schedule are run arguments, not hash.
+
+**Revisit trigger.** If K>1 unfreezes the rollout (row 6's frozen share near
+1.1x the truth's) but per-link pose error stays near the arm held still, add
+Copilot4D's (2311.01017) noise on revealed tokens, loss on all tokens and
+revisable sampling. If K>1 leaves the freeze in place, the next step is raster
+decoding, one cell per pass. If the arm moves but the forearm (link 1) stays
+worse than held still, the tokenizer is the likely limit, not decoding.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation
