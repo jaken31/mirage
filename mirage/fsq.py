@@ -573,8 +573,16 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
           quantize: bool = True, encoder_norm: str = "group", epochs: int = 15, batch: int = 128, lr: float = 3e-4,
           lr_floor: float = 3e-5, weight_decay: float = 1e-4, warmup: float = 0.05,
           seed: int = 0, eval_frames: int = 4096, log_every: int = 100,
-          device: str | None = None, resume: str | None = None) -> dict:
+          device: str | None = None, resume: str | None = None,
+          link_weight: float = 1.0) -> dict:
     """Train one rung. Plain MSE, AdamW, cosine decay to `lr_floor` after linear warmup.
+
+    `link_weight` above 1 is a **screening knob, not an adopted design**: the
+    forearm's pixels (palette link 1, dilated by one pixel so the background
+    edge it moves across counts too) weigh that much more in the training loss,
+    normalised so the loss stays a weighted mean. Eval PSNR stays plain MSE.
+    r82-r83 found the forearm's motion barely survives encoding; this asks
+    whether the loss, not the grid, is why. 1.0 is exactly the plain-MSE loop.
 
     Plain MSE and nothing else: PSNR is a direct function of MSE, so the loss
     *is* the pass/fail number. Per-pixel 7-way classification was considered
@@ -675,7 +683,7 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
     hashes = {"data_hash": cfg.data_hash, "tokenizer_hash": cfg.tokenizer_hash}
     knobs = dict(rung=rung, levels=list(levels), attention=attention, quantize=quantize,
                  encoder_norm=encoder_norm, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
-                 weight_decay=weight_decay, warmup=warmup, seed=seed,
+                 weight_decay=weight_decay, warmup=warmup, seed=seed, link_weight=link_weight,
                  image_size=list(cfg.shapes.image_size),
                  token_grid=list(cfg.shapes.token_grid), params=params,
                  train_frames=len(train_idx), val_frames=len(val_idx),
@@ -719,6 +727,10 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
             assert ck["knobs"][k] == knobs[k], (
                 f"resume {resume}: {k} is {ck['knobs'][k]}, this call asks for {knobs[k]}"
             )
+        # Older checkpoints predate the knob and were all trained at plain MSE.
+        assert ck["knobs"].get("link_weight", 1.0) == link_weight, (
+            f"resume {resume}: link_weight is {ck['knobs'].get('link_weight', 1.0)}, "
+            f"this call asks for {link_weight}")
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         rng.bit_generator.state = ck["np_rng"]
@@ -743,8 +755,15 @@ def train(rung: str, cfg: config.Config, levels=(8, 8, 8), attention: bool = Fal
             for s in range(steps_per_epoch):
                 for g in opt.param_groups:
                     g["lr"] = lr_at(step)
-                x = _batch(train_idx, lut, order[s * batch:(s + 1) * batch]) / PEAK
-                loss = F.mse_loss(model(x), x)
+                rows = order[s * batch:(s + 1) * batch]
+                x = _batch(train_idx, lut, rows) / PEAK
+                if link_weight == 1.0:
+                    loss = F.mse_loss(model(x), x)
+                else:
+                    fore = torch.from_numpy(np.ascontiguousarray(train_idx[rows]) == palette.links[1])
+                    w = F.max_pool2d(fore.to(dev).float()[:, None], 3, 1, 1)
+                    w = 1.0 + (link_weight - 1.0) * w
+                    loss = (w * (model(x) - x) ** 2).sum() / (w.sum() * x.shape[1])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 opt.step()
@@ -1045,6 +1064,8 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--link-weight", type=float, default=1.0,
+                    help="screening only: loss weight on the forearm's pixels (1 = plain MSE)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue a run killed mid-flight, from its last per-epoch "
                          "checkpoint; every knob must match the run being resumed")
@@ -1074,7 +1095,7 @@ def main() -> None:
     rung = RUNGS[args.run]
     out = train(args.run, cfg, levels=tuple(args.levels), epochs=args.epochs,
                 batch=args.batch, lr=args.lr, seed=args.seed, resume=args.resume,
-                quantize=rung["quantize"], attention=rung["attention"],
+                link_weight=args.link_weight, quantize=rung["quantize"], attention=rung["attention"],
                 encoder_norm=rung.get("encoder_norm", "group"))
     db = out["val_psnr_db"]
     # Gate rows 1 and 2 (the 30 dB target, and the margin over the k-means
