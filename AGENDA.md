@@ -586,6 +586,46 @@ Copilot4D's additions (the model's prediction is the limit) and the tokenizer
 (the forearm, about 6 cells a frame, may be too few tokens to move). Raster
 decoding likely helps neither (inference, from r77).
 
+**Plan for that decision (proposed 2026-11-07, not yet run): one probe,
+`bench/forearm_probe.py`, no training.** The gate's population (27 val episodes,
+585 steps), both masked checkpoints, about 15 minutes on the GPU. Four parts,
+each a runs.jsonl row:
+
+1. *Can the tokenizer show the forearm's pose at all?* Encode nothing new:
+   decode the cached truth tokens and measure each link's on-screen angle
+   (`validator.measure_pixels_only`), against the same measurement on the
+   renders. Report the round-trip angle error per link, and the share of frames
+   where the forearm is in the render but missing from the decoded frame.
+   Compare that error with the forearm's typical per-step angle change on the
+   renders.
+2. *Do small forearm motions reach the tokens?* On the truth, bin consecutive
+   steps by the simulator's forearm joint change (`qpos1`). Per bin: the share of
+   steps where any forearm cell's token changes, and whether the decoded angle
+   change has the render's sign. Steps whose render angle change is below the
+   measurement's own noise (the still-arm steps' spread) are reported apart.
+3. *Does the model predict forearm cells from real context?* One step ahead,
+   teacher-forced, K=1, greedy and T=1.0: accuracy on the forearm's truth cells
+   against held still, split into cells that truly change and cells that keep;
+   and the decoded one-step forearm angle error against held still.
+4. *Does the model use the action on the forearm?* Same one-step setting, the
+   action swapped for its opposite on the forearm joint: how much the predicted
+   forearm cells move (share of argmax changes, mean KL), beside the base link's.
+   Near-zero here points at action conditioning specifically, which is what
+   classifier-free guidance on the action would strengthen.
+
+Decision rule, fixed before running:
+- **(b) tokenizer** if part 1's forearm round-trip error is at least the median
+  per-step forearm change, or part 2 shows that more than half of the steps with
+  forearm motion above noise change no forearm token. Then the tokens cannot
+  carry the motion, and no dynamics change can recover it.
+- **(a) model** if parts 1-2 pass but part 3's forearm one-step accuracy on
+  changing cells does not beat held still, or its angle error is not below
+  held still. Part 4 then picks between the Copilot4D additions: action
+  guidance if the forearm ignores the action, training on its own samples if
+  not.
+- Both fail: report both and fix the tokenizer first, since a model change
+  cannot be judged on tokens that do not show the motion.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
