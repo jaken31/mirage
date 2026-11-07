@@ -179,6 +179,17 @@ full val population `NUM-DYN-PERSIST-R1-ALL` names (persistence 86.686%).
 | `NUM-DYN-MASK-MARGIN` | **+0.18 / +0.26 points** | Gate row 1 margin of `best.pt` over persistence for the K-round masked model (`dyn192x4_mask.json`, `--clean-flips`), seed 0 (`20261107-002825-dyn`, +1,857 cells) and seed 1 (`20261107-023147-dyn`, +2,579 cells), scored at K=1. Level with the one-pass `NUM-DYN-CLEAN-MARGIN`. Final checkpoints: +0.11 and +0.21 | r78, r79 | current, **these two runs only** |
 | `NUM-DYN-MASK-FROZEN` | **94-96% vs 20.1%** | Frozen share of generated frames for the masked model at every K in 1/2/4/8/16, temperature 0, both seeds' `best.pt`, against the truth's. More rounds do not unfreeze the rollout | r80 | current, **temperature 0 only** |
 
+## Dynamics - is the forearm the tokenizer's limit or the model's?
+
+`bench/forearm_probe.py`, on the gate's rollout population. Angles are the
+validator's on-screen link angle, compared where both blobs are at least 3 px.
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-TOK-FORE-RT` | **2.99 / 0.64 deg** | Mean round-trip angle error, forearm (link1) / base (link0): renders against the cached truth tokens decoded through R1 (medians 1.24 / 0.31) | r82 | current, **R1 at 8x8** |
+| `NUM-TOK-FORE-TRACK` | **r 0.41 / 0.83 at 5 steps, 0.80 / 0.98 at 25** | Correlation of the decoded angle change with the render's, forearm / base. The forearm's motion is not cleanly in its tokens at any horizon | r83 | current, **R1 at 8x8** |
+| `NUM-DYN-FORE-ONESTEP` | **2.02-2.05 vs 1.97 deg** | Forearm angle error of the masked model's greedy one-step prediction from real context, both seeds, against the frame before held still: not below it | r84 | current, **these two checkpoints only** |
+
 ## Dataset - the 96x96 fork
 
 | ID | Value | What it is | Source | Status |
