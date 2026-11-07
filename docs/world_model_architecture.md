@@ -880,6 +880,179 @@ cumulative frame offset, and that is an off-by-one factory. Per-shard makes
 `tokenizer_hash` for the reason already given under provenance: two runs at
 identical config and different seeds share a hash and produce different tokens.
 
+## Phase 2 decisions: the dynamics model
+
+Phase 2's taken decisions live in `phase2_structural_plan.md`, "Decisions". This
+section holds the one the agenda ordered written here before any training,
+because it changes the input layout.
+
+### Masked target frames, decoded in rounds - PROPOSED 2026-11-07, not decided
+
+**Status: a design for the captain to accept or reject. Nothing is built, and
+every cost below is unmeasured unless a `runs.jsonl` row is named.**
+
+**The problem it answers.** Every generated rollout so far fails gate row 6, the
+long-rollout check: over 200 steps, each arm link's pixel length may drift no more
+than 1.1x the simulator's own drift, and no more frames may repeat the frame
+before them than 1.1x the real data's share. The best runs freeze 90-96% of
+generated frames against the truth's 20-21% (r70-r74). Three runs narrowed the
+cause:
+
+- **r75**: the freeze starts in decoding, not from training on clean context.
+  All 64 cells of a frame are picked in one pass, each on its own, so greedy
+  moves only part of the arm, and a part-moved frame then freezes the rollout.
+- **r76**: forcing a frame's uncertain cells to change together brings the frozen
+  share down to the truth's, but the motion is wrong. Token accuracy stays at the
+  level of holding the arm still.
+- **r77**: on moving cells that truly change, greedy keeps the old token 64-71% of
+  the time. About three quarters of that is the model rating "keep" likelier,
+  because it barely separates cells that change (mean change probability
+  0.48-0.53) from cells that keep (0.27-0.30). The other quarter is change being
+  likelier but split over about four codes. A rule applied to each cell on its own
+  can recover only that quarter.
+
+The remaining three quarters is information no cell has: which of its neighbours
+moved. The arm's pose is a few numbers, and every moving cell is a consequence of
+it, so once some cells commit to a pose the rest should follow. **This design lets
+a frame's cells see each other's committed choices.** That is a hypothesis, and
+the run below tests it.
+
+**What changes.** Three things, one of which moves `dynamics_hash`:
+
+1. **A mask token.** One new input id, `codes + N_ACTIONS` (521 on R1), so the
+   embedding grows by one row. Never a target; the untied head (decision 3) still
+   emits only frame codes.
+2. **A second, masked copy of each target frame, in the input.** Today, frame
+   `t+1`'s cell `i` is read out at frame `t`'s cell `i` (`mirage/dynamics.py`,
+   `layout`), and frame `t+1` itself never enters the input. The proposal keeps
+   that clean stream untouched and adds, for each target frame `t+1`, a block of
+   64 positions holding that frame with some cells replaced by the mask token.
+   Each target is read out at its own masked position.
+   - A masked block attends to the clean blocks `0..t`, which include
+     `action[t+1]`, and to itself. It never attends to another masked block or to
+     clean block `t+1`.
+   - The clean blocks attend exactly as today and never see a masked block, so the
+     clean stream's computation is today's model's, position for position.
+   - The masked block takes the RoPE positions clean block `t+1` holds, so its
+     distance to the context is the natural one. The two copies share positions
+     but can never attend to each other.
+3. **The config names the layout**, as a new `dynamics` key in a new config file,
+   so `dynamics_hash` moves and no existing checkpoint is mistaken for the new
+   model. Rounds and temperature are rollout arguments and stay out of the hash,
+   the same way context length does (item 2).
+
+**What does not change, checked against the decisions it could have touched:**
+
+- **Decision 2's irreversible pair holds.** `action[t]` still sits immediately
+  before frame `t`'s 64 positions in the clean stream, read from the same record.
+  Decision 2 itself anticipated a change like this one: the mask choice "may
+  change how a frame's positions are fed, but not which record they are read
+  from".
+- **Decision 9's block-causal mask holds.** Across frames attention is still
+  causal, and within a frame it is still full. Decision 9's reopen trigger is about
+  strictly-causal attention, which this is not. Token-by-token decoding, the
+  fallback below, is strictly-causal, and that reopen trigger governs it.
+- **So the irreversible cost is smaller than the agenda feared**: one new hash, a
+  retrain, and every existing checkpoint retired from comparison except as a
+  baseline.
+
+**Why this variant, and not the two simpler ones:**
+
+| Variant | Cost | Why not |
+|---|---|---|
+| **Masked copy beside a clean stream (proposed)** | about 2x the positions per window: 975 today, 1,935 with 15 masked blocks of 64. So about 2x MLP work and about 4x attention work. **Unmeasured** | - |
+| Mask the context frames themselves, as Genie does | no extra positions | The context is clean at inference, so training on masked context opens a train/inference gap of the same kind decision 7 was written about |
+| Append only the last frame's masked copy | about 64 extra positions | Supervision drops from 15 target frames per window to one. The plan's risk statement is "data, not compute", so spending positions to keep supervision is the right trade |
+
+**Training.**
+
+- **Mask ratio:** each masked block draws its own ratio `cos(pi/2 * u)`, `u`
+  uniform on [0, 1), with at least one cell masked. This is MaskGIT's schedule.
+- **Loss:** cross-entropy at masked positions only. The clean stream is never
+  scored.
+- **Unchanged from r70:** `--clean-flips`, so a quiet field's target is the
+  previous token. Revealed cells in a masked block carry the same cleaned value,
+  because at inference they will hold the model's own picks, which approximate
+  cleaned targets.
+- **Model and settings:** dyn192x4 (2.0M parameters), dropout 0.1, decision 4a's
+  stopping rule, seeds 0 and 1. These are r70/r71's settings, so those two runs
+  are the baseline.
+
+**Decoding.** For each generated frame, run `K` rounds, all over the same
+context:
+
+1. Start with all 64 cells masked.
+2. Each round, score every still-masked cell, pick a token for each, and commit
+   the most confident picks. After round `j` of `K`, `floor(64 * cos(pi/2 * j/K))`
+   cells stay masked.
+3. Sweep `K` over 1, 2, 4, 8 and 16.
+
+`K = 1` commits every cell from one pass with nothing revealed, the same
+information today's model uses. It is the control, though not a bit-for-bit
+reproduction, because the weights differ.
+
+**The decoding question this design cannot settle by argument, and why it matters
+more than the round count.** Confidence ordering commits the surest cells first,
+and on this data the surest cells are quiet fields (keep probability about 0.98,
+r77), which say almost nothing about the arm. Under greedy picks with greedy
+ordering, the ambiguous moving cells are left for the last rounds and decided
+together again, which is today's failure. The cosine schedule makes that worse,
+since it commits few cells early and many late. So measure two arms:
+
+- **Greedy:** argmax picks, ordered by confidence. Deterministic, so gate row 9
+  (rollout reproduced exactly from the checkpoint and seed clip) stays an exact
+  check, and decision 5 stands as written. **Expected to reproduce the freeze**;
+  if it does not, that is the cheaper result.
+- **Sampled:** picks sampled at temperature 1, ordered by confidence plus Gumbel
+  noise that anneals to zero over the rounds, as MaskGIT does. Some moving cells
+  then commit early, and the rest condition on them. **This arm is the real test
+  of the hypothesis.** With one seeded generator a sampled rollout still
+  reproduces exactly on the same device (`dynamics_eval.rollout`), so row 9 keeps
+  its shape. Decision 5 would be revisited only if this arm is the one that
+  passes.
+
+r64 and r72 are not evidence against the sampled arm. They sampled every cell
+independently in one pass, where sampling can only add per-cell noise. Here
+sampling decides which cells commit first, and the later rounds see the result.
+
+**The objection on record, which this design does not answer by argument.**
+`research_copy_collapse.md` item 6 rejected MaskGIT-style dynamics. Its first
+reason, that it reopens the attention mask, is answered above: it does not. Its
+second reason stands: TECO reports MaskGIT dynamics collapsing in later frames on
+DMLab. Its mechanism has not been read here, so this design claims nothing about
+why it happened or whether it applies. Gate row 6 at 200 steps is exactly that
+measurement, which is why the stopping rule below reads row 6 and not one-step
+accuracy.
+
+**Stopping rule, fixed before the run.** Read on both seeds, at each `K` and
+each decoding arm:
+
+| Outcome | Reading | Next |
+|---|---|---|
+| **Pass** | Some `K` and arm passes gate row 6 on both seeds: frozen share and per-link drift each at most 1.1x the truth's. Gate row 1 also passes there: one-step accuracy from real context, decoded in `K` rounds, beats persistence (copying the previous frame's token). Late-rollout token accuracy also beats holding the seed frame still, r76's measure (about 19.3% on frames 200-584) | Adopt. Amend the dynamics requirement's description a third time, dated: a frame's tokens are then predicted partly from each other. Revisit decision 5 if the passing arm is the sampled one |
+| **r76 again** | The frozen share falls to the truth's, but accuracy stays at holding the arm still | The model cannot predict the motion even with its neighbours' choices. Go to the fallback |
+| **Control broken** | `K = 1` falls below persistence on gate row 1 by more than the seed spread: up to 0.73 points of best-checkpoint movement from seed alone (r66) | The retrain damaged something unrelated to decoding. Stop and debug before reading any other `K` |
+| **No movement** | The frozen share stays above 80% at every `K` and arm | The hypothesis is refuted. Go to the fallback |
+
+**Fallback order, unchanged from the agenda:**
+
+1. Token-by-token decoding within a frame, which is strictly-causal and governed
+   by decision 9's reopen trigger. Decision 9 measured it 2.40 points behind on
+   the next frame (r54), because it compounds its own early errors.
+2. A residual pixel predictor.
+
+**Costs flagged for later phases, all unmeasured:**
+
+- **Phase 4's frame rate.** Requirement P-1 asks for 30 frames a second
+  sustained, and `K` rounds cost `K` forward passes per frame. With a KV cache
+  over the context, which the engine owns ("Seams" above), each round recomputes
+  only the 64 masked positions, so the cost is less than `K` times. But `K = 16`
+  could be what decides P-1.
+- **Training time.** Measure the epoch time on the first epoch of the first seed
+  and record it next to r70's.
+- **Peak VRAM.** Measure it the same way. Item 4 measured 2.20 GB at batch 16 on
+  the 14.6M model, against gate row 8's 7.5 GB bar.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation
