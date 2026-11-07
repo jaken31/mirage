@@ -604,11 +604,23 @@ The base link, whose motion is in its tokens by 25 steps, is the one link the
 model already tracks better than held still (r81) - which fits this reading.
 **Next:** choose the tokenizer change before training anything, and write it
 into `docs/world_model_architecture.md` first (it re-tokenizes the dataset and
-invalidates every dynamics checkpoint). Candidates, cheapest first to check: the
-existing 96x96 fork (12x12 = 144 cells, the forearm about 1.5x larger on screen),
-a finer grid at 64x64, or weighting the forearm's pixels in the tokenizer loss.
-Each is screened with this probe's parts 1-2 on a tokenizer alone, with a bar of
-forearm tracking near the base link's, before any dynamics run.
+invalidates every dynamics checkpoint). Each candidate is screened with this
+probe's parts 1-2 on a tokenizer alone, with a bar of forearm tracking near the
+base link's, before any dynamics run.
+
+**Landed 2026-11-07 (r86): the 96x96 fork fails that screen.** Rebuilt on Linux
+(its August files were on neither OS), R1 retrained with r44's knobs reproduces
+r44 (32.504 dB), and the forearm doubles to about 10 cells a frame. Its round-trip
+error falls by a quarter (about 2.2 degrees against 3.0), but its motion
+tracking barely moves: correlation with the render's angle change 0.44 at 5
+steps (base 0.88) and 0.875 at 25 (base 0.99), against 0.41 and 0.80 at 64x64.
+2.25x the tokens closes about a third of the 25-step gap and almost none of the
+5-step one, and the fork still fails the code-usage gate (r44-r45). Likely
+reason (not measured): the tokenizer keeps what its pixel loss rewards, and a
+thin link's small motions are a few edge pixels of that loss at any resolution.
+The 96x96 shards (`data/shards96`, 7.8 GB) and tokenizer stay on disk.
+**Next:** screen weighting the forearm's pixels in the tokenizer loss at 64x64
+(no new data; one R1-length run), then a finer grid at 64x64 if that fails.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

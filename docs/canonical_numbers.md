@@ -188,6 +188,7 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 |---|---|---|---|---|
 | `NUM-TOK-FORE-RT` | **2.99 / 0.64 deg** | Mean round-trip angle error, forearm (link1) / base (link0): renders against the cached truth tokens decoded through R1 (medians 1.24 / 0.31) | r82 | current, **R1 at 8x8** |
 | `NUM-TOK-FORE-TRACK` | **r 0.41 / 0.83 at 5 steps, 0.80 / 0.98 at 25** | Correlation of the decoded angle change with the render's, forearm / base. The forearm's motion is not cleanly in its tokens at any horizon | r83 | current, **R1 at 8x8** |
+| `NUM-TOK96-FORE-TRACK` | **r 0.44 / 0.88 at 5 steps, 0.875 / 0.990 at 25** | The same correlation at 96x96 (R1 retrained, `20261107-151103-r1`, 12x12 grid, forearm 10.4 cells a frame): about a third of the forearm's 25-step gap to the base closed, almost none of its 5-step gap. Mean round-trip forearm error 2.23 deg | r86 | current, **R1 at 12x12** |
 | `NUM-DYN-FORE-ONESTEP` | **2.02-2.05 vs 1.97 deg** | Forearm angle error of the masked model's greedy one-step prediction from real context, both seeds, against the frame before held still: not below it | r84 | current, **these two checkpoints only** |
 
 ## Dataset - the 96x96 fork
