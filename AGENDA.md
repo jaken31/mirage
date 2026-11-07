@@ -563,6 +563,15 @@ token-by-token decoding as the fallback and a residual predictor last. It
 changes the input layout, an irreversible decision, so write the design into
 `docs/world_model_architecture.md` before training.
 
+**Design written 2026-11-07, awaiting the captain's call**:
+`docs/world_model_architecture.md`, "Masked target frames, decoded in rounds".
+Its main finding is that the change touches neither decision 2's irreversible
+pair nor decision 9's mask, so the cost is one new `dynamics_hash` and a retrain.
+It measures two decoding arms, because greedy confidence ordering is expected to
+reproduce the freeze, and it fixes a stopping rule on gate row 6 before the run.
+**Next, once accepted:** build the layout and the round decoder, then the
+two-seed run at r70's settings.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance
