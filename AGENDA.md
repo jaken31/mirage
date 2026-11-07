@@ -563,6 +563,18 @@ token-by-token decoding as the fallback and a residual predictor last. It
 changes the input layout, an irreversible decision, so write the design into
 `docs/world_model_architecture.md` before training.
 
+**Landed 2026-11-07 (r78-r80): decoding a frame in K masked rounds does not
+unfreeze rollouts.** Masked training keeps one-step accuracy: at one round the
+best checkpoints beat persistence by +0.18 and +0.26 points, level with the
+one-pass model, at about 3x the training step time. But across 1, 2, 4, 8 and 16
+rounds at temperature 0, 94-96% of generated frames still repeat the frame
+before (truth 20.1%), token accuracy and pose error match an arm held still, and
+row 6 fails at every K. Likely reason (not measured): keeping the old token is
+each cell's most confident option, so confidence order commits kept cells first
+and the rest follow. **Next, per the decision rule:** propose decoding cells
+one at a time within a frame (raster order). Cheap check first: the same sweep
+at temperature above 0 on these checkpoints, which needs no training.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance

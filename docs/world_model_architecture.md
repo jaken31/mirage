@@ -882,7 +882,7 @@ identical config and different seeds share a hash and produce different tokens.
 
 ## Phase 2 decision: a frame is decoded in K masked rounds, not one pass
 
-**APPROVED 2026-11-06; nothing below is measured yet.** It reopens three decisions in `docs/phase2_structural_plan.md`:
+**APPROVED 2026-11-06; measured 2026-11-07 (r78-r80): one-step accuracy holds, rollouts still freeze at every K - see AGENDA.md.** It reopens three decisions in `docs/phase2_structural_plan.md`:
 decision 2's sequence layout (the irreversible one), decision 9's mask, and
 decision 5's greedy rollout.
 
