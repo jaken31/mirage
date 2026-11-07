@@ -26,6 +26,7 @@ An angle is only compared where the link's blob is at least `MIN_MAJOR` px long
 in every frame involved; a 1-2 px blob has no meaningful orientation.
 
     python bench/forearm_probe.py RUN_ID/best.pt [...]
+    python bench/forearm_probe.py --skip-model --tokenizer TOK_RUN --config mirage/configs/base96.json
 """
 import argparse
 import json
@@ -101,22 +102,25 @@ def onestep(model, tokens: np.ndarray, actions: np.ndarray, ctx: int, dev: torch
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("checkpoints", nargs="+", help="RUN_ID/best.pt under runs/")
+    ap.add_argument("checkpoints", nargs="*", help="RUN_ID/best.pt under runs/ (none with --skip-model)")
     ap.add_argument("--config", type=Path, default=CONFIG)
     ap.add_argument("--json", type=Path, help="write every number printed here")
     ap.add_argument("--skip-model", action="store_true", help="parts 1-2 only")
+    ap.add_argument("--tokenizer", default=dynamics.TOKENIZER_RUN,
+                    help="tokenizer run whose token cache parts 1-2 read (another resolution: pass its "
+                         "base config as --config, with --skip-model)")
     args = ap.parse_args()
     out: dict = {}
     cfg = config.load(str(args.config))
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    splits = dynamics.load_splits(cfg)
+    splits = dynamics.load_splits(cfg, args.tokenizer)
     palette = validator.load_palette(ROOT / cfg.sim["scene_xml"])
     names = [palette.names[i] for i in palette.links]
     tau = cfg.validator["offpalette_tau"]
     grid, cells = tuple(cfg.shapes.token_grid), math.prod(cfg.shapes.token_grid)
     ctx = cfg.data["ctx"]
     eps = de.val_episodes(splits, len(palette.blocks))
-    tok, _ = fsq_eval.load_run(dynamics.TOKENIZER_RUN, cfg, dev)
+    tok, _ = fsq_eval.load_run(args.tokenizer, cfg, dev)
     e, length = eps.actions.shape
 
     renders = de.val_pixels(splits)
