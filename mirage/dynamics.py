@@ -459,15 +459,20 @@ class Dynamics(nn.Module):
 
     def __init__(self, d_model: int, n_layers: int, n_heads: int, mlp_ratio: int,
                  codes: int, max_len: int, rope_base: float, dropout: float = 0.0,
-                 mask_token: bool = False) -> None:
+                 mask_token: bool = False, action_query: bool = False, cells: int | None = None) -> None:
         super().__init__()
         if d_model % n_heads or (d_model // n_heads) % 2:
             raise ValueError(f"d_model {d_model} over {n_heads} heads is not an even head width, "
                              f"which RoPE's channel pairs need")
+        if action_query and (not mask_token or cells is None):
+            raise ValueError("the per-query action input is the K-round model's, and needs the frame's cells")
+        self.codes, self.cells = codes, cells
         # The K-round model's learned `[MASK]` is one more input id, after the
         # actions; it is never a target, because the head outputs codes only.
         self.mask_id = codes + N_ACTIONS if mask_token else None
-        self.embed = nn.Embedding(codes + N_ACTIONS + int(mask_token), d_model)
+        # The null action (action dropout, guidance): one more input id, after `[MASK]`.
+        self.null_id = codes + N_ACTIONS + 1 if action_query else None
+        self.embed = nn.Embedding(codes + N_ACTIONS + int(mask_token) + int(action_query), d_model)
         self.drop = nn.Dropout(dropout)   # on the embeddings, GPT-2's fourth site
         self.blocks = nn.ModuleList([Block(d_model, n_heads, mlp_ratio, dropout)
                                      for _ in range(n_layers)])
@@ -484,6 +489,11 @@ class Dynamics(nn.Module):
                 nn.init.normal_(m.weight, std=0.02)
                 if getattr(m, "bias", None) is not None:
                     nn.init.zeros_(m.bias)
+        # Each query cell's input plus its frame's action, row N_ACTIONS the null
+        # action. Zero at the start, so the model starts as the token-only one.
+        self.act_embed = nn.Embedding(N_ACTIONS + 1, d_model) if action_query else None
+        if self.act_embed is not None:
+            nn.init.zeros_(self.act_embed.weight)
 
     def forward(self, tok: torch.Tensor, mask: torch.Tensor,
                 read: torch.Tensor, pos: torch.Tensor | None = None) -> torch.Tensor:
@@ -502,7 +512,20 @@ class Dynamics(nn.Module):
             if pos.shape != (n,):
                 raise ValueError(f"{tuple(pos.shape)} RoPE indices for {n} positions")
             cos, sin = self.cos[pos], self.sin[pos]
-        x = self.drop(self.embed(tok))
+        x = self.embed(tok)
+        if self.act_embed is not None:
+            if pos is None:
+                raise ValueError("the per-query action input reads the K-round layout's RoPE indices")
+            # Query cell i of frame f sits at RoPE index f * (cells + 1) + i, and
+            # action[f], the action that produces frame f, at the last slot of
+            # context block f - 1, f * (cells + 1) - 1: a context position is its
+            # own RoPE index.
+            stride = self.cells + 1
+            q = torch.arange(context_len(n, self.cells), n, device=tok.device)
+            a = tok[:, pos[q] // stride * stride - 1] - self.codes
+            a = torch.where(a == self.null_id - self.codes, N_ACTIONS, a)
+            x = x.index_add(1, q, self.act_embed(a))
+        x = self.drop(x)
         for blk in self.blocks:
             x = blk(x, mask, cos, sin)
         return self.head(self.norm(x[:, read]))
@@ -523,8 +546,24 @@ def build(cfg: config.Config, dropout: float = 0.0) -> Dynamics:
     ctx, cells = cfg.data["ctx"], math.prod(cfg.shapes.token_grid)
     mg = is_maskgit(cfg)
     max_len = int(mask_layout(ctx, cells).pos.max()) + 1 if mg else len(layout(ctx, cells).src)
+    aq = config.setting(cfg, "dynamics", "action_input") == "token_and_query"
     return Dynamics(dyn["d_model"], dyn["n_layers"], dyn["n_heads"], dyn["mlp_ratio"],
-                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"], dropout, mg)
+                    cfg.tokenizer["codebook_size"], max_len, dyn["rope_base"], dropout, mg, aq, cells)
+
+
+def context_len(length: int, cells: int) -> int:
+    """The context stream's length in a K-round input of `length` positions.
+
+    The input is `c` context blocks of `cells + 1`, then `m` query blocks of
+    `cells`, `1 <= m <= c`. Two splits of one length would need their `m` to
+    differ by a multiple of `cells + 1` (`cells` and `cells + 1` are coprime),
+    and `m <= c < cells + 1` in every layout here, so the split is unique.
+    """
+    for m in range(1, length // cells + 1):
+        n = length - m * cells
+        if n > 0 and n % (cells + 1) == 0 and m <= n // (cells + 1):
+            return n
+    raise ValueError(f"{length} positions are no K-round layout of {cells}-cell frames")
 
 
 def is_maskgit(cfg: config.Config) -> bool:
@@ -798,6 +837,11 @@ CORRUPT = 0.0
 # Train on targets with R1's spurious flips held at the frame before's token
 # (`clean_targets`, r69). Off by default until a run shows it helps.
 CLEAN_FLIPS = False
+# Replace each target frame's action, at this rate, by the null action in
+# training, so the same weights learn the action-free prediction that guidance
+# needs (classifier-free guidance's dropout, 0.1 in the proposal). Needs the
+# per-query action input's null id.
+ACTION_DROP = 0.0
 # Replace each context frame after the first, at this rate, by the model's own
 # one-step prediction of it (`sample_inputs`, decision 7's second remedy). Off by
 # default until a run shows it helps.
@@ -1022,10 +1066,10 @@ def _environment(dev: torch.device) -> dict:
 # machine stays possible (`fsq.train` draws the same line).
 RESUME_KNOBS = ("tokenizer_run", "epochs", "batch", "lr", "lr_floor", "warmup", "weight_decay",
                 "dropout", "change_weight", "corrupt", "clean_flips", "sched_sample", "clip", "seed", "eval_every", "eval_windows", "eval_seed", "steps_per_epoch",
-                "seq_len", "mask_schedule")
+                "seq_len", "mask_schedule", "action_drop")
 # The value a knob had before it existed, for resuming a run that predates it.
 KNOB_OFF = {"dropout": 0.0, "change_weight": 1.0, "corrupt": 0.0, "clean_flips": False, "sched_sample": 0.0,
-            "mask_schedule": None}
+            "mask_schedule": None, "action_drop": 0.0}
 
 
 def held_out(model: Dynamics, splits: TokenSplits, gap_idx: np.ndarray, lay: Layout,
@@ -1053,7 +1097,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
           lr_floor: float = LR_FLOOR, warmup: float = WARMUP, weight_decay: float = WEIGHT_DECAY,
           dropout: float = DROPOUT, change_weight: float = CHANGE_WEIGHT,
           corrupt: float = CORRUPT, clean_flips: bool = CLEAN_FLIPS,
-          sched_sample: float = SCHED_SAMPLE, clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
+          sched_sample: float = SCHED_SAMPLE, action_drop: float = ACTION_DROP,
+          clip: float = CLIP, seed: int = 0, eval_every: int = EVAL_EVERY,
           eval_windows: int = EVAL_WINDOWS, eval_seed: int = EVAL_SEED,
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
@@ -1118,6 +1163,10 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
 
     torch.manual_seed(seed)   # immediately before `build`: the mask measurement's initial weights
     model = build(cfg, dropout).to(dev)
+    if action_drop and model.null_id is None:
+        raise ValueError("action dropout needs the null action, which only the per-query action "
+                         "input (dynamics.action_input token_and_query) has")
+    act_slots = np.arange(1, ctx + 1) * (cells + 1) - 1   # action[f] for target frame f
     params = sum(p.numel() for p in model.parameters())
     # Decay matrices and embeddings, not biases or LayerNorm gains, which
     # decay toward a value that means nothing (GPT-2's split).
@@ -1154,7 +1203,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     knobs = dict(tokenizer_run=tokenizer_run, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
                  warmup=warmup, weight_decay=weight_decay, dropout=dropout,
                  change_weight=change_weight, corrupt=corrupt, clean_flips=clean_flips,
-                 sched_sample=sched_sample, clip=clip, seed=seed,
+                 sched_sample=sched_sample, action_drop=action_drop, clip=clip, seed=seed,
                  eval_every=eval_every, eval_windows=eval_windows, eval_seed=eval_seed,
                  steps_per_epoch=per_epoch, seq_len=seq_len(lay), targets=len(lay.tgt),
                  frame_decoding="maskgit" if mg else "one_pass",
@@ -1266,6 +1315,12 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
                     g["lr"] = lr_at(step)
                 tok, act = _stack(splits.train, order[s])
                 xa, ya = assemble(lay, tok, act, codes)
+                if action_drop:
+                    # Per target frame, in both places its action enters: the
+                    # context slot, which the query cells' action input reads.
+                    slots = xa[:, act_slots]
+                    slots[rng.random(slots.shape) < action_drop] = model.null_id
+                    xa[:, act_slots] = slots
                 raw = ya
                 if quiet is not None:
                     ya = clean_targets(lay, tok, ya, window_quiet(splits.train, order[s], quiet))
@@ -1370,6 +1425,8 @@ def main() -> None:
                     help="train on targets with quiet-field token changes set to the frame before's")
     ap.add_argument("--sched-sample", type=float, default=SCHED_SAMPLE,
                     help="share of context frames replaced by the model's own one-step prediction")
+    ap.add_argument("--action-drop", type=float, default=ACTION_DROP,
+                    help="share of target frames whose action is nulled in training (guidance)")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
     ap.add_argument("--tokenizer", default=TOKENIZER_RUN, metavar="RUN_ID",
                     help="train on this tokenizer run's cache (screens only; the gate assumes R1)")
@@ -1401,7 +1458,7 @@ def main() -> None:
     train(config.load(args.config), epochs=args.epochs, batch=args.batch, seed=args.seed,
           weight_decay=args.weight_decay, dropout=args.dropout,
           change_weight=args.change_weight, corrupt=args.corrupt, clean_flips=args.clean_flips,
-          sched_sample=args.sched_sample,
+          sched_sample=args.sched_sample, action_drop=args.action_drop,
           steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb,
           tokenizer_run=args.tokenizer)
 
@@ -1764,6 +1821,81 @@ def _check_maskgit(base: config.Config) -> None:
                                       name="mg-sched")), "a K-round run took scheduled sampling"
     print(f"maskgit train: {steps} steps, resumed bit-identical; "
           f"refuses scheduled sampling")
+    _check_action_query(mg, splits, common)
+
+
+def _check_action_query(mg: config.Config, splits: "TokenSplits", common: dict) -> None:
+    """The per-query action input: sizes, today's model at init, causality, guidance, dropout."""
+    from mirage import dynamics_eval   # imported here: it imports this file
+    codes, cells, ctx, d = 512, 64, mg.data["ctx"], mg.dynamics["d_model"]
+    aq = dataclasses.replace(mg, dynamics={**mg.dynamics, "action_input": "token_and_query"})
+    assert _refused(build, dataclasses.replace(aq, dynamics={**aq.dynamics, "frame_decoding": "one_pass"}))
+    torch.manual_seed(0)
+    ma = build(aq).double().eval()
+    params = sum(p.numel() for p in ma.parameters())
+    # One more embedding row (the null action) and the 10-row action table.
+    assert params == SIZED_PARAMS + 2 * d + (N_ACTIONS + 1) * d, params
+    assert ma.null_id == codes + N_ACTIONS + 1 and not ma.act_embed.weight.any()
+    lay = mask_layout(ctx, cells)
+    n = len(lay.src)
+    assert context_len(seq_len(lay), cells) == n and context_len(n + cells, cells) == n
+    assert all(context_len(len(mask_layout(c, cells, [c]).pos), cells) == c * (cells + 1) for c in (1, 4, 15))
+    mask, read, pos = attention_mask(lay), torch.from_numpy(lay.read), torch.from_numpy(lay.pos)
+    rng = np.random.default_rng(7)
+    tok = rng.integers(0, codes, (1, ctx + 1, cells))
+    act = rng.integers(0, N_ACTIONS, (1, ctx + 1))
+    xa, ya = (torch.from_numpy(a) for a in assemble(lay, tok, act, codes))
+    torch.manual_seed(1)
+    q, _ = mask_queries(ya, cells, ma.mask_id)
+    x = torch.cat((xa, q), 1)
+    # Zero-initialised, it is the token-only model: the same weights, the same logits.
+    plain = build(mg).double().eval()
+    sd = {k: v for k, v in ma.state_dict().items() if not k.startswith("act_embed")}
+    sd["embed.weight"] = sd["embed.weight"][:-1]
+    plain.load_state_dict(sd)
+    with torch.no_grad():
+        assert torch.equal(ma(x, mask, read, pos), plain(x, mask, read, pos)), "the zero action input moved a logit"
+        ma.act_embed.weight.normal_(0, 0.02)
+        moved = ma(x, mask, read, pos)
+    assert not torch.equal(moved, plain(x, mask, read, pos))
+    # Trained, it keeps the layout's information flow, the action slots included.
+    check_mask_causal(ma, lay, mask, x, (0, 64, 974, n, n + 959))
+    # The input reads frame f's action, the null id included: change action[ctx]
+    # and only the last frame's query block moves.
+    for new in (int(xa[0, n - 1]) - codes + 1) % N_ACTIONS + codes, ma.null_id:
+        y = x.clone()
+        y[0, n - 1] = new
+        with torch.no_grad():
+            diff = (ma(y, mask, read, pos) != moved).any(-1)[0]
+        assert diff[-cells:].all() and not diff[:-cells].any(), new
+    # Guidance: w = 1 is the plain rollout; any other w is deterministic; a model
+    # without the null action refuses it.
+    cpu = torch.device("cpu")
+    seed, acts = tok[:, :ctx].repeat(2, 0), np.concatenate((act, act[:, ::-1]))[:, :ctx + 1]
+    plain_roll = dynamics_eval.rollout(ma, seed, acts, 1, cpu).frames
+    assert np.array_equal(plain_roll, dynamics_eval.rollout(ma, seed, acts, 1, cpu, guidance=1.0).frames)
+    g2 = dynamics_eval.rollout(ma, seed, acts, 1, cpu, guidance=3.0).frames
+    assert np.array_equal(g2, dynamics_eval.rollout(ma, seed, acts, 1, cpu, guidance=3.0).frames)
+    assert _refused(dynamics_eval.rollout, plain, seed, acts, 1, cpu, 0.0, None, None, 2.0)
+    del ma, plain
+    # Action dropout: refused without the null action; resumes bit-identical.
+    tiny = dataclasses.replace(aq, dynamics={**aq.dynamics, "d_model": 16, "n_layers": 1, "n_heads": 2})
+    drop = {**common, "action_drop": 0.5}
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp)
+        whole = train(tiny, **drop, runs_dir=runs, name="aq-whole")
+        first = train(tiny, **drop, runs_dir=runs, name="aq-first", session_epochs=1)
+        rest = train(tiny, **drop, runs_dir=runs, name="aq-rest", resume=first["run_id"])
+
+        def losses(r: dict) -> list:
+            return [(x["step"], x["loss"]) for x in _records(runs / r["run_id"]) if "loss" in x]
+        assert losses(whole) == losses(first) + losses(rest), "the resumed action-dropout losses differ"
+        assert whole["action_drop"] == 0.5
+        assert _refused(lambda: train(dataclasses.replace(tiny, dynamics={**tiny.dynamics, "action_input": "token"}),
+                                      **drop, runs_dir=runs, name="aq-tok")), "action dropout without a null id"
+    print(f"action query: +{(N_ACTIONS + 2) * d} parameters, today's model at init, causal with the "
+          f"action slots, action[ctx] moves only its own query block; guidance 1 is the plain rollout, "
+          f"guided rollouts reproduce; action dropout resumes bit-identical")
 
 
 def _self_check() -> None:

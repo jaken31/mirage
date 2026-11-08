@@ -201,7 +201,8 @@ class Rollout(NamedTuple):
 @torch.no_grad()
 def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, steps: int,
             dev: torch.device, temperature: float = 0.0,
-            generator: torch.Generator | None = None, rounds: int | None = None) -> Rollout:
+            generator: torch.Generator | None = None, rounds: int | None = None,
+            guidance: float = 1.0) -> Rollout:
     """Greedy rollout (decision 5) from seed clips `(B, ctx, cells)`, `steps` frames long.
 
     `temperature` above 0 samples each cell from `softmax(logits / temperature)`
@@ -234,6 +235,12 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
     count stays masked. Committed cells are never revised. One round at
     temperature 0 is the one-pass argmax, which gate row 2 checks against
     `dynamics.score_windows`. `rounds` is refused for a one-pass model.
+
+    **`guidance` w** (classifier-free guidance, for a model with the null
+    action): each round's logits become `l_null + w * (l_act - l_null)`, where
+    `l_null` is the same pass with the predicted frame's own action - the
+    context's last slot - nulled. 1.0 is the plain pass, unchanged; any other
+    value doubles the batch of every round.
     """
     b, ctx, cells = seed.shape
     if actions.shape != (b, ctx + steps):
@@ -243,6 +250,9 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
     mask_id = getattr(model, "mask_id", None)
     if mask_id is None and rounds is not None:
         raise ValueError(f"{rounds} rounds for a one-pass model")
+    guided = guidance != 1.0
+    if guided and getattr(model, "null_id", None) is None:
+        raise ValueError(f"guidance {guidance} for a model without the null action")
     if mask_id is not None:
         schedule = dynamics.unmask_schedule(cells, 1 if rounds is None else rounds)
     codes = model.head.out_features
@@ -258,10 +268,18 @@ def rollout(model: dynamics.Dynamics, seed: np.ndarray, actions: np.ndarray, ste
         for k in range(steps):
             x, _ = dynamics.assemble(lay, frames[:, k:k + ctx + 1], actions[:, k:k + ctx + 1], codes)
             x = torch.from_numpy(x).to(dev)
+            if guided:
+                xn = x.clone()
+                xn[:, -1] = model.null_id    # action[ctx + k], the predicted frame's own
             q = torch.full((b, cells), mask_id, dtype=x.dtype, device=dev)
             for left in schedule:
                 with dynamics._autocast(dev):
-                    logits = model(torch.cat((x, q), 1), mask, read, pos)
+                    if guided:
+                        both = model(torch.cat((torch.cat((x, q), 1), torch.cat((xn, q), 1))),
+                                     mask, read, pos).float()
+                        logits = both[b:] + guidance * (both[:b] - both[b:])
+                    else:
+                        logits = model(torch.cat((x, q), 1), mask, read, pos)
                 logits = logits.float()
                 if temperature > 0:
                     probs = torch.softmax(logits.reshape(-1, codes) / temperature, -1)

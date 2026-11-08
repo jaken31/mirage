@@ -31,8 +31,10 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
 # 7567369d. Present, it is hashed like any other key. `frame_decoding` is the
 # K-round masked decoding decision (`world_model_architecture.md`, "Phase 2
 # decision: a frame is decoded in K masked rounds, not one pass").
+# `action_input` is how the action reaches the K-round model ("Phase 2 proposal:
+# the action is added to every query cell, with action dropout for guidance").
 OPTIONAL_KEYS: dict[str, dict[str, Any]] = {
-    "dynamics": {"frame_decoding": "one_pass"},
+    "dynamics": {"frame_decoding": "one_pass", "action_input": "token"},
 }
 
 # Counts that must be a positive int. A zero or negative value still hashes
@@ -60,6 +62,7 @@ CHOICE_KEYS: dict[str, dict[str, frozenset[str]]] = {
         "output_head": frozenset(["untied"]),
         "mask": frozenset(["block_causal", "strict_causal"]),
         "frame_decoding": frozenset(["one_pass", "maskgit"]),
+        "action_input": frozenset(["token", "token_and_query"]),
     },
 }
 
@@ -354,6 +357,8 @@ def _self_check() -> None:
     mg = variant("dynamics", "frame_decoding", "maskgit")
     assert setting(mg, "dynamics", "frame_decoding") == "maskgit"
     assert mg.dynamics_hash != cfg.dynamics_hash and mg.tokenizer_hash == cfg.tokenizer_hash
+    assert setting(cfg, "dynamics", "action_input") == "token"
+    assert variant("dynamics", "action_input", "token_and_query").dynamics_hash != cfg.dynamics_hash
 
     # A continuity bound is a validator threshold: it moves validator_hash and
     # nothing else, so recalibrating it orphans no dataset or checkpoint.
@@ -397,6 +402,7 @@ def _self_check() -> None:
         ("dynamics", "n_heads", _DROP, "missing keys"),
         ("dynamics", "extra", 1, "unknown keys"),
         ("dynamics", "frame_decoding", "raster", "must be one of"),
+        ("dynamics", "action_input", "film", "must be one of"),
     ]:
         try:
             variant(section, key, value)
