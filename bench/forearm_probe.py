@@ -30,6 +30,14 @@ episodes, 585 steps) and the forearm is link 1.
    the model's angle change since that frame with the render's - next to the
    same correlation for the decoded truth tokens on the same samples, the
    tokenizer's ceiling.
+6. **model side** - over `H6` steps from part 5's starts, on one sample mask per
+   link: the rollout's angle change correlated with the render's when each
+   episode's future actions are another episode's (a fixed shuffle) against the
+   true actions; the action gain, the projection of the model's least-squares
+   response to the summed per-joint commands onto the render's, over the
+   render's own (1 follows the action fully, 0 ignores it); and the same
+   correlation with the context reset to the real frames every k steps (each
+   block's predicted change summed), against open loop.
 
 An angle is only compared where the link's blob is at least `MIN_MAJOR` px long
 in every frame involved; a 1-2 px blob has no meaningful orientation.
@@ -59,6 +67,8 @@ HORIZONS = [1, 5, 25, 100]
 SAMPLE_SEED = 0
 ROLL_H = 100          # frames per rollout (part 5)
 ROLL_EVERY = 25       # frames between rollout starts
+H6 = 25               # horizon of part 6
+RESETS = (1, 5)       # part 6: context reset to the real frames every k steps
 FORE, BASE = 1, 0
 
 
@@ -337,6 +347,63 @@ def main() -> None:
                 print(f"    {h:>4}{nm:>7}{err:>9.2f}{serr:>8.2f}{rm_:>9.3f}{rt_:>8.3f}{sm:>12.1%}{st:>10.1%}"
                       f"{lost:>7.2%}{int(ok.sum()):>6}")
         out.setdefault("part5", {})[ck] = p5
+
+        t0 = time.perf_counter()
+
+        def feats(ids):
+            px = de.decode_u8(tok, ids.reshape(-1, cells), grid, dev)
+            return de.features(px.reshape(*ids.shape[:-1], *px.shape[1:]), palette, tau)
+
+        perm = np.roll(np.arange(e), 1)
+        shuf = np.empty((e, n, cells), np.int64)
+        for i, s in enumerate(starts):
+            acts = np.concatenate((eps.actions[:, s - ctx:s], eps.actions[perm, s:s + H6]), 1)
+            shuf[:, i] = de.rollout(model, eps.tokens[:, s - ctx:s], acts, H6, dev).frames[:, -1]
+        sf = feats(shuf)
+        rs = {}
+        for k in RESETS:
+            nb = H6 // k
+            ends = np.empty((e, n, nb, cells), np.int64)
+            for i, s in enumerate(starts):
+                for j in range(nb):
+                    b0 = s + j * k
+                    ends[:, i, j] = de.rollout(model, eps.tokens[:, b0 - ctx:b0], eps.actions[:, b0 - ctx:b0 + k],
+                                               k, dev).frames[:, -1]
+            rs[k] = (feats(ends), starts[:, None] + np.arange(nb)[None] * k - 1)   # block start frames (n, nb)
+        cmd = de.COMMAND[eps.actions]                                     # (E, T, joints)
+        csum = np.stack([cmd[:, s:s + H6].sum(1) for s in starts], 1).astype(np.float64)   # (E, n, joints)
+        end = starts + H6 - 1
+        print(f"  model side, {H6} steps ({time.perf_counter() - t0:.0f}s): correlation of the angle change with "
+              f"the render's; action gain = model response to the commands over the render's")
+        print(f"    {'link':<7}{'true act':>9}{'shuffled':>10}" + "".join(f"{f'reset {k}':>9}" for k in RESETS)
+              + f"{'gain':>7}{'render R2':>11}{'n':>6}")
+        p6 = {}
+        for l, nm in enumerate(names):
+            ha, hm = df.link_angle[:, last, l], df.link_major[:, last, l]
+            ra, rm = rf.link_angle[:, end, l], rf.link_major[:, end, l]
+            rh, rhm = rf.link_angle[:, last, l], rf.link_major[:, last, l]
+            pa, pm = rl.link_angle[:, :, H6 - 1, l], rl.link_major[:, :, H6 - 1, l]
+            ok = (hm >= MIN_MAJOR) & (rm >= MIN_MAJOR) & (rhm >= MIN_MAJOR) & (pm >= MIN_MAJOR)
+            ok &= sf.link_major[..., l] >= MIN_MAJOR
+            for f, bs in rs.values():
+                ok &= (f.link_major[..., l] >= MIN_MAJOR).all(-1) & (df.link_major[:, bs, l] >= MIN_MAJOR).all(-1)
+            dr = deg_diff(ra, rh)[ok]
+            dm = deg_diff(pa, ha)[ok]
+            ds = deg_diff(sf.link_angle[..., l], ha)[ok]
+            corr = lambda x: float(np.corrcoef(x, dr)[0, 1])  # noqa: E731
+            reset = {k: corr(deg_diff(f.link_angle[..., l], df.link_angle[:, bs, l]).sum(-1)[ok])
+                     for k, (f, bs) in rs.items()}
+            x = np.column_stack((csum[ok], np.ones(int(ok.sum()))))
+            br, res, *_ = np.linalg.lstsq(x, dr, rcond=None)
+            bm = np.linalg.lstsq(x, dm, rcond=None)[0]
+            gain = float(bm[:-1] @ br[:-1] / (br[:-1] @ br[:-1]))
+            r2 = float(1 - ((dr - x @ br) ** 2).sum() / ((dr - dr.mean()) ** 2).sum())
+            p6[nm] = {"corr_true": corr(dm), "corr_shuffled": corr(ds), "corr_reset": {str(k): v for k, v in reset.items()},
+                      "action_gain": gain, "render_beta": br[:-1].tolist(), "model_beta": bm[:-1].tolist(),
+                      "render_r2": r2, "n": int(ok.sum())}
+            print(f"    {nm:<7}{corr(dm):>9.3f}{corr(ds):>10.3f}" + "".join(f"{v:>9.3f}" for v in reset.values())
+                  + f"{gain:>7.2f}{r2:>11.3f}{int(ok.sum()):>6}")
+        out.setdefault("part6", {})[ck] = p6
         sys.stdout.flush()
     if args.json:
         args.json.write_text(json.dumps(out, indent=1))
