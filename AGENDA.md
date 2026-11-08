@@ -646,9 +646,49 @@ forearm). It does beat holding the arm still in angle error from 5 steps on, but
 the direction it moves each link matches the render's only about half the time,
 against 86-96% for the tokens - even on the base link, whose motion the tokens
 carry almost perfectly. So r84's "tokenizer first" came from a sub-pixel target.
-**Next:** back to the model side (branch (a)): why it ignores the action over
-multi-step rollouts - action guidance or training on its own rollouts - scored
-with part 5, not one step.
+**Next:** back to the model side (branch (a)). Before training, a no-training
+probe on the same three checkpoints (`bench/forearm_probe.py` part 6, about 5
+minutes each) tells the two model-side remedies apart, scored on 25-step
+rollouts as in part 5:
+
+1. **Does the model use the action at all?** Repeat part 5's rollouts with each
+   episode's actions swapped for another episode's (a fixed shuffle). Score the
+   rollout's angle change against the render of the *true* episode. A model that
+   follows the action loses tracking; one that ignores it keeps it.
+   Alongside: the slope of each link's 25-step angle change against the summed
+   commanded direction over the window, model against render (the action gain:
+   1.0 follows the action fully, 0 ignores it).
+2. **Is it compounding error?** Rerun the 25 steps with the context reset to the
+   real frames every k = 1 and 5 steps. Score the summed predicted change of
+   each block against the render's. If k = 1 (chained one-step predictions)
+   tracks far better than open loop, errors compound over the rollout. If k = 1
+   tracks poorly too, each step already lacks the motion.
+
+Pre-registered rule:
+- Shuffled actions keep tracking within 0.05 correlation of the true ones, or
+  the action gain is under 0.3: the model ignores the action. Fix the action
+  path first: guidance with action dropout in training, or a stronger action
+  input.
+- The action gain is fine, but k = 5 resets improve 25-step tracking by more
+  than 0.15 over open loop: errors compound. Train on the model's own rollouts.
+- Both fire: the action path first, because training on its own rollouts
+  cannot create sensitivity to an input the model ignores.
+- Neither fires: neither remedy is indicated; write up and stop.
+
+**Landed 2026-11-08 (r90): the model uses the action, but far too weakly - the
+action path comes first.** With another episode's actions, 25-step tracking
+falls from about 0.5 to 0.18 on the base link, so the action matters. But the
+model's response to the commands is only 13-19% of the simulator's on the base
+link, and 34-41% on the forearm (the forearm's own response to commands is
+noisy, so that figure is weaker evidence). Resetting the context every 5 steps
+helps the base link by about 0.19 on both R1 seeds, so compounding error is
+there too, but not on the weighted run. Both branches fire on R1; the rule
+says the action path first. Caveat: the gain also drops if the model
+under-moves for every action, and that is not separated here.
+**Next:** design the action-path change - action dropout in training plus
+guidance at rollout, or a stronger action input - write it into
+`docs/world_model_architecture.md` before implementing, and judge it on part 6's
+gain and part 5's 25-step tracking.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
