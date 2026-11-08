@@ -636,9 +636,19 @@ predicts the forearm one step ahead worse than holding it still: angle error 1.8
 degrees against 1.80, the same gap as on R1's tokens (r84). It changes more
 forearm cells and gets a few more of them right, but not enough to cross. So the
 weighting lever's short-horizon gain at the tokenizer does not carry downstream.
-**Next:** the last untried tokenizer screen (a finer grid at 64x64, 4x the
-tokens per frame), or step back and reconsider whether one-step forearm motion,
-which is sub-pixel, is the right target at all.
+
+**Landed 2026-11-08 (r89): at multi-step horizons the model is the limit, on
+both links.** One-step forearm motion is under a pixel, so the target was moved
+to greedy rollouts from real context with the true actions. At 25 steps the
+real tokens' angle change follows the render's closely (correlation 0.985 base,
+0.62-0.75 forearm), but the model's follows it weakly (0.48-0.54 base, 0.24-0.33
+forearm). It does beat holding the arm still in angle error from 5 steps on, but
+the direction it moves each link matches the render's only about half the time,
+against 86-96% for the tokens - even on the base link, whose motion the tokens
+carry almost perfectly. So r84's "tokenizer first" came from a sub-pixel target.
+**Next:** back to the model side (branch (a)): why it ignores the action over
+multi-step rollouts - action guidance or training on its own rollouts - scored
+with part 5, not one step.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

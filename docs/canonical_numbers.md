@@ -192,6 +192,7 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-TOKFW-FORE-TRACK` | **r 0.49 / 0.77 at 5 steps, 0.81 / 0.975 at 25** | The same correlation for R1 at 64x64 with the forearm's pixels weighted 8x in the loss (`20261107-182208-r1`, `--link-weight 8`): the forearm gains at 1-5 steps, not at 25. Held-out PSNR 30.110 dB against R1's 31.095 | r87 | current, **this run only** |
 | `NUM-DYN-FORE-ONESTEP` | **2.02-2.05 vs 1.97 deg** | Forearm angle error of the masked model's greedy one-step prediction from real context, both seeds, against the frame before held still: not below it | r84 | current, **these two checkpoints only** |
 | `NUM-DYNFW-FORE-ONESTEP` | **1.87 vs 1.80 deg** | The same measure for the masked model trained on the forearm-weighted tokens (`20261107-235843-dyn`, seed 0, tokenizer `20261107-182208-r1`): still not below held still, the same gap as R1's | r88 | current, **this checkpoint only** |
+| `NUM-DYN-ROLL-TRACK` | **r 0.48-0.54 / 0.24-0.33 vs 0.985 / 0.62-0.75 at 25 steps** | Correlation of the masked model's 25-step rollout angle change (base / forearm) with the render's, against the decoded truth tokens' on the same samples, R1 seeds 0-1 and the weighted run; direction agrees 41-57% against the tokens' 86-96% | r89 | current, **these three checkpoints only** |
 
 ## Dataset - the 96x96 fork
 
