@@ -628,10 +628,17 @@ short-horizon motion improves most: correlation with the render's angle change
 still well under the base link's 0.77 and 0.975. The base link loses a little,
 and held-out PSNR drops a decibel to 30.11, just over the 30 dB bar. So the two
 levers act on different horizons - weighting on 1-5 steps, resolution (r86) on
-25 - and neither alone gets close. **Next:** decide between testing a lever
-downstream (train the masked dynamics model on the weighted tokens, about 7 h,
-and see whether its forearm one-step error drops below held still) and the last
-untried tokenizer screen (a finer grid at 64x64, 4x the tokens per frame).
+25 - and neither alone gets close.
+
+**Landed 2026-11-08 (r88): the weighted tokens do not help the model either.**
+The masked dynamics model, retrained on r87's tokens (seed 0, 10 epochs), still
+predicts the forearm one step ahead worse than holding it still: angle error 1.87
+degrees against 1.80, the same gap as on R1's tokens (r84). It changes more
+forearm cells and gets a few more of them right, but not enough to cross. So the
+weighting lever's short-horizon gain at the tokenizer does not carry downstream.
+**Next:** the last untried tokenizer screen (a finer grid at 64x64, 4x the
+tokens per frame), or step back and reconsider whether one-step forearm motion,
+which is sub-pixel, is the right target at all.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

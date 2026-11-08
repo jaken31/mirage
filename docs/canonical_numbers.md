@@ -191,6 +191,7 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-TOK96-FORE-TRACK` | **r 0.44 / 0.88 at 5 steps, 0.875 / 0.990 at 25** | The same correlation at 96x96 (R1 retrained, `20261107-151103-r1`, 12x12 grid, forearm 10.4 cells a frame): about a third of the forearm's 25-step gap to the base closed, almost none of its 5-step gap. Mean round-trip forearm error 2.23 deg | r86 | current, **R1 at 12x12** |
 | `NUM-TOKFW-FORE-TRACK` | **r 0.49 / 0.77 at 5 steps, 0.81 / 0.975 at 25** | The same correlation for R1 at 64x64 with the forearm's pixels weighted 8x in the loss (`20261107-182208-r1`, `--link-weight 8`): the forearm gains at 1-5 steps, not at 25. Held-out PSNR 30.110 dB against R1's 31.095 | r87 | current, **this run only** |
 | `NUM-DYN-FORE-ONESTEP` | **2.02-2.05 vs 1.97 deg** | Forearm angle error of the masked model's greedy one-step prediction from real context, both seeds, against the frame before held still: not below it | r84 | current, **these two checkpoints only** |
+| `NUM-DYNFW-FORE-ONESTEP` | **1.87 vs 1.80 deg** | The same measure for the masked model trained on the forearm-weighted tokens (`20261107-235843-dyn`, seed 0, tokenizer `20261107-182208-r1`): still not below held still, the same gap as R1's | r88 | current, **this checkpoint only** |
 
 ## Dataset - the 96x96 fork
 
