@@ -619,8 +619,19 @@ steps (base 0.88) and 0.875 at 25 (base 0.99), against 0.41 and 0.80 at 64x64.
 reason (not measured): the tokenizer keeps what its pixel loss rewards, and a
 thin link's small motions are a few edge pixels of that loss at any resolution.
 The 96x96 shards (`data/shards96`, 7.8 GB) and tokenizer stay on disk.
-**Next:** screen weighting the forearm's pixels in the tokenizer loss at 64x64
-(no new data; one R1-length run), then a finer grid at 64x64 if that fails.
+
+**Landed 2026-11-07 (r87): weighting the forearm in the loss fails the screen
+too.** R1 at 64x64 with the forearm's pixels (plus a 1-pixel border) weighted 8x,
+about 30% of the training loss (`fsq.train(link_weight=)`, off by default). Its
+short-horizon motion improves most: correlation with the render's angle change
+0.34 at 1 step and 0.49 at 5 (R1: 0.18 and 0.41), but 0.81 at 25 (R1 0.80),
+still well under the base link's 0.77 and 0.975. The base link loses a little,
+and held-out PSNR drops a decibel to 30.11, just over the 30 dB bar. So the two
+levers act on different horizons - weighting on 1-5 steps, resolution (r86) on
+25 - and neither alone gets close. **Next:** decide between testing a lever
+downstream (train the masked dynamics model on the weighted tokens, about 7 h,
+and see whether its forearm one-step error drops below held still) and the last
+untried tokenizer screen (a finer grid at 64x64, 4x the tokens per frame).
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
