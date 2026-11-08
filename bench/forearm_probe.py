@@ -122,13 +122,14 @@ def onestep(model, tokens: np.ndarray, actions: np.ndarray, ctx: int, dev: torch
 
 
 def rollouts(model, tokens: np.ndarray, actions: np.ndarray, ctx: int,
-             dev: torch.device) -> tuple[np.ndarray, np.ndarray]:
+             dev: torch.device, guidance: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """Greedy `ROLL_H`-frame rollouts from each start: (starts, frames (E, starts, ROLL_H, cells))."""
     e, length, cells = tokens.shape
     starts = np.arange(ctx, length - ROLL_H + 1, ROLL_EVERY)
     out = np.empty((e, len(starts), ROLL_H, cells), np.int64)
     for i, s in enumerate(starts):
-        r = de.rollout(model, tokens[:, s - ctx:s], actions[:, s - ctx:s + ROLL_H], ROLL_H, dev)
+        r = de.rollout(model, tokens[:, s - ctx:s], actions[:, s - ctx:s + ROLL_H], ROLL_H, dev,
+                       guidance=guidance)
         out[:, i] = r.frames[:, ctx:]
     return starts, out
 
@@ -142,6 +143,8 @@ def main() -> None:
     ap.add_argument("--tokenizer", default=dynamics.TOKENIZER_RUN,
                     help="tokenizer run whose token cache parts 1-2 read (another resolution: pass its "
                          "base config as --config, with --skip-model)")
+    ap.add_argument("--guidance", type=float, default=1.0,
+                    help="classifier-free guidance weight for parts 5-6 (a model with the null action)")
     args = ap.parse_args()
     out: dict = {}
     cfg = config.load(str(args.config))
@@ -312,7 +315,9 @@ def main() -> None:
         out["part4"][ck] = p4
 
         t0 = time.perf_counter()
-        starts, roll = rollouts(model, eps.tokens, eps.actions, ctx, dev)
+        w = args.guidance
+        print(f"  parts 5-6 at guidance w = {w:g} (parts 3-4 always plain)")
+        starts, roll = rollouts(model, eps.tokens, eps.actions, ctx, dev, w)
         n = len(starts)
         px = de.decode_u8(tok, roll.reshape(-1, cells), grid, dev)
         rl = de.features(px.reshape(e, n, ROLL_H, *px.shape[1:]), palette, tau)
@@ -358,7 +363,7 @@ def main() -> None:
         shuf = np.empty((e, n, cells), np.int64)
         for i, s in enumerate(starts):
             acts = np.concatenate((eps.actions[:, s - ctx:s], eps.actions[perm, s:s + H6]), 1)
-            shuf[:, i] = de.rollout(model, eps.tokens[:, s - ctx:s], acts, H6, dev).frames[:, -1]
+            shuf[:, i] = de.rollout(model, eps.tokens[:, s - ctx:s], acts, H6, dev, guidance=w).frames[:, -1]
         sf = feats(shuf)
         rs = {}
         for k in RESETS:
@@ -368,7 +373,7 @@ def main() -> None:
                 for j in range(nb):
                     b0 = s + j * k
                     ends[:, i, j] = de.rollout(model, eps.tokens[:, b0 - ctx:b0], eps.actions[:, b0 - ctx:b0 + k],
-                                               k, dev).frames[:, -1]
+                                               k, dev, guidance=w).frames[:, -1]
             rs[k] = (feats(ends), starts[:, None] + np.arange(nb)[None] * k - 1)   # block start frames (n, nb)
         cmd = de.COMMAND[eps.actions]                                     # (E, T, joints)
         csum = np.stack([cmd[:, s:s + H6].sum(1) for s in starts], 1).astype(np.float64)   # (E, n, joints)
