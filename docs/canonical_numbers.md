@@ -193,6 +193,7 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-DYN-FORE-ONESTEP` | **2.02-2.05 vs 1.97 deg** | Forearm angle error of the masked model's greedy one-step prediction from real context, both seeds, against the frame before held still: not below it | r84 | current, **these two checkpoints only** |
 | `NUM-DYNFW-FORE-ONESTEP` | **1.87 vs 1.80 deg** | The same measure for the masked model trained on the forearm-weighted tokens (`20261107-235843-dyn`, seed 0, tokenizer `20261107-182208-r1`): still not below held still, the same gap as R1's | r88 | current, **this checkpoint only** |
 | `NUM-DYN-ROLL-TRACK` | **r 0.48-0.54 / 0.24-0.33 vs 0.985 / 0.62-0.75 at 25 steps** | Correlation of the masked model's 25-step rollout angle change (base / forearm) with the render's, against the decoded truth tokens' on the same samples, R1 seeds 0-1 and the weighted run; direction agrees 41-57% against the tokens' 86-96% | r89 | current, **these three checkpoints only** |
+| `NUM-DYN-ACTION-GAIN` | **0.13-0.19 base, 0.34-0.41 forearm** | The masked model's 25-step angle response to the summed commands, as a share of the render's (1 = follows the action fully), R1 seeds 0-1 and the weighted run. Shuffling the actions drops base tracking from 0.48-0.59 to 0.17-0.20 | r90 | current, **these three checkpoints only** |
 
 ## Dataset - the 96x96 fork
 
