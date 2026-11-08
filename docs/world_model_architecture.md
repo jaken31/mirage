@@ -1096,6 +1096,14 @@ of w > 1 rollouts (expected 2x per round).
 fine but tracking unchanged: the compounding branch (r90, resets every 5 steps
 +0.19 on the base link) comes next - training on the model's own rollouts.
 
+**Result 2026-11-08 (r91): failed on seed 0; seed 1 not run.** Base-link action
+gain 0.17 at w = 1 and 0.18 at w = 3, against a bar of 0.5. Base-link 25-step
+tracking 0.55-0.58, against 0.7. One-step accuracy and the frozen share did not
+regress (+0.24 points over persistence; 94.5% frozen, as before). The trigger
+above points at FiLM, but it was written expecting the additive input to change
+something measurable; nothing moved, including under guidance, so FiLM is
+unconfirmed until a check shows the action can change the model's picks at all.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation

@@ -194,6 +194,8 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-DYNFW-FORE-ONESTEP` | **1.87 vs 1.80 deg** | The same measure for the masked model trained on the forearm-weighted tokens (`20261107-235843-dyn`, seed 0, tokenizer `20261107-182208-r1`): still not below held still, the same gap as R1's | r88 | current, **this checkpoint only** |
 | `NUM-DYN-ROLL-TRACK` | **r 0.48-0.54 / 0.24-0.33 vs 0.985 / 0.62-0.75 at 25 steps** | Correlation of the masked model's 25-step rollout angle change (base / forearm) with the render's, against the decoded truth tokens' on the same samples, R1 seeds 0-1 and the weighted run; direction agrees 41-57% against the tokens' 86-96% | r89 | current, **these three checkpoints only** |
 | `NUM-DYN-ACTION-GAIN` | **0.13-0.19 base, 0.34-0.41 forearm** | The masked model's 25-step angle response to the summed commands, as a share of the render's (1 = follows the action fully), R1 seeds 0-1 and the weighted run. Shuffling the actions drops base tracking from 0.48-0.59 to 0.17-0.20 | r90 | current, **these three checkpoints only** |
+| `NUM-DYNACT-GAIN` | **0.17 base, 0.27 forearm at w = 1; base 0.18 at w = 3** | Action gain of the model with the action added to every query cell (run 20261108-103434-dyn, seed 0), same measure as `NUM-DYN-ACTION-GAIN`; the acceptance bar was 0.5 on the base link | r91 | current, **this checkpoint only** |
+| `NUM-DYNACT-TRACK` | **r 0.55-0.58 base, 0.16-0.35 forearm at 25 steps** | The same model's 25-step rollout tracking of the render across guidance 1-3; the base-link bar was 0.7 | r91 | current, **this checkpoint only** |
 
 ## Dataset - the 96x96 fork
 

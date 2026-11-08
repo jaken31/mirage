@@ -685,12 +685,16 @@ helps the base link by about 0.19 on both R1 seeds, so compounding error is
 there too, but not on the weighted run. Both branches fire on R1; the rule
 says the action path first. Caveat: the gain also drops if the model
 under-moves for every action, and that is not separated here.
-**Next:** approve or amend the action-path proposal in
-`docs/world_model_architecture.md` ("Phase 2 proposal: the action is added to
-every query cell, with action dropout for guidance"): the action's embedding
-added to every query cell, action dropout 0.1, guidance at rollout. One seed
-(about 7 h) first, judged on part 6's action gain (base link at least 0.5) and
-part 5's 25-step tracking (base at least 0.7).
+**Landed 2026-11-08 (r91): the action added to every query cell did not work.**
+It missed both bars on seed 0, so seed 1 was not run. How strongly the base link
+responds to commands stayed at about 17% of the simulator's (bar 50%), and guidance
+up to 3 left it at about 18%. Base-link 25-step tracking is 0.55-0.58 (bar 0.7).
+Nothing regressed: one-step accuracy still beats repeating the last frame by 0.24
+points, and 94.5% of generated frames are still exact copies of the one before.
+Resetting the context every 5 steps lifts base tracking from 0.56 to 0.77.
+**Next:** decide between the design doc's fallback, FiLM (the action scaling and
+shifting every layer), and a no-training check first of whether the action changes
+the model's picks on moving cells at all.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
