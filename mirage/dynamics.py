@@ -1058,7 +1058,8 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
           steps_per_epoch: int | None = None, log_every: int = 100, resume: str | None = None,
           wandb_project: str | None = None, device: str | None = None,
           runs_dir: Path | str = ROOT / "runs", splits: TokenSplits | None = None,
-          session_epochs: int | None = None, score: bool = True, name: str = "dyn") -> dict:
+          session_epochs: int | None = None, score: bool = True, name: str = "dyn",
+          tokenizer_run: str = TOKENIZER_RUN) -> dict:
     """Train the dynamics model: bf16, AdamW, warmup then cosine to `lr_floor` over `epochs`.
 
     **The stopping rule is decision 4a** (`stop_decision`), with `epochs` as its
@@ -1093,7 +1094,13 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     cuda = dev.type == "cuda"
     runs_dir = Path(runs_dir)
-    splits = splits or load_splits(cfg)
+    splits = splits or load_splits(cfg, tokenizer_run)
+    if tokenizer_run != TOKENIZER_RUN and score:
+        # `dynamics_eval.score_run` re-measures persistence on R1's cache, so it would
+        # score another tokenizer's run against the wrong baseline. Such a run is a
+        # screen, read by `bench/forearm_probe.py --tokenizer`, not by the gate.
+        print(f"  tokenizer {tokenizer_run} is not R1: the post-run gate scoring is skipped")
+        score = False
     ctx, cells = cfg.data["ctx"], math.prod(cfg.shapes.token_grid)
     mg = is_maskgit(cfg)
     if mg and sched_sample:
@@ -1144,7 +1151,7 @@ def train(cfg: config.Config, epochs: int = EPOCH_CAP, batch: int = BATCH, lr: f
 
     hashes = {"data_hash": cfg.data_hash, "tokenizer_hash": cfg.tokenizer_hash,
               "dynamics_hash": cfg.dynamics_hash}
-    knobs = dict(tokenizer_run=TOKENIZER_RUN, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
+    knobs = dict(tokenizer_run=tokenizer_run, epochs=epochs, batch=batch, lr=lr, lr_floor=lr_floor,
                  warmup=warmup, weight_decay=weight_decay, dropout=dropout,
                  change_weight=change_weight, corrupt=corrupt, clean_flips=clean_flips,
                  sched_sample=sched_sample, clip=clip, seed=seed,
@@ -1364,6 +1371,8 @@ def main() -> None:
     ap.add_argument("--sched-sample", type=float, default=SCHED_SAMPLE,
                     help="share of context frames replaced by the model's own one-step prediction")
     ap.add_argument("--steps-per-epoch", type=int, help="shorten each epoch (smoke runs only)")
+    ap.add_argument("--tokenizer", default=TOKENIZER_RUN, metavar="RUN_ID",
+                    help="train on this tokenizer run's cache (screens only; the gate assumes R1)")
     ap.add_argument("--resume", metavar="RUN_ID",
                     help="continue that run from its last per-epoch checkpoint; every "
                          "knob must match")
@@ -1393,7 +1402,8 @@ def main() -> None:
           weight_decay=args.weight_decay, dropout=args.dropout,
           change_weight=args.change_weight, corrupt=args.corrupt, clean_flips=args.clean_flips,
           sched_sample=args.sched_sample,
-          steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb)
+          steps_per_epoch=args.steps_per_epoch, resume=args.resume, wandb_project=args.wandb,
+          tokenizer_run=args.tokenizer)
 
 
 # ----------------------------------------------------------------- self-check

@@ -229,6 +229,11 @@ def main() -> None:
     out["part3"], out["part4"] = {}, {}
     for ck in args.checkpoints:
         model, meta = de.load_checkpoint(ROOT / "runs" / ck, cfg, dev)
+        # Every tokenizer shares one tokenizer_hash, so the hash check cannot catch a
+        # model read through another tokenizer's cache; the run id can.
+        if meta["knobs"]["tokenizer_run"] != args.tokenizer:
+            raise SystemExit(f"{ck} was trained on {meta['knobs']['tokenizer_run']}'s tokens, "
+                             f"not --tokenizer {args.tokenizer}")
         if model.mask_id is None:
             raise SystemExit(f"{ck} is a one-pass model; this probe reads the K-round model's one round")
         t0 = time.perf_counter()
