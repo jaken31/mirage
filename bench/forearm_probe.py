@@ -22,6 +22,15 @@ episodes, 585 steps) and the forearm is link 1.
    forearm joint (only steps whose action drives it): the share of each link's
    cells whose argmax moves, and the mean KL between the two predictions.
 
+5. **rollout** - one-step forearm motion is under a pixel (part 2), so the target
+   is also read where the tokens do carry it: greedy open-loop rollouts of
+   `ROLL_H` frames from real context every `ROLL_EVERY` frames, with the true
+   actions. At each horizon h, each link's decoded angle against the decoded
+   truth's, beside the last context frame held still, and the correlation of
+   the model's angle change since that frame with the render's - next to the
+   same correlation for the decoded truth tokens on the same samples, the
+   tokenizer's ceiling.
+
 An angle is only compared where the link's blob is at least `MIN_MAJOR` px long
 in every frame involved; a 1-2 px blob has no meaningful orientation.
 
@@ -48,6 +57,8 @@ STILL_QPOS = 1e-4     # rad: a joint that moved less than this in a step is stil
 BINS_DEG = [0, 0.5, 1, 2, 4, 8, 90]
 HORIZONS = [1, 5, 25, 100]
 SAMPLE_SEED = 0
+ROLL_H = 100          # frames per rollout (part 5)
+ROLL_EVERY = 25       # frames between rollout starts
 FORE, BASE = 1, 0
 
 
@@ -98,6 +109,18 @@ def onestep(model, tokens: np.ndarray, actions: np.ndarray, ctx: int, dev: torch
         lp, lq = torch.log_softmax(real, -1), torch.log_softmax(flip, -1)
         kl[:, k] = (lp.exp() * (lp - lq)).sum(-1).cpu().numpy()
     return {"greedy": greedy, "sample": sample, "flip_greedy": flip_greedy, "kl": kl}
+
+
+def rollouts(model, tokens: np.ndarray, actions: np.ndarray, ctx: int,
+             dev: torch.device) -> tuple[np.ndarray, np.ndarray]:
+    """Greedy `ROLL_H`-frame rollouts from each start: (starts, frames (E, starts, ROLL_H, cells))."""
+    e, length, cells = tokens.shape
+    starts = np.arange(ctx, length - ROLL_H + 1, ROLL_EVERY)
+    out = np.empty((e, len(starts), ROLL_H, cells), np.int64)
+    for i, s in enumerate(starts):
+        r = de.rollout(model, tokens[:, s - ctx:s], actions[:, s - ctx:s + ROLL_H], ROLL_H, dev)
+        out[:, i] = r.frames[:, ctx:]
+    return starts, out
 
 
 def main() -> None:
@@ -277,6 +300,43 @@ def main() -> None:
         print(f"    cells no link covers: argmax moves on {p4['background']['argmax_moved']:.2%}, "
               f"mean KL {p4['background']['kl_mean']:.4f}")
         out["part4"][ck] = p4
+
+        t0 = time.perf_counter()
+        starts, roll = rollouts(model, eps.tokens, eps.actions, ctx, dev)
+        n = len(starts)
+        px = de.decode_u8(tok, roll.reshape(-1, cells), grid, dev)
+        rl = de.features(px.reshape(e, n, ROLL_H, *px.shape[1:]), palette, tau)
+        print(f"  greedy rollouts, {ROLL_H} frames from real context, {n} starts x {e} episodes, true actions "
+              f"({time.perf_counter() - t0:.0f}s); angle vs decoded truth, change vs render since the last "
+              f"context frame:")
+        print(f"    {'h':>4}{'link':>7}{'ang err':>9}{'still':>8}{'model r':>9}{'tok r':>8}"
+              f"{'model sign':>12}{'tok sign':>10}{'lost':>7}{'n':>6}")
+        p5 = {}
+        last = starts - 1
+        for h in HORIZONS:
+            idx = starts + h - 1
+            p5[h] = {}
+            for l, nm in enumerate(names):
+                pa, pm = rl.link_angle[:, :, h - 1, l], rl.link_major[:, :, h - 1, l]
+                ta, tm = df.link_angle[:, idx, l], df.link_major[:, idx, l]
+                ha, hm = df.link_angle[:, last, l], df.link_major[:, last, l]
+                ra, rm = rf.link_angle[:, idx, l], rf.link_major[:, idx, l]
+                rh, rhm = rf.link_angle[:, last, l], rf.link_major[:, last, l]
+                ok = (pm >= MIN_MAJOR) & (tm >= MIN_MAJOR) & (hm >= MIN_MAJOR) & (rm >= MIN_MAJOR) & (rhm >= MIN_MAJOR)
+                err = float(np.abs(deg_diff(pa, ta))[ok].mean())
+                serr = float(np.abs(deg_diff(ha, ta))[ok].mean())
+                dr = deg_diff(ra, rh)[ok]
+                dm, dt = deg_diff(pa, ha)[ok], deg_diff(ta, ha)[ok]
+                rm_, rt_ = float(np.corrcoef(dm, dr)[0, 1]), float(np.corrcoef(dt, dr)[0, 1])
+                mv = np.abs(dr) > 0
+                sm = float((np.sign(dm[mv]) == np.sign(dr[mv])).mean())
+                st = float((np.sign(dt[mv]) == np.sign(dr[mv])).mean())
+                lost = float(((tm > 0) & (pm == 0)).sum() / max((tm > 0).sum(), 1))
+                p5[h][nm] = {"ang_err_deg": err, "still_ang_err_deg": serr, "model_corr": rm_, "tok_corr": rt_,
+                             "model_sign": sm, "tok_sign": st, "lost": lost, "n": int(ok.sum())}
+                print(f"    {h:>4}{nm:>7}{err:>9.2f}{serr:>8.2f}{rm_:>9.3f}{rt_:>8.3f}{sm:>12.1%}{st:>10.1%}"
+                      f"{lost:>7.2%}{int(ok.sum()):>6}")
+        out.setdefault("part5", {})[ck] = p5
         sys.stdout.flush()
     if args.json:
         args.json.write_text(json.dumps(out, indent=1))
