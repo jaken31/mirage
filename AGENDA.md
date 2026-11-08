@@ -685,10 +685,12 @@ helps the base link by about 0.19 on both R1 seeds, so compounding error is
 there too, but not on the weighted run. Both branches fire on R1; the rule
 says the action path first. Caveat: the gain also drops if the model
 under-moves for every action, and that is not separated here.
-**Next:** design the action-path change - action dropout in training plus
-guidance at rollout, or a stronger action input - write it into
-`docs/world_model_architecture.md` before implementing, and judge it on part 6's
-gain and part 5's 25-step tracking.
+**Next:** approve or amend the action-path proposal in
+`docs/world_model_architecture.md` ("Phase 2 proposal: the action is added to
+every query cell, with action dropout for guidance"): the action's embedding
+added to every query cell, action dropout 0.1, guidance at rollout. One seed
+(about 7 h) first, judged on part 6's action gain (base link at least 0.5) and
+part 5's 25-step tracking (base at least 0.7).
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

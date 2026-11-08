@@ -1006,6 +1006,91 @@ revisable sampling. If K>1 leaves the freeze in place, the next step is raster
 decoding, one cell per pass. If the arm moves but the forearm (link 1) stays
 worse than held still, the tokenizer is the likely limit, not decoding.
 
+## Phase 2 proposal: the action is added to every query cell, with action dropout for guidance
+
+**PROPOSED 2026-11-08, not approved.** It changes the K-round model's input, so
+it moves `dynamics_hash` and retrains every checkpoint. The context stream is
+untouched.
+
+**Why.** The trigger above fired: the arm moves, but the forearm stays worse
+than held still. Two screens then showed the tokenizer is not the limit:
+- At 25 steps the real tokens carry the motion: their angle change correlates
+  with the render's at 0.985 on the base link and 0.62-0.75 on the forearm
+  (r89).
+- The model's rollouts reach only 0.48-0.59 and 0.24-0.33 (r89). The model
+  does use the action - another episode's actions drop base-link tracking to
+  0.17-0.20 (r90) - but it responds at only 13-19% of the simulator's strength
+  on the base link and 34-41% on the forearm.
+
+Today the target frame's action reaches its 64 query cells only through
+attention, as one position (`action[t+1]`, the last of context block `t`)
+among up to 975 context positions that mostly say "the arm is where it was".
+Persistence wins that competition: r77's model keeps the old token on 64-71% of
+cells that truly change.
+
+### Changed
+
+- **The action is added to every query cell's input.** A separate
+  `nn.Embedding(N_ACTIONS + 1, d_model)` - 10 x 192 = 1,920 parameters,
+  zero-initialised - is added to the input embedding of each of frame `t+1`'s
+  64 query cells, keyed by `action[t+1]`. Each cell then starts from "masked,
+  under this action" instead of only "masked". With the table zero-initialised,
+  the change starts as exactly today's model. The extra row is a null action.
+- **Action dropout, p = 0.1 per target frame, in training.** The frame's action
+  is replaced by the null action in both places it enters: the query
+  embedding, and the context slot `action[t+1]` (a new input id, 522). So the
+  same weights learn the unconditional prediction too. Later frames
+  occasionally see a null action in their history, a mild augmentation. p is a
+  training knob, in `knobs`, not in `dynamics_hash`.
+- **Guidance at rollout, weight w** (classifier-free guidance, arXiv
+  2207.12598). Each round's logits become `l_null + w * (l_act - l_null)`. The
+  unconditional pass nulls only the predicted frame's own action, in both
+  places. w = 1 is plain conditioning, the same path as today. w > 1 doubles
+  the passes per round. w is a rollout argument, like K and temperature.
+
+### Kept
+
+The context stream's layout, position for position, with its phase assertion
+as the acceptance test. RoPE indices. The query blocks and their attention. The
+untied head over the 512 codes. The masked training objective and
+`--clean-flips`. Gate row 9's reproducibility, since guidance is deterministic
+at temperature 0.
+
+### Rejected
+
+- **Guidance alone, without the per-cell action.** It amplifies whatever action
+  difference the model already has, about 15% of the simulator's on the base
+  link. If w had to be near 6 to reach the simulator's response, guidance would
+  mostly amplify noise. It is kept as the second lever, not the only one.
+- **FiLM (a per-layer scale and shift from the action).** About 2 x 4 x 192 x 10
+  parameters per layer; it touches the context stream's computation, so the K=1
+  equivalence to today's model and the block-causal self-check are harder to
+  keep. It is the fallback if the additive input does not move the gain.
+- **Repeating the action token, or moving it next to the query block.** It
+  changes the irreversible layout (decision 2) for an effect the additive input
+  gets without touching it.
+
+### Acceptance - one seed first (seed 0, about 7 h), then seed 1 if it passes
+
+- **The action gain moves** (r90's measure, part 6 of `bench/forearm_probe.py`):
+  base link at least 0.5 at w = 1, against 0.13-0.19 today. Report every
+  w in {1, 1.5, 2, 3}.
+- **25-step tracking improves** (part 5): base-link correlation at least 0.7 at
+  the best w, against 0.48-0.59. Forearm reported, no bar: its ceiling is the
+  tokenizer's 0.62.
+- **Nothing regresses:** gate row 1 (one-step accuracy at least persistence's,
+  scored at K = 1, w = 1, as today) and gate row 6's frozen share, reported
+  beside r78-r80's.
+
+**Unverified:** that zero-initialising the added embedding reproduces today's
+model at the first step (a self-check will assert it), that p = 0.1 is enough
+for a useful unconditional prediction (CFG's paper uses 0.1-0.2), and the cost
+of w > 1 rollouts (expected 2x per round).
+
+**Revisit trigger.** Gain under 0.3 at w = 1 after the run: try FiLM. Gain
+fine but tracking unchanged: the compounding branch (r90, resets every 5 steps
++0.19 on the base link) comes next - training on the model's own rollouts.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation
