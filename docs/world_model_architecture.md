@@ -1008,9 +1008,11 @@ worse than held still, the tokenizer is the likely limit, not decoding.
 
 ## Phase 2 proposal: the action is added to every query cell, with action dropout for guidance
 
-**PROPOSED 2026-11-08, not approved.** It changes the K-round model's input, so
-it moves `dynamics_hash` and retrains every checkpoint. The context stream is
-untouched.
+**APPROVED 2026-11-08; implemented as `dynamics.action_input: "token_and_query"`
+(`mirage/configs/dyn192x4_maskact.json`, `dynamics_hash` 7c1591f9), `--action-drop`
+and `rollout(guidance=)`; the seed-0 run is pending.** It changes the K-round
+model's input, so it moves `dynamics_hash` and retrains every checkpoint. The
+context stream is untouched.
 
 **Why.** The trigger above fired: the arm moves, but the forearm stays worse
 than held still. Two screens then showed the tokenizer is not the limit:
@@ -1082,8 +1084,11 @@ at temperature 0.
   scored at K = 1, w = 1, as today) and gate row 6's frozen share, reported
   beside r78-r80's.
 
-**Unverified:** that zero-initialising the added embedding reproduces today's
-model at the first step (a self-check will assert it), that p = 0.1 is enough
+**Verified 2026-11-08** (`_check_action_query`, in `python check.py`): with the
+added table at zero, the model's logits equal the token-only model's on the
+same weights, bit for bit; once trained it keeps the K-round information flow;
+changing `action[ctx]`, or nulling it, moves only the last frame's query block;
+guidance 1 is the plain rollout. **Unverified:** that p = 0.1 is enough
 for a useful unconditional prediction (CFG's paper uses 0.1-0.2), and the cost
 of w > 1 rollouts (expected 2x per round).
 
@@ -1532,6 +1537,7 @@ gone.** A frequency-ranked dictionary of the top-512 exact patches does slightly
 | **Phase 2's first real dynamics run, and decision 4a's stopping rule on a real curve** (`python -m mirage.dynamics --train`, 10-epoch cap) | **run 2026-09-26**, `runs.jsonl` r62, run `20260925-235653-dyn` ([W&B](https://wandb.ai/nguyenpk31-northeastern-university/mirage/runs/lhy7a4hz)). Linux, torch 2.9.1+cu130, RTX 5060 Laptop, wandb 0.29.0. `WANDB_ENTITY=nguyenpk31-northeastern-university systemd-inhibit --what=idle:sleep python -m mirage.dynamics --train --wandb mirage` with every default: batch 16, seed 0, full 17,294-step epochs; uninterrupted | **The rule: confirmed on a real run. Gate row 1 on ten epochs' budget: not met.** Held-out cross-entropy is lowest after epoch 1 (0.4716) and rises at every epoch after it, to 1.0414 at epoch 5, while train cross-entropy falls to 0.0375. The rule tripped at epoch 3, the second consecutive rise, ran its two further epochs and stopped after epoch 5, recorded as `{'rule': 'trip', 'epoch': 5, 'trip_epoch': 3}`. 0 of 91 sub-epoch points beat persistence (86.47%) on the 512 windows; the best checkpoint, step 3,000, is -0.14 points against persistence on the full population (86.54% against 86.69%). Peak training VRAM 2.203 GB allocated at batch 16, against the 7.5 GB bar. The W&B mirror uploaded the whole run with `WANDB_API_KEY` from the environment only | - |
 | **Phase 2's gate on the first 10-epoch run** (`python -m mirage.dynamics --eval`) | **run 2026-09-26**, `runs.jsonl` r63. Linux, torch 2.9.1+cu130, RTX 5060 Laptop, W&B off. `python -m mirage.dynamics --eval 20260925-235653-dyn` with `--checkpoint best` and `--checkpoint final`, then the same two on `20260925-100507-dyn` under the same code (314-356 s each) | **The gate does not pass.** Every one of the four exits 1 on rows 1 and 6; rows 2, 3, 8 and 9 pass. Row 1 on the 10-epoch run reproduces r62's full-population scores: -0.14 points (best, step 3,000) and -4.33 (final, step 86,470). Row 6: `best.pt`'s rollouts freeze on 100% of generated frames, `model.pt`'s on 44.2%, against the truth's 20.1%; the one-epoch run's read 100% and 92.0%. Re-gating the one-epoch run reproduced r61's rows 1-5 and 8-10; row 6 now fails there too, on the frozen-share clause added after r61 | - |
 | **Decision 5's revisit trigger: temperature sampling against greedy** (`bench/temperature_probe.py`, and `rollout`'s optional seeded temperature) | **run 2026-10-30**, `runs.jsonl` r64. Linux, torch 2.9.1+cu130, RTX 5060 Laptop, W&B off. `python bench/temperature_probe.py 20260925-235653-dyn`, seed 0, T 0 / 0.5 / 0.7 / 1.0 on `best.pt` and `model.pt`, the gate's 27 val rollouts at ctx 15 (about 50 s per rollout) | **No temperature clears the trigger; greedy stays.** Gate row 6 fails at every temperature on both checkpoints. Sampling unfreezes `best.pt` (100% frozen at T 0, 22.5% at T 0.7, 0.3% at T 1.0, truth 20.1%), but the motion is noise: at T 0.7 a link vanishes from a whole 200-step window, and at T 1.0 drift is 139.7% / 135.7% against the truth's 26.3% / 62.4%, with token accuracy 13.24% against 24.11% for holding the seed frame still. Greedy `model.pt` reproduces r63 (44.2% frozen) and stays the most accurate rollout (26.80%). Every sampled rollout reproduced exactly at one seed on CUDA | - |
+| **The per-query action input starts as the token-only model, and keeps the K-round information flow** (`dynamics.action_input: "token_and_query"`) | **run 2026-11-08**, `_check_action_query` in `python -m mirage.dynamics` (part of `python check.py`), CPU, float64. Same weights copied into a token-only model; `check_mask_causal` at positions 0, 64, 974, 975, 1934 after randomising the action table; `action[ctx]` changed and nulled; `rollout` at guidance 1 and 3; action dropout 0.5 trained whole and resumed | **Holds.** Zero table: logits bit-identical. Randomised: the information flow holds; `action[ctx]` moves only frame 15's query block. Guidance 1 equals the plain rollout and guidance 3 reproduces; a model without the null action refuses guidance and action dropout. Resumed losses bit-identical. +4,224 parameters at d_model 192 |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
 [Debloating ASan (USENIX Sec '22)](https://www.usenix.org/system/files/sec22summer_zhang-yuchen.pdf),
