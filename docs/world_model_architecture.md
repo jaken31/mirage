@@ -1249,6 +1249,25 @@ generated context goes, so this run cannot separate the two. Telling them apart
 would take a run that keeps H = 8 and raises the share of `n = 0` batches, which
 needs a small code change. One seed and a warm start.
 
+### Third pilot, set before the run: H = 8, 1 batch in 5 fully real
+
+Approved 2026-11-09 to separate the two things r94 changed together. `--real-context-share p`
+draws `n = 0` with probability `p` and otherwise uniformly from 1..H; omitted, the draw
+stays uniform over 0..H. The run keeps H = 8 with `p = 0.2`: the same 1 batch in 5 as H = 4,
+with the generated context as deep as r93's. Generated frames per batch average 3.6,
+against 4.0 at r93 and 2.0 at r94.
+
+Same 3-epoch warm start, seed 0, same four bars, judged on the final `model.pt`. **Rule:**
+
+- **All four pass:** recommend the full cold runs at these settings. None starts without approval.
+- **One-step misses, at -1.57 points or better** (the midpoint of r93 and r94): the
+  share of fully real batches explains most of the loss. Nothing further launches.
+- **One-step misses, below -1.57:** the share does not explain it; depth or amount of
+  generated context does. Nothing further launches.
+- **Tracking or the freeze misses:** say so. Nothing further launches.
+
+The midpoint is judgement, and the noise of one seed is not measured.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation
@@ -1691,6 +1710,7 @@ gone.** A frequency-ranked dictionary of the top-512 exact patches does slightly
 | **Phase 2's gate on the first 10-epoch run** (`python -m mirage.dynamics --eval`) | **run 2026-09-26**, `runs.jsonl` r63. Linux, torch 2.9.1+cu130, RTX 5060 Laptop, W&B off. `python -m mirage.dynamics --eval 20260925-235653-dyn` with `--checkpoint best` and `--checkpoint final`, then the same two on `20260925-100507-dyn` under the same code (314-356 s each) | **The gate does not pass.** Every one of the four exits 1 on rows 1 and 6; rows 2, 3, 8 and 9 pass. Row 1 on the 10-epoch run reproduces r62's full-population scores: -0.14 points (best, step 3,000) and -4.33 (final, step 86,470). Row 6: `best.pt`'s rollouts freeze on 100% of generated frames, `model.pt`'s on 44.2%, against the truth's 20.1%; the one-epoch run's read 100% and 92.0%. Re-gating the one-epoch run reproduced r61's rows 1-5 and 8-10; row 6 now fails there too, on the frozen-share clause added after r61 | - |
 | **Decision 5's revisit trigger: temperature sampling against greedy** (`bench/temperature_probe.py`, and `rollout`'s optional seeded temperature) | **run 2026-10-30**, `runs.jsonl` r64. Linux, torch 2.9.1+cu130, RTX 5060 Laptop, W&B off. `python bench/temperature_probe.py 20260925-235653-dyn`, seed 0, T 0 / 0.5 / 0.7 / 1.0 on `best.pt` and `model.pt`, the gate's 27 val rollouts at ctx 15 (about 50 s per rollout) | **No temperature clears the trigger; greedy stays.** Gate row 6 fails at every temperature on both checkpoints. Sampling unfreezes `best.pt` (100% frozen at T 0, 22.5% at T 0.7, 0.3% at T 1.0, truth 20.1%), but the motion is noise: at T 0.7 a link vanishes from a whole 200-step window, and at T 1.0 drift is 139.7% / 135.7% against the truth's 26.3% / 62.4%, with token accuracy 13.24% against 24.11% for holding the seed frame still. Greedy `model.pt` reproduces r63 (44.2% frozen) and stays the most accurate rollout (26.80%). Every sampled rollout reproduced exactly at one seed on CUDA | - |
 | **The per-query action input starts as the token-only model, and keeps the K-round information flow** (`dynamics.action_input: "token_and_query"`) | **run 2026-11-08**, `_check_action_query` in `python -m mirage.dynamics` (part of `python check.py`), CPU, float64. Same weights copied into a token-only model; `check_mask_causal` at positions 0, 64, 974, 975, 1934 after randomising the action table; `action[ctx]` changed and nulled; `rollout` at guidance 1 and 3; action dropout 0.5 trained whole and resumed | **Holds.** Zero table: logits bit-identical. Randomised: the information flow holds; `action[ctx]` moves only frame 15's query block. Guidance 1 equals the plain rollout and guidance 3 reproduces; a model without the null action refuses guidance and action dropout. Resumed losses bit-identical. 11 more embedding rows (the null id and the 10-row action table): +2,112 parameters at d_model 192 (1,980,480 against 1,978,368, the seed-0 run's log) |
+| **The fully-real batch share (`--real-context-share`)** | **verified 2026-11-09** - `_check_rollout_context`, in `python check.py`: omitting it reproduces the original uniform draw, a share of 0.2 gives 20% `n = 0` within 2 points over 20,000 draws, shares 0 and 1 are exact, a run with it resumes with identical losses, and bad values are refused. Linux, CPU. |
 | **The self-generated context (`--rollout-context`) and the warm start (`--init-from`)** | **verified 2026-11-08** - `_check_rollout_context`, in `python check.py`: each generated frame equals `dynamics_eval.rollout`'s first step from the same past, the real frames and the last frame stay untouched, `n = 0` returns the window unchanged, the resumed run's losses match the uninterrupted one's, and a warm start at zero learning rate ends on the source weights. Linux, CPU. The pilot's result is not known yet. |
 
 Sources: [ASan paper](https://research.google.com/pubs/archive/37752.pdf),
