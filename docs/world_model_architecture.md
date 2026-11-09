@@ -1109,7 +1109,7 @@ so FiLM, a further increase of the same effect, is dropped for now.
 
 ## Phase 2 proposal: training on context the model rolled out itself
 
-**Status: APPROVED 2026-11-08 and implemented; the pilot is pending.** A training-knob
+**Status: APPROVED 2026-11-08 and implemented. The pilot ran (r93): three of four bars passed and one-step accuracy missed, so the next step is undecided (see Result).** A training-knob
 change only: the model, the stream layout and `dynamics_hash` stay as they are.
 
 **Why.** The per-cell action input moved neither the rollout's response to commands
@@ -1195,6 +1195,32 @@ get its own proposal.
 **To be verified at implementation** (`python check.py`): `n = 0` is bit-identical
 to today's training step; generated frames equal `dynamics_eval.rollout` on the
 same seed and actions; targets stay true; a run resumes bit-identical.
+
+### Result (r93, 2026-11-09)
+
+The final `model.pt` of the 3-epoch warm start, seed 0, about 2.9 h of training.
+A reboot in epoch 3 cost the run its partial epoch; it continued from the epoch-2
+checkpoint with `--resume`.
+
+| Bar | Needed | Before (r91) | Final `model.pt` | `best.pt` (step 2,000) | Verdict |
+|---|---|---|---|---|---|
+| Base-link 25-step tracking | at least 0.7 | 0.56 | 0.86 | 0.72 | pass |
+| Share of frozen rollout frames | at most 80% | 94.5% | 62.7% | 88.1% | pass |
+| Base-link action gain | at least 0.3 | 0.17 | 0.77 | 0.32 | pass |
+| One-step accuracy against persistence | at least equal | +0.24 pts | -2.38 pts | -0.45 pts | **miss** |
+
+Training on its own frames did what it was meant to: the arm now follows commands
+in a rollout, and a free rollout tracks about as well as one with its context reset
+every 5 steps (0.86 against 0.85). The forearm improved too (gain 0.64 from 0.27,
+tracking 0.38), against 0.62 for the tokens themselves. The price is one-step
+accuracy: false changes on static cells went from 0.58% to 4.60%. Gate rows 1
+(beat persistence) and 6 (rollout freeze and drift near the truth's) still fail.
+
+**The rule above does not cover this outcome.** It names all bars passing, and
+tracking or the freeze missing. So no full run starts from it. One explanation,
+inferred and not measured: with H = 8 only 1 batch in 9 trains on fully real
+context, while the one-step score is measured on fully real context. A smaller H
+would test that. One seed and a warm start, so none of this replaces a cold run.
 
 ## Sanitizer cost, and keeping E-3 cheap
 

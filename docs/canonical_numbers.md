@@ -196,6 +196,9 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-DYN-ACTION-GAIN` | **0.13-0.19 base, 0.34-0.41 forearm** | The masked model's 25-step angle response to the summed commands, as a share of the render's (1 = follows the action fully), R1 seeds 0-1 and the weighted run. Shuffling the actions drops base tracking from 0.48-0.59 to 0.17-0.20 | r90 | current, **these three checkpoints only** |
 | `NUM-DYNACT-GAIN` | **0.17 base, 0.27 forearm at w = 1; base 0.18 at w = 3** | Action gain of the model with the action added to every query cell (run 20261108-103434-dyn, seed 0), same measure as `NUM-DYN-ACTION-GAIN`; the acceptance bar was 0.5 on the base link | r91 | current, **this checkpoint only** |
 | `NUM-DYNACT-TRACK` | **r 0.55-0.58 base, 0.16-0.35 forearm at 25 steps** | The same model's 25-step rollout tracking of the render across guidance 1-3; the base-link bar was 0.7 | r91 | current, **this checkpoint only** |
+| `NUM-DYNRC-TRACK` | **r 0.86 base, 0.38 forearm at 25 steps** | 25-step rollout tracking of the render by the model trained on its own generated context (run 20261108-231559-dyn, final `model.pt`, seed 0, 3-epoch warm start, w = 1); the base-link bar was 0.7 | r93 | current, **this checkpoint only** |
+| `NUM-DYNRC-GAIN` | **0.77 base, 0.64 forearm at w = 1** | The same checkpoint's action gain, same measure as `NUM-DYN-ACTION-GAIN`; the pilot's base-link bar was 0.3 | r93 | current, **this checkpoint only** |
+| `NUM-DYNRC-GATE` | **-2.38 points against persistence; frozen 62.7%** | The same checkpoint's one-step accuracy margin (84.30% against 86.69%, K = 1) and share of frozen rollout frames | r93 | current, **this checkpoint only** |
 
 ## Dataset - the 96x96 fork
 

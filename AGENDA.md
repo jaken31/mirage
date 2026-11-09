@@ -699,11 +699,18 @@ truly move, yet the rollout's response to commands stayed the same. On those cel
 the model still picks "no change" about 70% of the time, and guidance up to 5 does
 not change that. FiLM would be a further doubling of the same effect, so it is not
 indicated.
-**Next:** approve or amend the proposal in `docs/world_model_architecture.md`
-("Phase 2 proposal: training on context the model rolled out itself"): a free-running
-context of up to 8 generated frames with true targets, tested first as a 3-epoch
-warm start from r91's checkpoint. A weaker form, scheduled sampling, already failed
-(r74), so a miss here ends the training-side remedies.
+
+**Landed 2026-11-09 (r93): training on its own frames made the arm follow commands,
+at a cost in one-step accuracy.** In a 3-epoch warm start, base-link 25-step tracking
+went from 0.56 to 0.86, the base link's response to commands from 0.17 to 0.77 of
+the render's, and frozen rollout frames from 94.5% to 62.7%. One-step accuracy fell
+to 2.38 points below repeating the last frame, from 0.24 above. Three of the four
+pilot bars pass; the pre-set rule does not name this outcome.
+**Next:** decide how to handle the one-step miss. Recommended: a second 3-epoch warm
+start with `--rollout-context 4` and the same four bars, about 3 h and no code
+change, because at 8 only 1 batch in 9 trains on fully real context (an inference,
+not measured). Full cold runs (about 10 h each, seeds 0 and 1) wait for a pilot that
+passes all four.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
