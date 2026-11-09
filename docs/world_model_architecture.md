@@ -1103,6 +1103,9 @@ regress (+0.24 points over persistence; 94.5% frozen, as before). The trigger
 above points at FiLM, but it was written expecting the additive input to change
 something measurable; nothing moved, including under guidance, so FiLM is
 unconfirmed until a check shows the action can change the model's picks at all.
+That check (r92, `bench/action_pick_probe.py`) found the input doubled the action's
+effect on the prediction on moving arm cells while the rollout's gain stayed put,
+so FiLM, a further increase of the same effect, is dropped for now.
 
 ## Sanitizer cost, and keeping E-3 cheap
 

@@ -692,9 +692,15 @@ up to 3 left it at about 18%. Base-link 25-step tracking is 0.55-0.58 (bar 0.7).
 Nothing regressed: one-step accuracy still beats repeating the last frame by 0.24
 points, and 94.5% of generated frames are still exact copies of the one before.
 Resetting the context every 5 steps lifts base tracking from 0.56 to 0.77.
-**Next:** decide between the design doc's fallback, FiLM (the action scaling and
-shifting every layer), and a no-training check first of whether the action changes
-the model's picks on moving cells at all.
+
+**Landed 2026-11-08 (r92): a stronger action is not the fix.** With no training,
+the new input doubled how much the action changes the prediction on arm cells that
+truly move, yet the rollout's response to commands stayed the same. On those cells
+the model still picks "no change" about 70% of the time, and guidance up to 5 does
+not change that. FiLM would be a further doubling of the same effect, so it is not
+indicated. **Next:** the compounding branch - training on the model's own rollouts,
+where resetting the context every 5 steps lifts base tracking from 0.56 to 0.77.
+Design it in `docs/world_model_architecture.md` before implementing.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
