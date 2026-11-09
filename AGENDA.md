@@ -706,11 +706,19 @@ went from 0.56 to 0.86, the base link's response to commands from 0.17 to 0.77 o
 the render's, and frozen rollout frames from 94.5% to 62.7%. One-step accuracy fell
 to 2.38 points below repeating the last frame, from 0.24 above. Three of the four
 pilot bars pass; the pre-set rule does not name this outcome.
-**Next:** decide how to handle the one-step miss. Recommended: a second 3-epoch warm
-start with `--rollout-context 4` and the same four bars, about 3 h and no code
-change, because at 8 only 1 batch in 9 trains on fully real context (an inference,
-not measured). Full cold runs (about 10 h each, seeds 0 and 1) wait for a pilot that
-passes all four.
+
+**Landed 2026-11-09 (r94): a smaller generated context recovers most of the one-step
+loss, not all of it, and costs part of the rollout gain.** With `--rollout-context 4`,
+one-step accuracy is 0.76 points below repeating the last frame, up from 2.38 below.
+Base-link 25-step tracking is 0.79 (0.86 at 8), the base link's response to commands
+0.52 of the render's (0.77 at 8), and frozen rollout frames 79.0% (62.7% at 8), one
+point inside the bar. Three of the four pilot bars pass again.
+**Next:** decide how to handle the one-step miss; the pre-set rule starts nothing
+from this result. Recommended: test the fully-real-batch explanation directly with a
+3-epoch warm start that keeps H = 8 and raises the share of batches with no generated
+frames, a small code change, because H = 4 changed that share and the depth of
+generated context together. Full cold runs (about 10 h each, seeds 0 and 1) wait for a
+pilot that passes all four.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

@@ -1109,7 +1109,7 @@ so FiLM, a further increase of the same effect, is dropped for now.
 
 ## Phase 2 proposal: training on context the model rolled out itself
 
-**Status: APPROVED 2026-11-08 and implemented. The pilot ran (r93): three of four bars passed and one-step accuracy missed, so the next step is undecided (see Result).** A training-knob
+**Status: APPROVED 2026-11-08 and implemented. Two pilots ran (r93 at H = 8, r94 at H = 4): each passed three of four bars and missed one-step accuracy, so no full run has started (see the Results).** A training-knob
 change only: the model, the stream layout and `dynamics_hash` stay as they are.
 
 **Why.** The per-cell action input moved neither the rollout's response to commands
@@ -1221,6 +1221,33 @@ tracking or the freeze missing. So no full run starts from it. One explanation,
 inferred and not measured: with H = 8 only 1 batch in 9 trains on fully real
 context, while the one-step score is measured on fully real context. A smaller H
 would test that. One seed and a warm start, so none of this replaces a cold run.
+
+### Result (r94, 2026-11-09): H = 4
+
+The same 3-epoch warm start, seed 0, with `--rollout-context 4` as the only change,
+about 2.3 h of training, uninterrupted. Same bars, judged on the final `model.pt`.
+
+| Bar | Needed | Before (r91) | r93, H = 8 | r94, H = 4 | r94 `best.pt` (step 2,000) | r94 verdict |
+|---|---|---|---|---|---|---|
+| Base-link 25-step tracking | at least 0.7 | 0.56 | 0.86 | 0.79 | 0.72 | pass |
+| Share of frozen rollout frames | at most 80% | 94.5% | 62.7% | 79.0% | 90.7% | pass, by one point |
+| Base-link action gain | at least 0.3 | 0.17 | 0.77 | 0.52 | 0.29 | pass |
+| One-step accuracy against persistence | at least equal | +0.24 pts | -2.38 pts | -0.76 pts | -0.02 pts | **miss** |
+
+False changes on static cells fell to 2.24%, from 4.60% at H = 8 and 0.58% before.
+Gate rows 1 (beat persistence) and 6 (rollout freeze and drift near the truth's)
+still fail. The forearm's gain is 0.37 and its 25-step tracking 0.51.
+
+**Under the rule set before this run, one-step accuracy still missing means nothing
+further starts from it.** Halving H moved one-step accuracy up by 1.62 points, about
+two thirds of the way to persistence, and gave back part of every rollout gain.
+
+**What it says about the hypothesis.** Measured: less generated context, better
+one-step accuracy, worse rollouts. Inferred: that the share of fully real batches
+(1 in 9 at H = 8, 1 in 5 at H = 4) is the cause. H = 4 also halves how deep the
+generated context goes, so this run cannot separate the two. Telling them apart
+would take a run that keeps H = 8 and raises the share of `n = 0` batches, which
+needs a small code change. One seed and a warm start.
 
 ## Sanitizer cost, and keeping E-3 cheap
 

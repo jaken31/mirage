@@ -199,6 +199,9 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-DYNRC-TRACK` | **r 0.86 base, 0.38 forearm at 25 steps** | 25-step rollout tracking of the render by the model trained on its own generated context (run 20261108-231559-dyn, final `model.pt`, seed 0, 3-epoch warm start, w = 1); the base-link bar was 0.7 | r93 | current, **this checkpoint only** |
 | `NUM-DYNRC-GAIN` | **0.77 base, 0.64 forearm at w = 1** | The same checkpoint's action gain, same measure as `NUM-DYN-ACTION-GAIN`; the pilot's base-link bar was 0.3 | r93 | current, **this checkpoint only** |
 | `NUM-DYNRC-GATE` | **-2.38 points against persistence; frozen 62.7%** | The same checkpoint's one-step accuracy margin (84.30% against 86.69%, K = 1) and share of frozen rollout frames | r93 | current, **this checkpoint only** |
+| `NUM-DYNRC4-TRACK` | **r 0.79 base, 0.51 forearm at 25 steps** | 25-step rollout tracking of the render by the model trained on up to 4 generated context frames (run 20261109-065330-dyn, final `model.pt`, seed 0, 3-epoch warm start, w = 1); the base-link bar was 0.7 | r94 | current, **this checkpoint only** |
+| `NUM-DYNRC4-GAIN` | **0.52 base, 0.37 forearm at w = 1** | The same checkpoint's action gain, same measure as `NUM-DYN-ACTION-GAIN`; the pilot's base-link bar was 0.3 | r94 | current, **this checkpoint only** |
+| `NUM-DYNRC4-GATE` | **-0.76 points against persistence; frozen 79.0%** | The same checkpoint's one-step accuracy margin (85.93% against 86.69%, K = 1) and share of frozen rollout frames; false flips on static cells 2.24% | r94 | current, **this checkpoint only** |
 
 ## Dataset - the 96x96 fork
 
