@@ -698,9 +698,12 @@ the new input doubled how much the action changes the prediction on arm cells th
 truly move, yet the rollout's response to commands stayed the same. On those cells
 the model still picks "no change" about 70% of the time, and guidance up to 5 does
 not change that. FiLM would be a further doubling of the same effect, so it is not
-indicated. **Next:** the compounding branch - training on the model's own rollouts,
-where resetting the context every 5 steps lifts base tracking from 0.56 to 0.77.
-Design it in `docs/world_model_architecture.md` before implementing.
+indicated.
+**Next:** approve or amend the proposal in `docs/world_model_architecture.md`
+("Phase 2 proposal: training on context the model rolled out itself"): a free-running
+context of up to 8 generated frames with true targets, tested first as a 3-epoch
+warm start from r91's checkpoint. A weaker form, scheduled sampling, already failed
+(r74), so a miss here ends the training-side remedies.
 
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s

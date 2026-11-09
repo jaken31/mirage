@@ -1107,6 +1107,93 @@ That check (r92, `bench/action_pick_probe.py`) found the input doubled the actio
 effect on the prediction on moving arm cells while the rollout's gain stayed put,
 so FiLM, a further increase of the same effect, is dropped for now.
 
+## Phase 2 proposal: training on context the model rolled out itself
+
+**Status: PROPOSED 2026-11-08, not approved, not implemented.** A training-knob
+change only: the model, the stream layout and `dynamics_hash` stay as they are.
+
+**Why.** The per-cell action input moved neither the rollout's response to commands
+nor its tracking (r91), and a stronger action is not indicated (r92). What remains
+is compounding. Base-link 25-step tracking is 0.56 running free and 0.77 when the
+context is reset to real frames every 5 steps. In a rollout, the frames a model
+sees are stale and partly frozen, and it was never trained on that: once a frame
+freezes, the next one stays frozen 96-98% of the time, against the truth's 65% (r75).
+
+**This has been tried once in a weaker form, and it failed.** Scheduled sampling
+(r74) did not move the freeze and cost one-step margin. Two differences justify one
+more attempt, and neither is a guarantee:
+
+- r74 swapped context frames for one-step predictions *made from true context*, so
+  the model only saw a single step's error, about a third of those frames frozen.
+  This proposal rolls free for several steps, so the context has the stale,
+  accumulating error a rollout really produces (frozen 59-67% at step 1, 84-91% by
+  steps 10-24 in r75).
+- r74 was judged on the frozen share alone, on the one-pass model. This one is
+  judged on tracking and the command response too, on the K-round model.
+
+**Against it.** r77 found the model cannot tell which moving cells change, and
+nothing here adds that information. The reset gain is also not clean evidence: a
+reset hands the model real frames, including the real recent velocity, which
+training on its own frames cannot supply. The expected outcome is a partial
+improvement at best.
+
+### What changes
+
+- **`--rollout-context H`, default 0 (off).** For each batch, draw `n` uniformly
+  from 0..H. Frames `0 .. 14-n` of the 16-frame window stay real. Frames `15-n .. 14`
+  are generated in order: greedy, one round, guidance 1, no dropout, no gradient,
+  each from every window frame before it and the true actions. The loss targets
+  stay the true frames, so the model is pushed to catch up with where the arm
+  really is. `n = 0` is today's training. Gradients do not flow through the
+  generated frames (the "pushforward" trick, arXiv 2202.03376).
+- **H = 8.** r75's freeze has mostly set in by then, and 7 real frames remain.
+- **Action dropout stays at 0.1, applied after generation**, so null actions never
+  enter the generated frames.
+- **`--init-from RUN/best.pt`** loads weights only: a fresh optimizer and a new
+  run, with the source recorded in `meta.json`. **`--lr`** exposes the existing
+  learning-rate constant.
+- `rollout_context` goes in `knobs`, `RESUME_KNOBS` and `KNOB_OFF`, and stays out of
+  `dynamics_hash`. It uses the K-round model only; the one-pass path keeps `--sched-sample`.
+
+### Rejected
+
+- **A warm-up ramp on H.** One more knob, and the warm start already begins from a
+  model that predicts well on real context.
+- **Backpropagating through generated frames.** Argmax has no gradient, and
+  straight-through estimators add a design risk for an effect not shown to be needed.
+- **FiLM.** r92: the first doubling of the action's effect left the gain unchanged.
+- **Real windows longer than 16 frames.** It would need a data-pipeline change; a
+  growing context inside today's window needs none.
+
+### Acceptance - a warm-start pilot first
+
+Three epochs from `20261108-103434-dyn/best.pt`, seed 0, `--clean-flips
+--action-drop 0.1 --rollout-context 8 --lr 1e-4`. **Unverified estimate:** about
+3 h, from r80's 20 ms per rollout step at batch 27 and a mean of 4 generated
+frames per batch. These bars are judgement, set before the run:
+
+- **Tracking** (part 5 of `bench/forearm_probe.py`, w = 1): base-link 25-step
+  correlation at least 0.7, against 0.56.
+- **The freeze** (gate row 6): frozen share at most 80%, against 94.5%. The
+  gate's own bar stays near the truth's 20.1%; this is only the pilot's.
+- **Command response** (part 6): base-link action gain at least 0.3, against 0.17.
+- **No one-step loss** (gate row 1): accuracy at least persistence's, at K = 1.
+
+**If all pass:** a full cold 10-epoch run, seed 0, then seed 1, about 10 h each
+(unverified). A warm-start pass alone does not replace them.
+
+**If tracking or the freeze misses:** stop training-side remedies. A warm-start
+failure is weak evidence alone, but with r74 it is enough. **The next candidate
+would be predicting every 5th frame.** Over one step the tokens barely carry the
+motion (r89: tokens' correlation with the render is 0.66 base, 0.17 forearm at 1
+step, against 0.98 and 0.62 at 25), so a model scored per step may have little
+action signal to learn. That changes the data and the action encoding, so it would
+get its own proposal.
+
+**To be verified at implementation** (`python check.py`): `n = 0` is bit-identical
+to today's training step; generated frames equal `dynamics_eval.rollout` on the
+same seed and actions; targets stay true; a run resumes bit-identical.
+
 ## Sanitizer cost, and keeping E-3 cheap
 
 The sanitizer requirement asks for ASan clean on the **full** data-generation
