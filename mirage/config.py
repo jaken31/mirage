@@ -33,7 +33,13 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
 # decision: a frame is decoded in K masked rounds, not one pass").
 # `action_input` is how the action reaches the K-round model ("Phase 2 proposal:
 # the action is added to every query cell, with action dropout for guidance").
+#
+# `sim.frame_stride` is physics steps per recorded frame (`sim/main.cpp`). Absent
+# means 1, one frame per 2 ms step, which is every dataset recorded before the
+# key existed, so `base.json` keeps its data_hash. With it, `steps_per_episode`
+# and `action_hold_steps` both count recorded frames.
 OPTIONAL_KEYS: dict[str, dict[str, Any]] = {
+    "sim": {"frame_stride": 1},
     "dynamics": {"frame_decoding": "one_pass", "action_input": "token"},
 }
 
@@ -42,7 +48,7 @@ OPTIONAL_KEYS: dict[str, dict[str, Any]] = {
 # anything real.
 POSITIVE_INT_KEYS: dict[str, frozenset[str]] = {
     "sim": frozenset(["episodes", "steps_per_episode", "height", "width", "frames_per_shard",
-                      "action_hold_steps"]),
+                      "action_hold_steps", "frame_stride"]),
     "data": frozenset(["ctx"]),
     "tokenizer": frozenset(["codebook_size", "stride"]),
     "dynamics": frozenset(["d_model", "n_layers", "n_heads", "mlp_ratio"]),
@@ -161,7 +167,7 @@ def _check_values(raw: dict[str, Any]) -> None:
     # isinstance would accept `true` as the positive integer 1.
     for section, keys in POSITIVE_INT_KEYS.items():
         for key in sorted(keys):
-            value = raw[section][key]
+            value = raw[section].get(key, OPTIONAL_KEYS.get(section, {}).get(key))
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{section}.{key} must be a positive int, got {value!r}")
 
@@ -358,6 +364,12 @@ def _self_check() -> None:
     assert setting(mg, "dynamics", "frame_decoding") == "maskgit"
     assert mg.dynamics_hash != cfg.dynamics_hash and mg.tokenizer_hash == cfg.tokenizer_hash
     assert setting(cfg, "dynamics", "action_input") == "token"
+    # frame_stride: absent is 1 and keeps base.json's data_hash; present, even
+    # at 1, it is hashed, and a stride change moves every hash downstream.
+    assert "frame_stride" not in cfg.sim and setting(cfg, "sim", "frame_stride") == 1
+    fs = variant("sim", "frame_stride", 15)
+    assert setting(fs, "sim", "frame_stride") == 15
+    assert fs.data_hash != cfg.data_hash and fs.tokenizer_hash != cfg.tokenizer_hash
     assert variant("dynamics", "action_input", "token_and_query").dynamics_hash != cfg.dynamics_hash
 
     # A continuity bound is a validator threshold: it moves validator_hash and
@@ -380,6 +392,8 @@ def _self_check() -> None:
         ("sim", "seed", -1, "non-negative"),
         ("data", "val_fraction", 1.0, "[0, 1)"),
         ("sim", "action_hold_steps", 0, "positive int"),
+        ("sim", "frame_stride", 0, "positive int"),
+        ("sim", "frame_stride", 1.5, "positive int"),
         ("sim", "reach_digit_noise_prob", 1.0, "[0, 1)"),
         ("sim", "jacobian_deadband", 0.0, "positive float"),
         ("validator", "offpalette_tau", 0.0, "positive float"),

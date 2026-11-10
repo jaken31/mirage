@@ -490,7 +490,8 @@ int Policy::scripted_action(const mjData* data) {
 }
 
 void policy_dry_run(const mjModel* model, PolicyParams params, int base_seed,
-                    int shard_index, int episodes, int steps_per_episode) {
+                    int shard_index, int episodes, int steps_per_episode,
+                    int frame_stride) {
     const int count = action_count(model);
 
     std::vector<int> first_pass;
@@ -524,7 +525,9 @@ void policy_dry_run(const mjModel* model, PolicyParams params, int base_seed,
             for (int t = 0; t < steps_per_episode; ++t) {
                 const int action = policy.step(data);
                 action_to_control(model, action, data->ctrl);
-                mj_step(model, data);
+                for (int k = 0; k < frame_stride; ++k) {
+                    mj_step(model, data);
+                }
                 closest = std::min(closest, policy.target_distance(data));
 
                 if (pass == 0) {
@@ -560,8 +563,8 @@ void policy_dry_run(const mjModel* model, PolicyParams params, int base_seed,
         highest = std::max(highest, bin);
     }
 
-    std::printf("policy_dry_run: %d episodes x %d steps, %lld actions, twice\n",
-                episodes, steps_per_episode, total);
+    std::printf("policy_dry_run: %d episodes x %d frames of %d step(s), %lld actions, twice\n",
+                episodes, steps_per_episode, frame_stride, total);
     std::printf("  F-4 determinism: both passes identical\n");
     std::printf("  F-5 histogram:");
     for (const long long bin : histogram) {

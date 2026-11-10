@@ -29,6 +29,10 @@ namespace {
         int frames_per_shard;
         int height;
         int width;
+        // Physics steps per recorded frame. Optional in the config, and 1 when
+        // absent, so every config written before it existed keeps its
+        // data_hash and its bytes (mirage/config.py, OPTIONAL_KEYS).
+        int frame_stride;
         PolicyParams policy;
     };
 
@@ -108,14 +112,17 @@ namespace {
         cfg.frames_per_shard = PositiveInt(sim, "sim", "frames_per_shard");
         cfg.height = PositiveInt(sim, "sim", "height");
         cfg.width = PositiveInt(sim, "sim", "width");
+        cfg.frame_stride = sim.contains("frame_stride")
+            ? PositiveInt(sim, "sim", "frame_stride") : 1;
 
         cfg.policy.action_hold_steps = PositiveInt(sim, "sim", "action_hold_steps");
         cfg.policy.reach_digit_noise_prob = Number(sim, "sim", "reach_digit_noise_prob");
         cfg.policy.jacobian_deadband = Number(sim, "sim", "jacobian_deadband");
         cfg.policy.reach_done_dist = Number(sim, "sim", "reach_done_dist");
 
-        // step_idx is 16 bits in the meta record, so an episode longer than 65535
-        // steps would wrap around, and the data loader would think the episode
+        // step_idx counts recorded frames, not physics steps: the frame's index in
+        // its episode. It is 16 bits in the meta record, so an episode longer than
+        // 65535 frames would wrap around, and the data loader would think the episode
         // restarted partway through.
         if (cfg.steps_per_episode > 65535) {
             mju_error("sim.steps_per_episode is %d; the meta record's step_idx is "
@@ -344,7 +351,7 @@ int main(int argc, const char** argv) {
     // same-seed determinism check runs, and 240k steps take a few seconds in a
     // run that takes minutes.
     policy_dry_run(model, cfg.policy, cfg.seed, /*shard_index=*/0,
-                   /*episodes=*/200, cfg.steps_per_episode);
+                   /*episodes=*/200, cfg.steps_per_episode, cfg.frame_stride);
 
     {
         GlContext context(model);
@@ -400,10 +407,11 @@ int main(int argc, const char** argv) {
         const ShardProvenance provenance{args.data_hash, args.git_sha, cfg.seed,
                                          context.renderer(), context.version()};
 
-        printf("Generating %d episodes x %d steps = %d frames over %d shards "
-               "into '%s'\n",
+        printf("Generating %d episodes x %d frames = %d frames over %d shards "
+               "into '%s', %d physics step(s) of %g s per frame\n",
                cfg.episodes, cfg.steps_per_episode,
-               cfg.episodes * cfg.steps_per_episode, shards, cfg.shard_dir.c_str());
+               cfg.episodes * cfg.steps_per_episode, shards, cfg.shard_dir.c_str(),
+               cfg.frame_stride, model->opt.timestep);
 
         const auto started = std::chrono::steady_clock::now();
         std::int64_t total_frames = 0;
@@ -418,10 +426,17 @@ int main(int argc, const char** argv) {
 
             for (int e = 0; e < shard_episodes; ++e) {
                 policy.begin_episode(data);
+                // One action per recorded frame: the policy decides once, the
+                // controls stay on for all frame_stride physics steps, and only
+                // then is the frame rendered. So action[t] in a record is the
+                // action that moved the arm from frame t-1 to frame t, at any
+                // stride. The policy never sees the intermediate states.
                 for (int t = 0; t < cfg.steps_per_episode; ++t) {
                     const int action = policy.step(data);
                     action_to_control(model, action, data->ctrl);
-                    mj_step(model, data);
+                    for (int k = 0; k < cfg.frame_stride; ++k) {
+                        mj_step(model, data);
+                    }
 
                     mjv_updateScene(model, data, &opt, nullptr, &camera, mjCAT_ALL,
                                     &scene);

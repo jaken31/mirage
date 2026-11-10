@@ -73,6 +73,11 @@ void policy_self_check(const mjModel* model);
 // reach worse. Tune the deadband first. The measured trade-off curve for both
 // is in docs/world_model_architecture.md.
 struct PolicyParams {
+  // How many recorded frames one decision is held for. Named "steps" because
+  // the key predates sim.frame_stride, when a frame was one physics step; the
+  // name stays so no existing config's data_hash moves. Counted in calls to
+  // Policy::step, which main makes once per frame, so it is frames at any
+  // stride: hold * frame_stride physics steps of the same torque.
   int action_hold_steps;
 
   // Per *joint*, not per action: the chance that one commanded sign is
@@ -125,7 +130,7 @@ public:
   // the result into controls with action_to_control.
   //
   // Each call advances the hold counter and may draw a random number, so call
-  // it exactly once per step, before mj_step.
+  // it exactly once per recorded frame, before that frame's mj_step calls.
   int step(const mjData* data);
 
   // Fingertip-to-target distance in the plane, in metres. Public because the
@@ -232,5 +237,9 @@ private:
 // Aborts via mju_error if the two passes differ. The balance result is
 // printed, not enforced, and marked indicative below 2,000 episodes, the
 // sample size the requirement names. Allocates and frees its own mjData.
+//
+// frame_stride is the physics steps per decision, as in main's loop, so the
+// dry run sees the same trajectories the dataset will.
 void policy_dry_run(const mjModel* model, PolicyParams params, int base_seed,
-                    int shard_index, int episodes, int steps_per_episode);
+                    int shard_index, int episodes, int steps_per_episode,
+                    int frame_stride);
