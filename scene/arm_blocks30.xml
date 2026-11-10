@@ -1,0 +1,149 @@
+<mujoco model="arm_blocks30">
+	<!-- The 30 ms scene: scene/arm_blocks.xml retuned for sim.frame_stride = 15
+	     (mirage/configs/base30.json). A separate file, not an edit, because the
+	     scene's bytes are in data_hash: editing arm_blocks.xml would orphan the
+	     2 ms datasets. Three changes, each measured with
+	     bench/frame_motion_probe.py on 300-frame episodes at stride 15:
+	     the curb and its walls, the block layout, and the motor gears. -->
+	<compiler angle="radian"/>
+
+	<!-- Euler is the cheapest integrator; mj_step time is a P-6 constraint. -->
+	<option timestep="0.002" integrator="Euler" gravity="0 0 -9.81"/>
+
+	<visual>
+		<!-- Offscreen buffer matches the capture size exactly. -->
+		<global offwidth="64" offheight="64"/>
+		<!-- offsamples=0: no MSAA. Buys 12x on mjr_render, keeps the palette
+		     under 24, and stops segmentation ids being blended. shadowsize=0
+		     disables shadow mapping entirely. -->
+		<quality offsamples="0" shadowsize="0"/>
+		<!-- Ambient-only light: every face of a box gets the identical colour,
+		     so a geom renders as exactly one RGB value. This is what makes the
+		     palette countable. Any diffuse or specular term reintroduces
+		     shading ramps and the colour count explodes. -->
+		<headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
+	</visual>
+
+	<!-- (Inherited from arm_blocks.xml; still true here. The gears below now
+	     differ per motor - see the actuator block - and damping is unchanged,
+	     so the settling time, inertia/damping, is still ~12 steps, inside one
+	     15-step frame.)
+	     gear and damping are scaled together on purpose, 3x each from the
+	     original 2 / 0.5. Terminal velocity is gear*ctrl/damping, so it is
+	     unchanged at ~4 rad/s - the arm is not faster, only more responsive.
+	     The settling time is inertia/damping, and it drops from 34 steps to 12
+	     for joint0. That is what Q-4 needs: agreement is scored as
+	     sign(delta theta) against the commanded sign, and every frame inside
+	     one settling time after a sign flip disagrees with the command no
+	     matter how good the model is. At 2 / 0.5 the simulator itself scored
+	     83.1% and Q-4 could not be met by a perfect model. Measured in
+	     bench/hold_probe.py; do not change one of these without the other. -->
+	<default>
+		<geom type="box" friction="1 0.005 0.0001"/>
+		<joint armature="0.01" damping="1.5"/>
+		<motor ctrllimited="true" ctrlrange="-1 1" gear="6"/>
+	</default>
+
+	<worldbody>
+		<!-- Look direction is -z of the camera frame; xyaxes gives x then y.
+		     Low elevation (~24 deg) so the arm can pass in front of blocks and
+		     blocks can hide each other - both needed for F-7 occlusion. -->
+		<camera name="main" pos="0 -0.5 0.22" xyaxes="1 0 0 0 0.22 0.5"/>
+
+		<!-- Table top sits at z=0. Sized to fill the frame so the background
+		     never appears, which keeps one more colour out of the palette. -->
+		<geom name="table" pos="0 0 -0.02" size="1.2 1.2 0.02" rgba="0.30 0.32 0.38 1"/>
+
+		<!-- Containment. Without it the arm sweeps blocks out of the camera's view
+		     and they never come back: on arm_blocks.xml at 30 ms, a 90 s play
+		     session loses 1.55 of 3 blocks (85% of sessions lose one, median
+		     0.93 s in). With it, 0 of 3 over the same 90 s, and 0 in 300 episodes
+		     of 9 s.
+
+		     Each wall is two geoms on the same footprint, 3 cm thick, inner face
+		     inset 3.5 cm from the edge of the camera's view at block-centre height
+		     (the view is a trapezoid on the table: x = +-(0.103 + 0.379 (y +
+		     0.313)), near edge y = -0.313), so a block touching it is still
+		     whole in frame. The far wall is at y = 0.40, past the arm's reach.
+		     - curb_*: 8 mm tall, visible, collides with nothing. The arm's links
+		       start at z = 0.010 (link0) and 0.012 (link1), so the arm passes
+		       over it and never touches a wall, which keeps the arm's motion as
+		       it was.
+		     - the unnamed partner: 10 cm tall, geom group 3 (not drawn by the
+		       default mjvOption, so not in the frame or the segmentation pass),
+		       contype/conaffinity 2. Blocks carry bit 2 as well, the arm and table
+		       only bit 1, so it stops blocks and nothing else. It is tall because
+		       an 8 mm curb alone lets the arm roll a block over it (the arm can
+		       push with tens of newtons against a 1.2 N block).
+		     A 1 cm wall let a block through under the arm's push; 3 cm held.
+		     All four curbs share one colour, so they add one palette colour, and
+		     only the near one is named: the palette is built from named geoms,
+		     and four names for one colour leave three entries no pixel can map
+		     to, which mirage/data.py's preload rejects. -->
+		<geom name="curb" pos="0.0000 -0.2930 0.004" size="0.0863 0.015 0.004" euler="0 0 0.000000" rgba="0.62 0.60 0.55 1" contype="0" conaffinity="0"/>
+		<geom pos="0.0000 -0.2930 0.05" size="0.0863 0.015 0.05" euler="0 0 0.000000" group="3" contype="2" conaffinity="2" rgba="0 0 0 0"/>
+		<geom pos="0.0000 0.4150 0.004" size="0.3432 0.015 0.004" euler="0 0 0.000000" rgba="0.62 0.60 0.55 1" contype="0" conaffinity="0"/>
+		<geom pos="0.0000 0.4150 0.05" size="0.3432 0.015 0.05" euler="0 0 0.000000" group="3" contype="2" conaffinity="2" rgba="0 0 0 0"/>
+		<geom pos="-0.2238 0.0557 0.004" size="0.3675 0.015 0.004" euler="0 0 1.933069" rgba="0.62 0.60 0.55 1" contype="0" conaffinity="0"/>
+		<geom pos="-0.2238 0.0557 0.05" size="0.3675 0.015 0.05" euler="0 0 1.933069" group="3" contype="2" conaffinity="2" rgba="0 0 0 0"/>
+		<geom pos="0.2238 0.0557 0.004" size="0.3675 0.015 0.004" euler="0 0 1.208523" rgba="0.62 0.60 0.55 1" contype="0" conaffinity="0"/>
+		<geom pos="0.2238 0.0557 0.05" size="0.3675 0.015 0.05" euler="0 0 1.208523" group="3" contype="2" conaffinity="2" rgba="0 0 0 0"/>
+
+		<!-- Arm: two hinges about z, so the action space is 3^2 = 9.
+		     Links are 0.06 tall against 0.05 blocks, so a link crossing in
+		     front of a block can occlude it completely. -->
+		<body name="link0_body" pos="0 0 0.04">
+			<joint name="joint0" type="hinge" axis="0 0 1" limited="false"/>
+			<geom name="link0" pos="0.09 0 0" size="0.09 0.020 0.030" rgba="0.90 0.75 0.10 1"/>
+			<body name="link1_body" pos="0.18 0 0">
+				<joint name="joint1" type="hinge" axis="0 0 1" limited="true" range="-2.5 2.5"/>
+				<geom name="link1" pos="0.075 0 0" size="0.075 0.018 0.028" rgba="0.10 0.65 0.90 1"/>
+			</body>
+		</body>
+
+		<!-- Three blocks, each its own body with a free joint: nq = 2 + 3*7 = 23.
+		     Placed past link0's own length so joint1 has to participate to
+		     reach them, and inside the 0.33 total reach so contact is possible.
+
+		     block0's y is NEGATIVE on purpose. The camera sits at y=-0.5 looking
+		     toward +y, and the arm rests along +x at y=0, so any block at small
+		     positive y is behind the arm in the rest pose. block0 was at +0.06
+		     and read 0 visible px at rest: F-7 then scored 79.7% from one static
+		     configuration rather than from the arm passing in front of anything.
+		     At -0.06 it reads 46 px at rest and still touches 0 mid-sweep, which
+		     is the occlusion F-7 exists to measure. Do not flip the sign back. -->
+		<!-- Block layout for the walled arena: every block starts inside the
+		     walls with its whole body in frame. arm_blocks.xml had block0 at
+		     (0.20, -0.06), whose centre projects 0.1 px outside the frame. Kept
+		     from there: block2 behind the arm's rest pose for occlusion (F-7),
+		     and blocks 0 and 1 on the camera side. -->
+		<body name="block0_body" pos="0.12 -0.08 0.025">
+			<freejoint name="block0_free"/>
+			<geom name="block0" contype="3" conaffinity="3" size="0.025 0.025 0.025" rgba="0.85 0.10 0.10 1"/>
+		</body>
+		<body name="block1_body" pos="-0.12 -0.1 0.025">
+			<freejoint name="block1_free"/>
+			<geom name="block1" contype="3" conaffinity="3" size="0.025 0.025 0.025" rgba="0.15 0.75 0.20 1"/>
+		</body>
+		<body name="block2_body" pos="-0.11 0.18 0.025">
+			<freejoint name="block2_free"/>
+			<geom name="block2" contype="3" conaffinity="3" size="0.025 0.025 0.025" rgba="0.55 0.25 0.85 1"/>
+		</body>
+	</worldbody>
+
+	<actuator>
+		<!-- Gears per motor, for the 30 ms frame. Terminal speed is gear/damping,
+		     so 4.7 rad/s on joint0 and 3.3 on joint1 (arm_blocks.xml: 4 and 4).
+		     Chosen so a driven link's midpoint moves about 1 px per frame, while
+		     the tip's 90th percentile stays under 4 px. On 300 episodes of 300
+		     frames, steady-state midpoint medians are 1.15 px (link0) and 0.96 px
+		     (link1), and the tip moves 1.31 px median, 3.66 px at p90 and 8.46 at
+		     p99. The two targets pull against each other: the tip is 3.7x
+		     farther from the base than link0's midpoint, and nearer the camera
+		     when the arm reaches toward it, so the p99 cannot also be 4 px.
+		     6/6 gave 0.94 / 0.73 px midpoints; 7/6 gave the same tip and a
+		     worse action balance (2.44 vs 2.23). -->
+		<motor name="motor0" joint="joint0" gear="7"/>
+		<motor name="motor1" joint="joint1" gear="5"/>
+	</actuator>
+</mujoco>
