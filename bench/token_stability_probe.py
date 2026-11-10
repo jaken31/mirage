@@ -115,9 +115,11 @@ def main() -> None:
                     help=f"first N val episodes, or 'all' (default {EPISODES}, r46's)")
     ap.add_argument("--first-target", type=int, default=1,
                     help="first frame of an episode scored as a target (default 1, r46's)")
+    ap.add_argument("--config", default=str(ROOT / "mirage" / "configs" / "base.json"),
+                    help="the dataset the run was trained on (default base.json, r46's)")
     a = ap.parse_args()
     episodes = None if a.episodes == "all" else int(a.episodes)
-    cfg = config.load(ROOT / "mirage" / "configs" / "base.json")
+    cfg = config.load(a.config)
     print(f"population: {a.episodes} val episodes, targets from frame {a.first_target}")
     print(f"{'run':<24} {'transitions':>12} {'persistence':>12} "
           f"{'P(flip|quiet)':>14} {'spurious share':>15}")
