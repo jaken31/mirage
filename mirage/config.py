@@ -25,6 +25,16 @@ EXPECTED_KEYS: dict[str, frozenset[str]] = {
     "engine": frozenset(),
 }
 
+# Keys a section may omit, each with the value its absence means. Absent, it
+# is not in the section's bytes, so every hash taken before the key existed
+# stays the same: `dyn192x4.json` and its checkpoints keep `dynamics_hash`
+# 7567369d. Present, it is hashed like any other key. `frame_decoding` is the
+# K-round masked decoding decision (`world_model_architecture.md`, "Phase 2
+# decision: a frame is decoded in K masked rounds, not one pass").
+OPTIONAL_KEYS: dict[str, dict[str, Any]] = {
+    "dynamics": {"frame_decoding": "one_pass"},
+}
+
 # Counts that must be a positive int. A zero or negative value still hashes
 # fine, but names a run that cannot exist, so the hash no longer identifies
 # anything real.
@@ -49,6 +59,7 @@ CHOICE_KEYS: dict[str, dict[str, frozenset[str]]] = {
         "pos_encoding": frozenset(["rope"]),
         "output_head": frozenset(["untied"]),
         "mask": frozenset(["block_causal", "strict_causal"]),
+        "frame_decoding": frozenset(["one_pass", "maskgit"]),
     },
 }
 
@@ -127,6 +138,11 @@ class Config:
     shapes: Shapes
 
 
+def setting(cfg: "Config", section: str, key: str) -> Any:
+    """`cfg.<section>[key]`, or the value its absence means (`OPTIONAL_KEYS`)."""
+    return getattr(cfg, section).get(key, OPTIONAL_KEYS[section][key])
+
+
 def _check_keys(label: str, expected: frozenset[str], actual: set[str]) -> None:
     missing = expected - actual
     unknown = actual - expected
@@ -174,7 +190,7 @@ def _check_values(raw: dict[str, Any]) -> None:
 
     for section, choices in CHOICE_KEYS.items():
         for key, allowed in sorted(choices.items()):
-            value = raw[section][key]
+            value = raw[section].get(key, OPTIONAL_KEYS.get(section, {}).get(key))
             if type(value) is not str or value not in allowed:
                 raise ValueError(f"{section}.{key} must be one of {sorted(allowed)}, got {value!r}")
 
@@ -220,7 +236,8 @@ def load(path: Path | str) -> Config:
 
     _check_keys("top-level", frozenset(EXPECTED_KEYS.keys()), set(raw.keys()))
     for section, expected_keys in EXPECTED_KEYS.items():
-        _check_keys(section, expected_keys, set(raw[section].keys()))
+        optional = set(OPTIONAL_KEYS.get(section, {}))
+        _check_keys(section, expected_keys | optional, set(raw[section].keys()) | optional)
     _check_values(raw)
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -331,6 +348,12 @@ def _self_check() -> None:
     assert dyn.engine_hash != cfg.engine_hash
     assert variant("dynamics", "mask", "strict_causal").dynamics_hash != cfg.dynamics_hash
     assert variant("dynamics", "rope_base", 500.0).dynamics_hash != cfg.dynamics_hash
+    # An optional key: absent is the default and hashes as before it existed;
+    # present, it is hashed, so the masked model gets its own dynamics_hash.
+    assert "frame_decoding" not in cfg.dynamics and setting(cfg, "dynamics", "frame_decoding") == "one_pass"
+    mg = variant("dynamics", "frame_decoding", "maskgit")
+    assert setting(mg, "dynamics", "frame_decoding") == "maskgit"
+    assert mg.dynamics_hash != cfg.dynamics_hash and mg.tokenizer_hash == cfg.tokenizer_hash
 
     # A continuity bound is a validator threshold: it moves validator_hash and
     # nothing else, so recalibrating it orphans no dataset or checkpoint.
@@ -373,6 +396,7 @@ def _self_check() -> None:
         ("dynamics", "output_head", ["untied"], "must be one of"),
         ("dynamics", "n_heads", _DROP, "missing keys"),
         ("dynamics", "extra", 1, "unknown keys"),
+        ("dynamics", "frame_decoding", "raster", "must be one of"),
     ]:
         try:
             variant(section, key, value)

@@ -931,6 +931,8 @@ not settle: the window's frame count, which item 1 names, and the mask, which
 decision 9's measurement selects and which may change how a frame's positions are
 fed, but not which record they are read from.
 
+**Reopened 2026-11-06 for the masked-rounds model:** the context stream keeps this layout exactly, and each target frame gains a 64-position query block - see `docs/world_model_architecture.md`, "Phase 2 decision: a frame is decoded in K masked rounds, not one pass". `dyn192x4.json` and its checkpoints keep this decision unchanged.
+
 **Item 1's window index arithmetic - DECIDED 2026-09-21: shared, not copied.**
 The plan's own recommendation and the project's precedent. The shared addressing
 and `WindowSampler` must agree on every window's (episode, offset). It edits
@@ -1012,6 +1014,8 @@ arm's - drift explodes or a link vanishes, and accuracy against the truth falls
 below holding the seed frame still. The lever is training (decision 4), not
 decoding.
 
+**Reopened 2026-11-06 for the masked-rounds model:** greedy is replaced by K confidence-ordered rounds, and gate rows 2 and 9 are restated there - see `docs/world_model_architecture.md`, "Phase 2 decision: a frame is decoded in K masked rounds, not one pass". `dyn192x4.json` and its checkpoints keep this decision unchanged.
+
 **6. Whether `dynamics_eval.py` splits out - governed by its trigger, which fired
 at item 3 (2026-09-24).** The same 500-line trigger that split `fsq_eval.py` out
 of `fsq.py`, applied when it fires and not before. The model took `dynamics.py`
@@ -1042,6 +1046,8 @@ than by argument, under a rule fixed in code before the first step
 (`bench/mask_probe.py`). "Before item 1" says what it changes and the trigger that
 would reopen it. The dynamics requirement's description carries the second,
 separately dated amendment.
+
+**Reopened 2026-11-06 for the masked-rounds model:** query blocks attend bidirectionally inside their own frame and causally to the context - see `docs/world_model_architecture.md`, "Phase 2 decision: a frame is decoded in K masked rounds, not one pass". `dyn192x4.json` and its checkpoints keep this decision unchanged.
 
 ---
 
