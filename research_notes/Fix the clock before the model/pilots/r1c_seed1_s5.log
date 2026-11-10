@@ -1,0 +1,22 @@
+stride 5 (10 ms/frame), tokenizer 20261110-005120-r1c: 473 train episodes x 120 frames, 49,665 windows, 3104 steps/epoch, 20,000 steps (6.4 epochs); 2,835 val windows
+  step  3,104  train 0.4631  val ce(last) 0.4459  acc 87.42%  copy 86.10%  lift +0.095  153s
+  step  6,208  train 0.3935  val ce(last) 0.3920  acc 88.26%  copy 86.10%  lift +0.156  291s
+  step  9,312  train 0.3466  val ce(last) 0.3730  acc 88.63%  copy 86.10%  lift +0.182  431s
+  step 12,416  train 0.2782  val ce(last) 0.3712  acc 88.75%  copy 86.10%  lift +0.191  572s
+  step 15,520  train 0.2507  val ce(last) 0.3734  acc 88.67%  copy 86.10%  lift +0.185  710s
+  step 18,624  train 0.2721  val ce(last) 0.3751  acc 88.66%  copy 86.10%  lift +0.184  851s
+  step 20,000  train 0.2512  val ce(last) 0.3753  acc 88.60%  copy 86.10%  lift +0.180  914s
+
+=== stride 5, best: one-step acc 88.75% vs copy 86.10% (lift +0.191); frozen rollout frames 21.1% vs truth 9.1% (2.30x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       50   5  link0     2.12    6.14    0.927   0.975         -   0.98   459
+       50   5  link1     9.48   11.55    0.578   0.713         -   0.71   459
+      250  25  link0     5.39   20.12    0.548   0.998     0.012   0.93   459
+      250  25  link1    18.88   30.90    0.340   0.888    -0.004   1.18   441
+
+=== stride 5, final: one-step acc 88.60% vs copy 86.10% (lift +0.180); frozen rollout frames 18.1% vs truth 9.1% (1.98x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       50   5  link0     2.00    6.14    0.936   0.975         -   1.05   459
+       50   5  link1     8.44   11.47    0.642   0.709         -   0.70   457
+      250  25  link0     4.67   20.12    0.675   0.998     0.026   0.92   459
+      250  25  link1    16.71   30.93    0.343   0.894    -0.018   0.89   441

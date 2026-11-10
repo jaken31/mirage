@@ -1,0 +1,67 @@
+r1c: 744,966 parameters, 283,800 train / 16,200 val frames, 2217 steps/epoch x 60, preload 14.5s
+  levels [8, 8, 8] quantize=True attention=False on cuda
+  epoch  1/60  val 24.282 dB  train 24.524 dB  gap +0.242    97.5s
+  epoch  2/60  val 26.168 dB  train 26.455 dB  gap +0.287   224.0s
+  epoch  3/60  val 27.211 dB  train 27.526 dB  gap +0.315   388.5s
+  epoch  4/60  val 28.129 dB  train 28.504 dB  gap +0.374   567.6s
+  epoch  5/60  val 28.539 dB  train 28.963 dB  gap +0.424   746.0s
+  epoch  6/60  val 28.804 dB  train 29.289 dB  gap +0.485   924.3s
+  epoch  7/60  val 29.089 dB  train 29.595 dB  gap +0.506  1102.2s
+  epoch  8/60  val 29.281 dB  train 29.789 dB  gap +0.508  1273.9s
+  epoch  9/60  val 29.512 dB  train 30.052 dB  gap +0.540  1452.0s
+  epoch 10/60  val 29.632 dB  train 30.168 dB  gap +0.535  1629.7s
+  epoch 11/60  val 29.754 dB  train 30.355 dB  gap +0.602  1807.4s
+  epoch 12/60  val 29.912 dB  train 30.520 dB  gap +0.608  1985.5s
+  epoch 13/60  val 29.907 dB  train 30.528 dB  gap +0.621  2164.4s
+  epoch 14/60  val 30.000 dB  train 30.637 dB  gap +0.637  2343.5s
+  epoch 15/60  val 30.110 dB  train 30.752 dB  gap +0.642  2522.4s
+  epoch 16/60  val 30.142 dB  train 30.800 dB  gap +0.658  2701.2s
+  epoch 17/60  val 30.182 dB  train 30.856 dB  gap +0.674  2879.7s
+  epoch 18/60  val 30.231 dB  train 30.897 dB  gap +0.666  3058.6s
+  epoch 19/60  val 30.325 dB  train 30.988 dB  gap +0.663  3237.8s
+  epoch 20/60  val 30.340 dB  train 30.998 dB  gap +0.657  3387.8s
+  epoch 21/60  val 30.333 dB  train 31.032 dB  gap +0.699  3476.7s
+  epoch 22/60  val 30.424 dB  train 31.139 dB  gap +0.715  3565.6s
+  epoch 23/60  val 30.443 dB  train 31.136 dB  gap +0.694  3649.1s
+  epoch 24/60  val 30.466 dB  train 31.156 dB  gap +0.689  3730.9s
+  epoch 25/60  val 30.502 dB  train 31.229 dB  gap +0.728  3812.8s
+  epoch 26/60  val 30.540 dB  train 31.290 dB  gap +0.750  3894.8s
+  epoch 27/60  val 30.536 dB  train 31.277 dB  gap +0.741  3976.7s
+  epoch 28/60  val 30.521 dB  train 31.276 dB  gap +0.755  4058.7s
+  epoch 29/60  val 30.583 dB  train 31.331 dB  gap +0.748  4140.7s
+  epoch 30/60  val 30.568 dB  train 31.347 dB  gap +0.779  4222.7s
+  epoch 31/60  val 30.624 dB  train 31.396 dB  gap +0.771  4304.7s
+  epoch 32/60  val 30.661 dB  train 31.427 dB  gap +0.766  4386.7s
+  epoch 33/60  val 30.648 dB  train 31.417 dB  gap +0.769  4468.8s
+  epoch 34/60  val 30.694 dB  train 31.489 dB  gap +0.795  4550.8s
+  epoch 35/60  val 30.705 dB  train 31.469 dB  gap +0.764  4632.8s
+  epoch 36/60  val 30.697 dB  train 31.498 dB  gap +0.800  4714.7s
+  epoch 37/60  val 30.720 dB  train 31.518 dB  gap +0.798  4796.7s
+  epoch 38/60  val 30.744 dB  train 31.558 dB  gap +0.813  4878.7s
+  epoch 39/60  val 30.748 dB  train 31.567 dB  gap +0.819  4960.7s
+  epoch 40/60  val 30.720 dB  train 31.522 dB  gap +0.801  5042.7s
+  epoch 41/60  val 30.770 dB  train 31.590 dB  gap +0.819  5124.7s
+  epoch 42/60  val 30.800 dB  train 31.625 dB  gap +0.825  5206.7s
+  epoch 43/60  val 30.752 dB  train 31.585 dB  gap +0.833  5288.7s
+  epoch 44/60  val 30.799 dB  train 31.661 dB  gap +0.862  5370.7s
+  epoch 45/60  val 30.814 dB  train 31.676 dB  gap +0.862  5452.7s
+  epoch 46/60  val 30.823 dB  train 31.671 dB  gap +0.849  5534.7s
+  epoch 47/60  val 30.804 dB  train 31.691 dB  gap +0.887  5616.6s
+  epoch 48/60  val 30.795 dB  train 31.702 dB  gap +0.907  5698.6s
+  epoch 49/60  val 30.849 dB  train 31.715 dB  gap +0.866  5780.5s
+  epoch 50/60  val 30.845 dB  train 31.716 dB  gap +0.871  5862.4s
+  epoch 51/60  val 30.846 dB  train 31.725 dB  gap +0.880  5944.4s
+  epoch 52/60  val 30.859 dB  train 31.745 dB  gap +0.886  6026.3s
+  epoch 53/60  val 30.833 dB  train 31.696 dB  gap +0.863  6108.2s
+  epoch 54/60  val 30.862 dB  train 31.732 dB  gap +0.870  6190.2s
+  epoch 55/60  val 30.885 dB  train 31.762 dB  gap +0.878  6272.1s
+  epoch 56/60  val 30.852 dB  train 31.763 dB  gap +0.911  6354.1s
+  epoch 57/60  val 30.893 dB  train 31.775 dB  gap +0.882  6436.0s
+  epoch 58/60  val 30.877 dB  train 31.774 dB  gap +0.897  6517.9s
+  epoch 59/60  val 30.870 dB  train 31.785 dB  gap +0.915  6599.9s
+  epoch 60/60  val 30.880 dB  train 31.786 dB  gap +0.906  6681.9s
+
+R1C 20261110-005120-r1c: held-out 30.880 dB
+  row 1  vs the 30.0 dB Q-1 bar:            +0.880 dB
+  row 2  vs the 28.27 dB held-out floor: +2.610 dB (needs >= +1.73)
+  train-val gap +0.906 dB, 6683.9s

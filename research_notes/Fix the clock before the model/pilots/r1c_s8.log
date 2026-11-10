@@ -1,0 +1,24 @@
+stride 8 (16 ms/frame), tokenizer 20261110-005120-r1c: 473 train episodes x 75 frames, 28,380 windows, 1773 steps/epoch, 15,000 steps (8.5 epochs); 1,620 val windows
+  step  1,773  train 0.5598  val ce(last) 0.5964  acc 84.23%  copy 83.40%  lift +0.050  81s
+  step  3,546  train 0.4582  val ce(last) 0.4986  acc 85.87%  copy 83.40%  lift +0.149  163s
+  step  5,319  train 0.3161  val ce(last) 0.4759  acc 86.01%  copy 83.40%  lift +0.157  245s
+  step  7,092  train 0.4742  val ce(last) 0.4695  acc 86.14%  copy 83.40%  lift +0.165  327s
+  step  8,865  train 0.3268  val ce(last) 0.4822  acc 85.95%  copy 83.40%  lift +0.154  407s
+  step 10,638  train 0.2408  val ce(last) 0.4839  acc 86.03%  copy 83.40%  lift +0.159  488s
+  step 12,411  train 0.2728  val ce(last) 0.4851  acc 86.03%  copy 83.40%  lift +0.158  568s
+  step 14,184  train 0.2784  val ce(last) 0.4904  acc 86.00%  copy 83.40%  lift +0.157  649s
+  step 15,000  train 0.2163  val ce(last) 0.4907  acc 86.09%  copy 83.40%  lift +0.162  687s
+
+=== stride 8, best: one-step acc 86.14% vs copy 83.40% (lift +0.165); frozen rollout frames 15.9% vs truth 8.4% (1.88x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       48   3  link0     2.48    5.97    0.874   0.988         -   0.93   405
+       48   3  link1    10.01   11.44    0.331   0.609         -   0.67   404
+      256  16  link0     5.35   20.56    0.714   0.927    -0.038   0.87   405
+      256  16  link1    19.53   31.28    0.222   0.883     0.027   1.28   381
+
+=== stride 8, final: one-step acc 86.09% vs copy 83.40% (lift +0.162); frozen rollout frames 12.4% vs truth 8.4% (1.46x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       48   3  link0     2.14    5.97    0.921   0.988         -   1.02   405
+       48   3  link1     8.61   11.44    0.496   0.609         -   0.88   404
+      256  16  link0     4.66   20.56    0.737   0.927    -0.016   0.95   405
+      256  16  link1    17.60   32.08    0.348   0.865     0.059   1.28   385

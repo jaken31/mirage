@@ -1,0 +1,25 @@
+stride 10 (20 ms/frame), tokenizer 20261110-005120-r1c: 473 train episodes x 60 frames, 21,285 windows, 1330 steps/epoch, 12,000 steps (9.0 epochs); 1,215 val windows
+  step  1,330  train 0.5224  val ce(last) 0.6808  acc 82.98%  copy 82.40%  lift +0.033  60s
+  step  2,660  train 0.4106  val ce(last) 0.5673  acc 84.36%  copy 82.40%  lift +0.111  119s
+  step  3,990  train 0.3935  val ce(last) 0.5302  acc 84.93%  copy 82.40%  lift +0.144  178s
+  step  5,320  train 0.3958  val ce(last) 0.5298  acc 84.84%  copy 82.40%  lift +0.138  237s
+  step  6,650  train 0.3381  val ce(last) 0.5394  acc 84.79%  copy 82.40%  lift +0.136  297s
+  step  7,980  train 0.3687  val ce(last) 0.5384  acc 85.11%  copy 82.40%  lift +0.154  356s
+  step  9,310  train 0.2866  val ce(last) 0.5471  acc 85.00%  copy 82.40%  lift +0.147  416s
+  step 10,640  train 0.3038  val ce(last) 0.5526  acc 84.98%  copy 82.40%  lift +0.146  476s
+  step 11,970  train 0.2712  val ce(last) 0.5575  acc 85.05%  copy 82.40%  lift +0.151  536s
+  step 12,000  train 0.2656  val ce(last) 0.5592  acc 84.98%  copy 82.40%  lift +0.147  538s
+
+=== stride 10, best: one-step acc 84.84% vs copy 82.40% (lift +0.138); frozen rollout frames 14.8% vs truth 7.8% (1.88x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       40   2  link0     2.44    5.10    0.875   0.963         -   0.92   459
+       40   2  link1     8.97    9.72    0.456   0.767         -   0.63   458
+      240  12  link0     6.60   19.32    0.603   0.918     0.012   0.95   459
+      240  12  link1    19.17   29.58    0.229   0.834     0.037   1.04   433
+
+=== stride 10, final: one-step acc 84.98% vs copy 82.40% (lift +0.147); frozen rollout frames 9.6% vs truth 7.8% (1.23x)
+       ms   h   link  ang err   still  model r   tok r  shuffled   gain     n
+       40   2  link0     2.20    5.10    0.871   0.963         -   0.97   459
+       40   2  link1     9.59    9.79    0.451   0.761         -   0.85   458
+      240  12  link0     5.02   19.32    0.678   0.918     0.062   0.87   459
+      240  12  link1    17.52   29.94    0.389   0.844     0.040   1.08   441

@@ -720,6 +720,22 @@ frames, a small code change, because H = 4 changed that share and the depth of
 generated context together. Full cold runs (about 10 h each, seeds 0 and 1) wait for a
 pilot that passes all four.
 
+**Landed 2026-11-10 (r95-r103): the recorded clock, not the model, is why rollouts
+freeze.** The third pilot (r95, H = 8 with 1 batch in 5 fully real) ends 1.53 points
+below repeating the last frame, inside its rule's -1.57 midpoint, so its rule says
+the share of real batches explains most of the loss and nothing further launches;
+its freeze bar was not measured. Then the clock test: a frame is one 2 ms physics
+step and the arm's tip moves a median 0.13 px in it (r96). The plain one-pass model,
+real context only, on r1c tokens (retrained: 30.88 dB, 0 spurious flips, entropy
+54.5% against the 70% bar, r98) passes all three pre-set bars at every 15th frame
+(30 ms): base-link tracking 0.90, action gain 1.00, frozen frames 1.14x the truth's
+(r103). The same model at 2 ms freezes (r101); every 5th frame misses two bars
+(r102); R1's noisy tokens move the same way, less (r99, r100). One seed, 18,920
+training frames, forearm still not tracking. The owner decides whether r1c's entropy
+miss is acceptable; nothing here moves that bar.
+**Next:** a new 300,000-frame dataset recorded at about 30 ms per frame (15 physics
+steps per frame), then r1c on it.
+
 **Decided 2026-09-21**, with the reasons in the plan: RoPE and the no-shift
 interleaving - the irreversible pair, `action[t]` immediately before frame `t`'s
 64 tokens, from the same record, with the phase assertion as the acceptance

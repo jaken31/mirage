@@ -138,6 +138,7 @@ matches the model's; on any other, re-measure with `bench/token_stability_probe.
 | `NUM-DYN-PERSIST-R1` | **85.67%** | Persistence on R1 (`20260829-005439-r1`) over the token-stability probe's default population: 12 val episodes, every transition, 460,032 cell-transitions | r46, r57 | current, **this population and checkpoint only** |
 | `NUM-DYN-PERSIST-R1-ALL` | **86.69%** | Persistence on R1 (`20260829-005439-r1`) over every val window's last frame: 27 episodes, target frames 15-599, 1,010,880 cells. `--episodes all --first-target 15`. The population the mask measurement and item 4 score on | r54, r57 | current, **this population and checkpoint only** |
 | `NUM-DYN-PERSIST-R1-512` | **86.47%** | Persistence on R1 over the 512 val windows `bench/mask_probe.py`'s curve scores (`EVAL_SUBSET_SEED` 0), last frame, 32,768 cells. The population item 4's sub-epoch points score on; r60 reproduced it exactly | r59, r60 | current, **this population and checkpoint only** |
+| `NUM-DYN-PERSIST-R1C` | **93.23%** | Persistence on r1c (`20261110-005120-r1c`) over the token-stability probe's default population, the same 460,032 cell-transitions as `NUM-DYN-PERSIST-R1`: 7.6 points higher, because r1c's tokens do not flip without a pixel change | r98 | current, **this population and checkpoint only** |
 
 ## Dynamics - training cost
 
@@ -202,7 +203,34 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-DYNRC4-TRACK` | **r 0.79 base, 0.51 forearm at 25 steps** | 25-step rollout tracking of the render by the model trained on up to 4 generated context frames (run 20261109-065330-dyn, final `model.pt`, seed 0, 3-epoch warm start, w = 1); the base-link bar was 0.7 | r94 | current, **this checkpoint only** |
 | `NUM-DYNRC4-GAIN` | **0.52 base, 0.37 forearm at w = 1** | The same checkpoint's action gain, same measure as `NUM-DYN-ACTION-GAIN`; the pilot's base-link bar was 0.3 | r94 | current, **this checkpoint only** |
 | `NUM-DYNRC4-GATE` | **-0.76 points against persistence; frozen 79.0%** | The same checkpoint's one-step accuracy margin (85.93% against 86.69%, K = 1) and share of frozen rollout frames; false flips on static cells 2.24% | r94 | current, **this checkpoint only** |
+| `NUM-DYNRS-TRACK` | **r 0.84 base, 0.31 forearm at 25 steps** | 25-step rollout tracking of the render by the model trained on up to 8 generated context frames with 1 batch in 5 fully real (run 20261109-124706-dyn, final `model.pt`, seed 0, 3-epoch warm start, w = 1); the base-link bar was 0.7 | r95 | current, **this checkpoint only** |
+| `NUM-DYNRS-GAIN` | **0.69 base, 0.58 forearm at w = 1** | The same checkpoint's action gain, same measure as `NUM-DYN-ACTION-GAIN`; the pilot's base-link bar was 0.3 | r95 | current, **this checkpoint only** |
+| `NUM-DYNRS-GATE` | **-1.53 points against persistence; frozen share not measured** | The same checkpoint's one-step accuracy margin (85.16% against 86.69%, K = 1), inside the pre-set rule's -1.57 midpoint; false flips on static cells 3.26%. `--eval` was not run, so the freeze bar has no value | r95 | current, **this checkpoint only** |
 
+
+## Dynamics - the frame clock
+
+Added 2026-11-10. The dataset records one frame per 2 ms physics step. These measure
+what that costs and what a slower recorded clock buys. The pilots are the plain
+one-pass `dyn192x4` model on real context only (`bench/stride_pilot.py`), scored at
+about 250 ms of simulated time on the 27 val episodes, one seed, final checkpoints.
+Their bars were set before the run: base-link tracking at least 0.8, base-link action
+gain at least 0.5, frozen rollout frames at most 1.5x the truth's. **The pilot
+populations are not gate row 1's**, so none of their one-step numbers is a gate result.
+
+| ID | Value | What it is | Source | Status |
+|---|---|---|---|---|
+| `NUM-CLOCK-TIP` | **0.13 / 0.33 px at 2 ms; 1.79 / 4.79 px at 30 ms** | How far the arm's tip moves in one recorded frame, median / 90th percentile, projected from `qpos` through the scene camera. At 2 ms it never moves a full pixel | r96 | current, **the shipped 64x64 set** |
+| `NUM-CLOCK-CTX15` | **1.7 px at 2 ms; 11.6 px at 30 ms** | Median tip travel across a 15-frame context. At 2 ms that is under a quarter of an 8-px token cell | r96 | current, **the shipped 64x64 set** |
+| `NUM-CLOCK-KEEP` | **86.83% / 69.36% / 53.99%** | Share of R1 tokens unchanged from frame `t` to `t + k`, at strides 1, 5 and 15: what copying the previous frame scores at each clock | r96 | current, **R1, the probe's sample of 125 episodes** |
+| `NUM-CLOCK-QUIET` | **49-52%** | Share of R1 token changes on cells with no pixel change in their 22x22 receptive field, at every stride from 1 to 30: R1's tokenizer noise does not shrink with a slower clock | r96 | current, **R1 only** |
+| `NUM-CLOCK-PILOT-R1C-30` | **tracking 0.90, gain 1.00, frozen 1.14x** | r1c tokens at 30 ms (every 15th frame): passes all three bars. Only 18,920 training frames | r103 | current, **this run only** |
+| `NUM-CLOCK-PILOT-R1C-10` | **tracking 0.73, gain 0.84, frozen 1.86x** | r1c tokens at 10 ms (every 5th frame): misses tracking and the freeze | r102 | current, **this run only** |
+| `NUM-CLOCK-PILOT-R1C-2` | **tracking 0.19, gain 0.09, frozen 4.06x** | r1c tokens at 2 ms, the control: same tokenizer, model and code, and the rollout still freezes | r101 | current, **this run only** |
+| `NUM-CLOCK-PILOT-R1-30` | **tracking 0.695, gain 0.88, frozen 0.80x** | R1 tokens at 30 ms: misses tracking only | r100 | current, **this run only** |
+| `NUM-CLOCK-PILOT-R1-10` | **tracking 0.39, gain 0.80, frozen 2.44x** | R1 tokens at 10 ms: misses tracking and the freeze | r99 | current, **this run only** |
+| `NUM-CLOCK-FORE-30` | **r 0.37 against the tokens' 0.84** | Forearm tracking of the passing 30 ms r1c pilot, against the decoded truth tokens' own tracking on the same samples. The forearm still does not track | r103 | current, **this run only** |
+| `NUM-DYN-ROLL-MS` | **1.34 / 5.11 / 10.15 ms per frame** | Batch-1 rollout of the 1.98M masked model at 1, 4 and 8 rounds (747 / 196 / 99 fps), eager, no KV cache, token decoding to pixels excluded. One run, no clock or power gate | r97 | current, **order of magnitude only** |
 ## Dataset - the 96x96 fork
 
 | ID | Value | What it is | Source | Status |
@@ -283,6 +311,9 @@ validator's on-screen link angle, compared where both blobs are at least 3 px.
 | `NUM-TOK-R2-60` | **31.182 dB** | R2, R1 plus `GridAttention`, 60 epochs | r37 | current |
 | `NUM-TOK-ENT-R1` | **74.1%** | R1 token entropy at 60 epochs | r39 | current |
 | `NUM-TOK-ENT-R2` | **77.6%** | R2 token entropy at 60 epochs | r37 | current |
+| `NUM-TOK-R1C-60` | **30.880 dB** | r1c, FSQ `[8,8,8]` with per-channel encoder normalisation, 60 epochs, retrained on Linux (`20261110-005120-r1c`); the August run read 30.81 | r98 | current |
+| `NUM-TOK-ENT-R1C` | **54.47%** (4.902 of 9 bits) | r1c token entropy at 60 epochs, **misses `NUM-BAR-Q2` by 15.5 pp**; 459 of 512 codes used. Whether that bar should decide is the owner's call, open | r98 | current |
+| `NUM-TOK-SPUR-R1C` | **0 of 460,032** | Spurious token flips of `20261110-005120-r1c` on the token-stability probe's default population: a token changes only when a pixel in its window does | r98 | current |
 | `NUM-TOK-ATTN` | **+0.087 dB** | What attention buys in quality at convergence - a measured non-lever | r39 | current |
 | `NUM-TOK-ATTNPARAM` | **263,680** | What it costs in parameters | r39 | current |
 | `NUM-TOK-ATTNENT` | **+3.5 pp** | What it buys in entropy, by decorrelating the FSQ digits | r37, r39 | current |
